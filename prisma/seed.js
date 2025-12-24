@@ -1,0 +1,361 @@
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
+
+// ১. এনিমেল টাইপ ডাটা
+const animalTypes = [
+  { id: 1, name: 'Cats' },
+  { id: 2, name: 'Dogs' },
+  { id: 3, name: 'Birds' },
+  { id: 4, name: 'Rabbit' },
+  { id: 5, name: 'Reptiles' },
+  { id: 6, name: 'Mammals' }
+];
+
+// ২. ব্রিড ডাটা (সম্পূর্ণ লিস্ট)
+const breeds = [
+  // Cats (Type 1)
+  { id: 1, animalTypeId: 1, name: 'Abyssinian' },
+  { id: 2, animalTypeId: 1, name: 'American Shorthair' },
+  { id: 3, animalTypeId: 1, name: 'Bengal' },
+  { id: 4, animalTypeId: 1, name: 'British Shorthair' },
+  { id: 5, animalTypeId: 1, name: 'Burmese' },
+  { id: 6, animalTypeId: 1, name: 'Cornish Rex' },
+  { id: 7, animalTypeId: 1, name: 'Devon Rex' },
+  { id: 8, animalTypeId: 1, name: 'Egyptian Mau' },
+  { id: 9, animalTypeId: 1, name: 'Exotic Shorthair' },
+  { id: 10, animalTypeId: 1, name: 'Japanese Bobtail' },
+  { id: 11, animalTypeId: 1, name: 'Manx' },
+  { id: 12, animalTypeId: 1, name: 'Ocicat' },
+  { id: 13, animalTypeId: 1, name: 'Oriental Shorthair' },
+  { id: 14, animalTypeId: 1, name: 'Russian Blue' },
+  { id: 15, animalTypeId: 1, name: 'Scottish Fold' },
+  { id: 16, animalTypeId: 1, name: 'Siamese' },
+  { id: 17, animalTypeId: 1, name: 'Singapura' },
+  { id: 18, animalTypeId: 1, name: 'Sphynx' },
+  { id: 19, animalTypeId: 1, name: 'Balinese' },
+  { id: 20, animalTypeId: 1, name: 'Birman' },
+  { id: 21, animalTypeId: 1, name: 'Himalayan' },
+  { id: 22, animalTypeId: 1, name: 'Maine Coon' },
+  { id: 23, animalTypeId: 1, name: 'Norwegian Forest Cat' },
+  { id: 24, animalTypeId: 1, name: 'Persian' },
+  { id: 25, animalTypeId: 1, name: 'Ragdoll' },
+  { id: 26, animalTypeId: 1, name: 'Siberian' },
+  { id: 27, animalTypeId: 1, name: 'Somali' },
+  { id: 28, animalTypeId: 1, name: 'Turkish Angora' },
+  { id: 29, animalTypeId: 1, name: 'Turkish Van' },
+  { id: 30, animalTypeId: 1, name: 'Savannah' },
+  { id: 31, animalTypeId: 1, name: 'Chausie' },
+  { id: 32, animalTypeId: 1, name: 'Toyger' },
+  { id: 33, animalTypeId: 1, name: 'Pixiebob' },
+  { id: 34, animalTypeId: 1, name: 'Burmilla' },
+  { id: 35, animalTypeId: 1, name: 'Chartreux' },
+  { id: 36, animalTypeId: 1, name: 'Havana Brown' },
+  { id: 37, animalTypeId: 1, name: 'Korat' },
+  { id: 38, animalTypeId: 1, name: 'LaPerm' },
+  { id: 39, animalTypeId: 1, name: 'Munchkin' },
+  { id: 40, animalTypeId: 1, name: 'Selkirk Rex' },
+  { id: 41, animalTypeId: 1, name: 'Snowshoe' },
+  { id: 42, animalTypeId: 1, name: 'Tonkinese' },
+
+  // Dogs (Type 2)
+  { id: 43, animalTypeId: 2, name: 'Labrador Retriever' },
+  { id: 44, animalTypeId: 2, name: 'Golden Retriever' },
+  { id: 45, animalTypeId: 2, name: 'German Shorthaired Pointer' },
+  { id: 46, animalTypeId: 2, name: 'English Springer Spaniel' },
+  { id: 47, animalTypeId: 2, name: 'Brittany' },
+  { id: 48, animalTypeId: 2, name: 'Cocker Spaniel' },
+  { id: 49, animalTypeId: 2, name: 'Vizsla' },
+  { id: 50, animalTypeId: 2, name: 'Weimaraner' },
+  { id: 51, animalTypeId: 2, name: 'Irish Setter' },
+  { id: 52, animalTypeId: 2, name: 'Chesapeake Bay Retriever' },
+  { id: 53, animalTypeId: 2, name: 'Beagle' },
+  { id: 54, animalTypeId: 2, name: 'Dachshund' },
+  { id: 55, animalTypeId: 2, name: 'Greyhound' },
+  { id: 56, animalTypeId: 2, name: 'Bloodhound' },
+  { id: 57, animalTypeId: 2, name: 'Basset Hound' },
+  { id: 58, animalTypeId: 2, name: 'Rhodesian Ridgeback' },
+  { id: 59, animalTypeId: 2, name: 'Afghan Hound' },
+  { id: 60, animalTypeId: 2, name: 'Whippet' },
+  { id: 61, animalTypeId: 2, name: 'Basenji' },
+  { id: 62, animalTypeId: 2, name: 'Saluki' },
+  { id: 63, animalTypeId: 2, name: 'Siberian Husky' },
+  { id: 64, animalTypeId: 2, name: 'Boxer' },
+  { id: 65, animalTypeId: 2, name: 'Great Dane' },
+  { id: 66, animalTypeId: 2, name: 'Doberman Pinscher' },
+  { id: 67, animalTypeId: 2, name: 'Rottweiler' },
+  { id: 68, animalTypeId: 2, name: 'Bernese Mountain Dog' },
+  { id: 69, animalTypeId: 2, name: 'Saint Bernard' },
+  { id: 70, animalTypeId: 2, name: 'Mastiff' },
+  { id: 71, animalTypeId: 2, name: 'Bullmastiff' },
+  { id: 72, animalTypeId: 2, name: 'Alaskan Malamute' },
+  { id: 73, animalTypeId: 2, name: 'Jack Russell Terrier' },
+  { id: 74, animalTypeId: 2, name: 'Bull Terrier' },
+  { id: 75, animalTypeId: 2, name: 'Scottish Terrier' },
+  { id: 76, animalTypeId: 2, name: 'West Highland White Terrier' },
+  { id: 77, animalTypeId: 2, name: 'Airedale Terrier' },
+  { id: 78, animalTypeId: 2, name: 'Yorkshire Terrier' },
+  { id: 79, animalTypeId: 2, name: 'Staffordshire Bull Terrier' },
+  { id: 80, animalTypeId: 2, name: 'American Staffordshire Terrier' },
+  { id: 81, animalTypeId: 2, name: 'Border Terrier' },
+  { id: 82, animalTypeId: 2, name: 'Rat Terrier' },
+  { id: 83, animalTypeId: 2, name: 'Chihuahua' },
+  { id: 84, animalTypeId: 2, name: 'Pomeranian' },
+  { id: 85, animalTypeId: 2, name: 'Pug' },
+  { id: 86, animalTypeId: 2, name: 'Shih Tzu' },
+  { id: 87, animalTypeId: 2, name: 'Pekingese' },
+  { id: 88, animalTypeId: 2, name: 'Maltese' },
+  { id: 89, animalTypeId: 2, name: 'Toy Poodle' },
+  { id: 90, animalTypeId: 2, name: 'Cavalier King Charles Spaniel' },
+  { id: 91, animalTypeId: 2, name: 'Bichon Frise' },
+  { id: 92, animalTypeId: 2, name: 'Italian Greyhound' },
+  { id: 93, animalTypeId: 2, name: 'Dalmatian' },
+  { id: 94, animalTypeId: 2, name: 'Bulldog' },
+  { id: 95, animalTypeId: 2, name: 'French Bulldog' },
+  { id: 96, animalTypeId: 2, name: 'Boston Terrier' },
+  { id: 97, animalTypeId: 2, name: 'Shiba Inu' },
+  { id: 98, animalTypeId: 2, name: 'Chow Chow' },
+  { id: 99, animalTypeId: 2, name: 'Shar Pei' },
+  { id: 100, animalTypeId: 2, name: 'Lhasa Apso' },
+  { id: 101, animalTypeId: 2, name: 'Tibetan Spaniel' },
+  { id: 102, animalTypeId: 2, name: 'Finnish Spitz' },
+  { id: 103, animalTypeId: 2, name: 'German Shepherd' },
+  { id: 104, animalTypeId: 2, name: 'Border Collie' },
+  { id: 105, animalTypeId: 2, name: 'Australian Shepherd' },
+  { id: 106, animalTypeId: 2, name: 'Collie' },
+  { id: 107, animalTypeId: 2, name: 'Shetland Sheepdog' },
+  { id: 108, animalTypeId: 2, name: 'Belgian Malinois' },
+  { id: 109, animalTypeId: 2, name: 'Corgi (Pembroke)' },
+  { id: 110, animalTypeId: 2, name: 'Corgi (Cardigan)' },
+  { id: 111, animalTypeId: 2, name: 'Australian Cattle Dog' },
+  { id: 112, animalTypeId: 2, name: 'Old English Sheepdog' },
+  { id: 113, animalTypeId: 2, name: 'Labradoodle' },
+  { id: 114, animalTypeId: 2, name: 'Goldendoodle' },
+  { id: 115, animalTypeId: 2, name: 'Cockapoo' },
+  { id: 116, animalTypeId: 2, name: 'Pomsky' },
+  { id: 117, animalTypeId: 2, name: 'Morkie' },
+  { id: 118, animalTypeId: 2, name: 'Schnoodle' },
+  { id: 119, animalTypeId: 2, name: 'Yorkipoo' },
+  { id: 120, animalTypeId: 2, name: 'Chiweenie' },
+  { id: 121, animalTypeId: 2, name: 'Puggle' },
+  { id: 122, animalTypeId: 2, name: 'Maltipoo' },
+  { id: 123, animalTypeId: 2, name: 'Irish Wolfhound' },
+  { id: 124, animalTypeId: 2, name: 'Leonberger' },
+  { id: 125, animalTypeId: 2, name: 'Neapolitan Mastiff' },
+  { id: 126, animalTypeId: 2, name: 'Tibetan Mastiff' },
+  { id: 127, animalTypeId: 2, name: 'Great Pyrenees' },
+  { id: 128, animalTypeId: 2, name: 'Newfoundland' },
+  { id: 129, animalTypeId: 2, name: 'Boerboel' },
+  { id: 130, animalTypeId: 2, name: 'Cane Corso' },
+  { id: 131, animalTypeId: 2, name: 'Dogo Argentino' },
+  { id: 132, animalTypeId: 2, name: 'Akita' },
+
+  // Birds (Type 3)
+  { id: 133, animalTypeId: 3, name: 'Myna (Shalik)' },
+  { id: 134, animalTypeId: 3, name: 'House Crow (Kak)' },
+  { id: 135, animalTypeId: 3, name: 'Jungle Crow (Dhushor Kak)' },
+  { id: 136, animalTypeId: 3, name: 'Asian Koel (Kokil)' },
+  { id: 137, animalTypeId: 3, name: 'Spotted Dove (Ghughu)' },
+  { id: 138, animalTypeId: 3, name: 'Rose-ringed Parakeet (Tiya)' },
+  { id: 139, animalTypeId: 3, name: 'Red-breasted Parakeet (Tota)' },
+  { id: 140, animalTypeId: 3, name: 'Common Myna (Gang Shalik)' },
+  { id: 141, animalTypeId: 3, name: 'White-throated Kingfisher (Machhranga)' },
+  { id: 142, animalTypeId: 3, name: 'Black Drongo (Finge)' },
+  { id: 143, animalTypeId: 3, name: 'Domestic Pigeon (Kabutar)' },
+  { id: 144, animalTypeId: 3, name: 'Fantail Pigeon' },
+  { id: 145, animalTypeId: 3, name: 'Jacobin Pigeon' },
+  { id: 146, animalTypeId: 3, name: 'Laughing Dove (Horikhok)' },
+  { id: 147, animalTypeId: 3, name: 'Oriental Turtle Dove (Jalali Kabutar)' },
+  { id: 148, animalTypeId: 3, name: 'Oriental Magpie-Robin (Doyel)' },
+  { id: 149, animalTypeId: 3, name: 'Common Iora (Choto Bulbul)' },
+  { id: 150, animalTypeId: 3, name: 'Red-whiskered Bulbul (Sipahi Bulbul)' },
+  { id: 151, animalTypeId: 3, name: 'Yellow-vented Bulbul (Bulbul)' },
+  { id: 152, animalTypeId: 3, name: 'White-rumped Shama (Shama)' },
+  { id: 153, animalTypeId: 3, name: 'Lesser Whistling Duck (Chhota Sarali)' },
+  { id: 154, animalTypeId: 3, name: 'Cotton Pygmy Goose (Bali Hans)' },
+  { id: 155, animalTypeId: 3, name: 'Purple Swamphen (Dahuk)' },
+  { id: 156, animalTypeId: 3, name: 'White-breasted Waterhen (Dahuk)' },
+  { id: 157, animalTypeId: 3, name: 'Budgerigar (Lovebird)' },
+  { id: 158, animalTypeId: 3, name: 'Cockatiel' },
+  { id: 159, animalTypeId: 3, name: 'Zebra Finch' },
+  { id: 160, animalTypeId: 3, name: 'Java Sparrow' },
+  { id: 161, animalTypeId: 3, name: 'Indian Silverbill (Chada Munia)' },
+  { id: 162, animalTypeId: 3, name: 'Black Kite (Cheel)' },
+  { id: 163, animalTypeId: 3, name: 'Shikra (Baz)' },
+  { id: 164, animalTypeId: 3, name: 'Eurasian Sparrowhawk (Baz)' },
+  { id: 165, animalTypeId: 3, name: 'Oriental Honey-buzzard (Mourial)' },
+
+  // Rabbits (Type 4)
+  { id: 166, animalTypeId: 4, name: 'Netherland Dwarf' },
+  { id: 167, animalTypeId: 4, name: 'Polish' },
+  { id: 168, animalTypeId: 4, name: 'Britannia Petite' },
+  { id: 169, animalTypeId: 4, name: 'Dwarf Hotot' },
+  { id: 170, animalTypeId: 4, name: 'Himalayan' },
+  { id: 171, animalTypeId: 4, name: 'Jersey Wooly' },
+  { id: 172, animalTypeId: 4, name: 'Lionhead' },
+  { id: 173, animalTypeId: 4, name: 'Mini Rex' },
+  { id: 174, animalTypeId: 4, name: 'Mini Satin' },
+  { id: 175, animalTypeId: 4, name: 'Holland Lop' },
+  { id: 176, animalTypeId: 4, name: 'Dutch' },
+  { id: 177, animalTypeId: 4, name: 'English Spot' },
+  { id: 178, animalTypeId: 4, name: 'Florida White' },
+  { id: 179, animalTypeId: 4, name: 'Harlequin' },
+  { id: 180, animalTypeId: 4, name: 'Mini Lop' },
+  { id: 181, animalTypeId: 4, name: 'Rex' },
+  { id: 182, animalTypeId: 4, name: 'Rhinelander' },
+  { id: 183, animalTypeId: 4, name: 'Silver' },
+  { id: 184, animalTypeId: 4, name: 'Tan' },
+  { id: 185, animalTypeId: 4, name: 'American Fuzzy Lop' },
+  { id: 186, animalTypeId: 4, name: 'American' },
+  { id: 187, animalTypeId: 4, name: 'American Chinchilla' },
+  { id: 188, animalTypeId: 4, name: 'Belgian Hare' },
+  { id: 189, animalTypeId: 4, name: 'Beveren' },
+  { id: 190, animalTypeId: 4, name: 'Californian' },
+  { id: 191, animalTypeId: 4, name: 'Champagne d\'Argent' },
+  { id: 192, animalTypeId: 4, name: 'Cinnamon' },
+  { id: 193, animalTypeId: 4, name: 'English Angora' },
+  { id: 194, animalTypeId: 4, name: 'French Angora' },
+  { id: 195, animalTypeId: 4, name: 'Giant Angora' },
+  { id: 196, animalTypeId: 4, name: 'Flemish Giant' },
+  { id: 197, animalTypeId: 4, name: 'French Lop' },
+  { id: 198, animalTypeId: 4, name: 'Checkered Giant' },
+  { id: 199, animalTypeId: 4, name: 'Giant Chinchilla' },
+  { id: 200, animalTypeId: 4, name: 'New Zealand' },
+  { id: 201, animalTypeId: 4, name: 'Palomino' },
+  { id: 202, animalTypeId: 4, name: 'Satin' },
+  { id: 203, animalTypeId: 4, name: 'Silver Fox' },
+  { id: 204, animalTypeId: 4, name: 'English Lop' },
+  { id: 205, animalTypeId: 4, name: 'Continental Giant' },
+  { id: 206, animalTypeId: 4, name: 'Argente Brun' },
+  { id: 207, animalTypeId: 4, name: 'Blanc de Hotot' },
+  { id: 208, animalTypeId: 4, name: 'Crème d\'Argent' },
+  { id: 209, animalTypeId: 4, name: 'Lilac' },
+  { id: 210, animalTypeId: 4, name: 'Thrianta' },
+  { id: 211, animalTypeId: 4, name: 'Velveteen Lop' },
+  { id: 212, animalTypeId: 4, name: 'Alaska' },
+  { id: 213, animalTypeId: 4, name: 'American Sable' },
+  { id: 214, animalTypeId: 4, name: 'Perlfee' },
+  { id: 215, animalTypeId: 4, name: 'Gotland' },
+
+  // Reptiles (Type 5)
+  { id: 216, animalTypeId: 5, name: 'Ball Python' },
+  { id: 217, animalTypeId: 5, name: 'Corn Snake' },
+  { id: 218, animalTypeId: 5, name: 'King Snake' },
+  { id: 219, animalTypeId: 5, name: 'Boa Constrictor' },
+  { id: 220, animalTypeId: 5, name: 'Garter Snake' },
+  { id: 221, animalTypeId: 5, name: 'Hognose Snake' },
+  { id: 222, animalTypeId: 5, name: 'Milk Snake' },
+  { id: 223, animalTypeId: 5, name: 'Green Tree Python' },
+  { id: 224, animalTypeId: 5, name: 'Reticulated Python' },
+  { id: 225, animalTypeId: 5, name: 'Sand Boa' },
+  { id: 226, animalTypeId: 5, name: 'Bearded Dragon' },
+  { id: 227, animalTypeId: 5, name: 'Leopard Gecko' },
+  { id: 228, animalTypeId: 5, name: 'Crested Gecko' },
+  { id: 229, animalTypeId: 5, name: 'Blue-Tongued Skink' },
+  { id: 230, animalTypeId: 5, name: 'Green Iguana' },
+  { id: 231, animalTypeId: 5, name: 'Chameleon (Veiled)' },
+  { id: 232, animalTypeId: 5, name: 'Chameleon (Panther)' },
+  { id: 233, animalTypeId: 5, name: 'Uromastyx' },
+  { id: 234, animalTypeId: 5, name: 'Tegu (Argentine)' },
+  { id: 235, animalTypeId: 5, name: 'Monitor Lizard (Savannah)' },
+  { id: 236, animalTypeId: 5, name: 'Red-Eared Slider' },
+  { id: 237, animalTypeId: 5, name: 'Painted Turtle' },
+  { id: 238, animalTypeId: 5, name: 'Box Turtle' },
+  { id: 239, animalTypeId: 5, name: 'Russian Tortoise' },
+  { id: 240, animalTypeId: 5, name: 'Sulcata Tortoise' },
+  { id: 241, animalTypeId: 5, name: 'Hermann\'s Tortoise' },
+  { id: 242, animalTypeId: 5, name: 'Greek Tortoise' },
+  { id: 243, animalTypeId: 5, name: 'Musk Turtle' },
+  { id: 244, animalTypeId: 5, name: 'Map Turtle' },
+  { id: 245, animalTypeId: 5, name: 'Softshell Turtle' },
+  { id: 246, animalTypeId: 5, name: 'Caiman (Dwarf)' },
+  { id: 247, animalTypeId: 5, name: 'Alligator (American)' },
+  { id: 248, animalTypeId: 5, name: 'Gila Monster' },
+  { id: 249, animalTypeId: 5, name: 'Tokay Gecko' },
+  { id: 250, animalTypeId: 5, name: 'Anole (Green)' },
+
+  // Mammals (Type 6)
+  { id: 251, animalTypeId: 6, name: 'Syrian Hamster' },
+  { id: 252, animalTypeId: 6, name: 'Dwarf Hamster (Roborovski)' },
+  { id: 253, animalTypeId: 6, name: 'Guinea Pig (American)' },
+  { id: 254, animalTypeId: 6, name: 'Guinea Pig (Abyssinian)' },
+  { id: 255, animalTypeId: 6, name: 'Chinchilla' },
+  { id: 256, animalTypeId: 6, name: 'Gerbils (Mongolian)' },
+  { id: 257, animalTypeId: 6, name: 'Rat (Fancy)' },
+  { id: 258, animalTypeId: 6, name: 'Mouse (Fancy)' },
+  { id: 259, animalTypeId: 6, name: 'Degus' },
+  { id: 260, animalTypeId: 6, name: 'Prairie Dog' },
+  { id: 261, animalTypeId: 6, name: 'Ferret (Domestic)' },
+  { id: 262, animalTypeId: 6, name: 'Stoat (Ermine)' },
+  { id: 263, animalTypeId: 6, name: 'Mink' },
+  { id: 264, animalTypeId: 6, name: 'African Pygmy Hedgehog' },
+  { id: 265, animalTypeId: 6, name: 'Sugar Glider' },
+  { id: 266, animalTypeId: 6, name: 'Flying Squirrel' },
+  { id: 267, animalTypeId: 6, name: 'Marmoset (Common)' },
+  { id: 268, animalTypeId: 6, name: 'Capuchin Monkey' },
+  { id: 269, animalTypeId: 6, name: 'Squirrel Monkey' },
+  { id: 270, animalTypeId: 6, name: 'Skunk (Descented)' },
+  { id: 271, animalTypeId: 6, name: 'Kinkajou' },
+  { id: 272, animalTypeId: 6, name: 'Fennec Fox' },
+  { id: 273, animalTypeId: 6, name: 'Wallaby (Bennett\'s)' },
+  { id: 274, animalTypeId: 6, name: 'Pygmy Goat' },
+
+  // Mixed and Local Breeds
+  { id: 279, animalTypeId: 1, name: 'Mixed Breed' },
+  { id: 280, animalTypeId: 1, name: 'Local Breed' },
+  { id: 281, animalTypeId: 2, name: 'Local Breed' },
+  { id: 282, animalTypeId: 2, name: 'Mixed Breed' },
+];
+
+async function main() {
+  console.log('🔄 Start seeding safely...');
+
+  // ১. Animal Types ইনসার্ট/আপডেট (Upsert)
+  // এখানে আমরা createMany ব্যবহার করছি না, লুপ চালিয়ে upsert করছি যাতে duplicate error না আসে
+  console.log('🌱 Seeding Animal Types...');
+  for (const type of animalTypes) {
+    await prisma.animalType.upsert({
+      where: { id: type.id },
+      update: { name: type.name }, // নাম ভিন্ন হলে আপডেট করবে
+      create: type, // না থাকলে নতুন তৈরি করবে
+    });
+  }
+
+  // ২. Breeds ইনসার্ট/আপডেট (Upsert)
+  console.log('🐶 Seeding Breeds...');
+  for (const breed of breeds) {
+    await prisma.breed.upsert({
+      where: { id: breed.id },
+      update: { 
+        name: breed.name,
+        animalTypeId: breed.animalTypeId 
+      },
+      create: {
+        id: breed.id,
+        name: breed.name,
+        animalTypeId: breed.animalTypeId
+      },
+    });
+  }
+
+  // ৩. Sequence Reset (PostgreSQL এর জন্য গুরুত্বপূর্ণ)
+  // যাতে নতুন ডাটা ঢুকাতে গেলে ID নিয়ে সমস্যা না হয়
+  console.log('🔧 Fixing ID sequences...');
+  try {
+    // লক্ষ্য করুন: এখন আমরা টেবিলের নাম "animal_types" এবং "breeds" ব্যবহার করছি
+    await prisma.$executeRawUnsafe(`SELECT setval(pg_get_serial_sequence('animal_types', 'id'), (SELECT MAX(id) FROM animal_types) + 1);`);
+    await prisma.$executeRawUnsafe(`SELECT setval(pg_get_serial_sequence('breeds', 'id'), (SELECT MAX(id) FROM breeds) + 1);`);
+  } catch (e) {
+    console.log('⚠️ Sequence reset skipped (Maybe table name mismatch or empty table)');
+  }
+
+  console.log('✅ Seeding completed safely! No data deleted.');
+}
+
+main()
+  .catch((e) => {
+    console.error(e);
+    process.exit(1);
+  })
+  .finally(async () => {
+    await prisma.$disconnect();
+  });

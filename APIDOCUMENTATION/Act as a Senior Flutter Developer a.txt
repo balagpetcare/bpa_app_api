@@ -1,0 +1,61 @@
+Act as a Senior Flutter Developer and System Architect. I am working on a project called "BPA Super App" (Bangladesh Pet Association). Here is the complete context of the project so far. Please memorize this state for future tasks.
+
+### 1. Project Overview
+- **App Name:** BPA Super App
+- **Goal:** A community app for pet owners, vets, and shops.
+- **Tech Stack:** Flutter (Frontend), Node.js/Express (Backend API).
+- **State Management:** Currently using `setState` & `StatefulWidget`.
+- **Local Storage:** `shared_preferences` (for storing Token, UserName, UserEmail).
+- **Networking:** `http` package.
+
+### 2. Current Implementation Status
+We have completed the following modules:
+
+**A. Authentication Flow:**
+- **Splash Screen:** Checks `SharedPreferences` for a 'token'. 
+  - If Token exists → Redirects to `BPAHomeScreen`.
+  - If No Token → Redirects to `LoginScreen`.
+- **Login Screen:** - Hits API (`/auth/login`).
+  - On Success: Saves `token`, `userName`, `userEmail` to SharedPreferences.
+  - Redirects to Home.
+  - Includes UI for Email/Pass, Social Login buttons (UI only), and Register link.
+
+**B. Home Screen (`BPAHomeScreen`):**
+- **Navigation Logic:** Uses `IndexedStack` to switch between tabs (Home, Shop, Services, Profile).
+- **Profile Tab Logic:** If user clicks "Profile" (Index 3), it checks for Token. If Guest, redirects to Login. If User, shows Profile.
+- **UI Structure:** Uses `CustomScrollView` + `Slivers`.
+  - **Header:** `HomeAppBar` (Shows user initial as Avatar e.g., "G" for Gobinda).
+  - **Body:** Stories, Service Grid (Vet, Shop, Donate), and Feed List.
+- **Modular Widgets:** Code is split into `widgets/home_app_bar.dart`, `story_section.dart`, `feed_list.dart`, etc.
+
+**C. Profile Screen:**
+- Fetches user profile data from API (`/user/profile`) using Bearer Token.
+- Displays Name, Email, and Profile Picture.
+- Includes **Logout** functionality (Clears SharedPrefs -> Navigates to Login).
+
+### 3. Folder Structure (Current)
+lib/
+├── screens/
+│   ├── home/
+│   │   ├── widgets/
+│   │   │   ├── home_app_bar.dart
+│   │   │   ├── story_section.dart
+│   │   │   ├── feed_list.dart
+│   │   │   └── custom_bottom_nav.dart
+│   │   └── home_screen.dart (Main Controller)
+│   ├── profile/
+│   │   └── profile_screen.dart
+│   ├── login_screen.dart
+│   ├── splash_screen.dart
+│   ├── shop_screen.dart
+│   ├── services_screen.dart
+│   └── create_post_screen.dart
+└── services/
+    └── auth_service.dart
+
+### 4. Important Rules & Constraints
+1. **Navigation:** Do NOT use `const` for `MaterialPageRoute` destinations (e.g., `LoginScreen()`) to avoid runtime errors.
+2. **Imports:** Be careful with `HomeAppBar` import conflict in `home_screen.dart` (Use `hide` if necessary).
+3. **Data Flow:** Home Screen loads `userName` from SharedPrefs and passes it to `HomeAppBar`.
+
+Now, based on this context, I need your help with [YOUR NEXT QUESTION HERE].
