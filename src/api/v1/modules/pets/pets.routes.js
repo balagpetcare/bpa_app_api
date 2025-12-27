@@ -1,0 +1,17 @@
+const router = require("express").Router();
+const auth = require("../../../../middleware/auth.middleware");
+const pets = require("./pets.controller");
+
+// ✅ GET
+router.get("/all", auth, pets.getAllPets);
+router.get("/", auth, pets.getAllPets);
+
+// ✅ POST (two paths)
+router.post("/register", auth, pets.createPet); // ✅ আপনার ক্লায়েন্ট এটা কল করছে
+router.post("/", auth, pets.createPet);         // ✅ standard
+
+// ✅ PUT
+router.put("/:id", auth, pets.updatePet);
+router.patch("/:id", auth, pets.updatePet);
+
+module.exports = router;

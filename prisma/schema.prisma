@@ -25,38 +25,55 @@ enum PetStatus {
 }
 
 enum TransactionType {
-  DEPOSIT
-  EXPENSE
-  REFUND
-  WITHDRAWAL
-  ADJUSTMENT
+  CREDIT
+  DEBIT
 }
 
 enum TransactionStatus {
-  INITIATED
   PENDING
-  COMPLETED
+  SUCCESS
   FAILED
-  CANCELLED
 }
 
 enum PaymentMethod {
+  CASH
   BKASH
   NAGAD
   ROCKET
-  BANK_CARD
-  CASH_ON_DELIVERY
-  WALLET_BALANCE
-  SYSTEM
+  BANK
+  CARD
 }
 
 // ========================
-// ২. রেফারেন্স টেবিল
+// ১B. USER / PROFILE ENUMS (NEW)
+// ========================
+
+enum UserStatus {
+  ACTIVE
+  BLOCKED
+  DELETED
+}
+
+enum ProfileVisibility {
+  PUBLIC
+  PRIVATE
+  FOLLOWERS_ONLY
+}
+
+enum AuthProvider {
+  LOCAL
+  GOOGLE
+  FACEBOOK
+  APPLE
+}
+
+// ========================
+// ২. REFERENCE TABLES
 // ========================
 
 model AnimalType {
   id           Int           @id @default(autoincrement())
-  name         String        @unique 
+  name         String        @unique
   breeds       Breed[]
   pets         Pet[]
   vaccineTypes VaccineType[]
@@ -76,81 +93,286 @@ model Breed {
 }
 
 // ========================
-// ৩. ব্যবহারকারী এবং মিডিয়া
+// ৩. USER SPLIT TABLES (NEW)
+// ========================
+
+model UserAuth {
+  id     Int  @id @default(autoincrement())
+  userId Int  @unique
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  provider AuthProvider @default(LOCAL)
+
+  email        String? @unique
+  phone        String? @unique
+  passwordHash String? // LOCAL only
+
+  passwordUpdatedAt DateTime?
+  emailVerifiedAt   DateTime?
+  phoneVerifiedAt   DateTime?
+
+  lastLoginAt    DateTime?
+  failedAttempts Int       @default(0)
+  lockedUntil    DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([email])
+  @@index([phone])
+  @@map("user_auth")
+}
+
+model UserProfile {
+  id     Int  @id @default(autoincrement())
+  userId Int  @unique
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  displayName String
+  username    String  @unique
+  bio         String? @db.Text
+
+  visibility ProfileVisibility @default(PUBLIC)
+
+  // privacy flags
+  showEmail Boolean @default(false)
+  showPhone Boolean @default(false)
+
+  // Media: avatar & cover
+  avatarMediaId Int?
+  avatarMedia   Media? @relation("UserAvatar", fields: [avatarMediaId], references: [id])
+
+  coverMediaId Int?
+  coverMedia   Media? @relation("UserCover", fields: [coverMediaId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([username])
+  @@map("user_profiles")
+}
+
+model UserStatsCache {
+  userId Int  @id
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  followersCount Int @default(0)
+  followingCount Int @default(0)
+  petsCount      Int @default(0)
+
+  // Mirror/cache for fast profile reads (source of truth: UserWallet.points)
+  pawPoints Int @default(0)
+
+  // Cached rank (optional)
+  rankGlobal Int?
+
+  updatedAt DateTime @updatedAt
+
+  @@map("user_stats_cache")
+}
+
+model UserSession {
+  id     Int  @id @default(autoincrement())
+  userId Int
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Store hash only (never store raw refresh token)
+  refreshTokenHash String @unique
+
+  deviceId  String?
+  userAgent String?
+  ip        String?
+
+  createdAt DateTime  @default(now())
+  expiresAt DateTime
+  revokedAt DateTime?
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("user_sessions")
+}
+
+model UserFollow {
+  id          Int      @id @default(autoincrement())
+  followerId  Int
+  followingId Int
+  createdAt   DateTime @default(now())
+
+  follower  User @relation("UserFollowing", fields: [followerId], references: [id], onDelete: Cascade)
+  following User @relation("UserFollowers", fields: [followingId], references: [id], onDelete: Cascade)
+
+  @@unique([followerId, followingId])
+  @@index([followingId])
+  @@index([followerId])
+  @@map("user_follows")
+}
+
+model Achievement {
+  id           Int     @id @default(autoincrement())
+  code         String  @unique
+  title        String
+  description  String?
+  pointsReward Int     @default(0)
+
+  iconMediaId Int?
+  iconMedia   Media? @relation("AchievementIcon", fields: [iconMediaId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  users UserAchievement[]
+
+  @@map("achievements")
+}
+
+model UserAchievement {
+  id            Int      @id @default(autoincrement())
+  userId        Int
+  achievementId Int
+  unlockedAt    DateTime @default(now())
+
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  achievement Achievement @relation(fields: [achievementId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, achievementId])
+  @@index([userId])
+  @@map("user_achievements")
+}
+
+model UserGalleryItem {
+  id     Int  @id @default(autoincrement())
+  userId Int
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  mediaId Int
+  media   Media @relation("UserGalleryMedia", fields: [mediaId], references: [id], onDelete: Cascade)
+
+  caption   String?
+  createdAt DateTime @default(now())
+  deleted   Boolean  @default(false)
+
+  @@index([userId, createdAt])
+  @@map("user_gallery_items")
+}
+
+// ========================
+// ৪. USER (THIN - UPDATED)
 // ========================
 
 model User {
-  id              Int      @id @default(autoincrement())
-  name            String
-  email           String   @unique
-  password        String   
-  phone           String?
-  address         String?
+  id        Int        @id @default(autoincrement())
+  status    UserStatus @default(ACTIVE)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  // Split tables (keep User thin)
+  auth     UserAuth?
+  profile  UserProfile?
+  stats    UserStatsCache?
+  sessions UserSession[]
+
+  // Social graph
+  followsFollowing UserFollow[] @relation("UserFollowing")
+  followsFollowers UserFollow[] @relation("UserFollowers")
+
+  // Existing relations
   pets            Pet[]
-  wallet          UserWallet? // প্রতি ইউজারের শুধু ১টি ওয়ালেট
+  wallet          UserWallet?
   rewardHistories RewardHistory[]
 
-  createdAt       DateTime @default(now())
+  // NEW: opposite side of Media.owner
+  uploadedMedia Media[] @relation("UserUploadedMedia")
+
+  // Premium profile features
+  achievements UserAchievement[]
+  galleryItems UserGalleryItem[]
+
   @@map("users")
 }
+
+// ========================
+// ৫. MEDIA (UPDATED / GENERALIZED)
+// ========================
+
 model Media {
-  id            Int   @id @default(autoincrement())
-  url           String
-  key           String? 
-  type          String
-  createdAt     DateTime @default(now())
-  petProfilePic Pet?   @relation // optional inverse relation
+  id        Int      @id @default(autoincrement())
+  url       String
+  key       String?
+  type      String
+  createdAt DateTime @default(now())
+
+  ownerUserId Int
+  owner       User @relation("UserUploadedMedia", fields: [ownerUserId], references: [id], onDelete: Cascade)
+
+  deletedAt DateTime?
+
+  // relations
+  petProfilePic    Pet?              @relation("PetProfilePic")
+  userAvatars      UserProfile[]     @relation("UserAvatar")
+  userCovers       UserProfile[]     @relation("UserCover")
+  galleryItems     UserGalleryItem[] @relation("UserGalleryMedia")
+  achievementIcons Achievement[]     @relation("AchievementIcon")
+
+  @@index([ownerUserId])
+  @@map("media")
 }
 
+// ========================
+// ৬. MAIN PET PROFILE (UNCHANGED)
+// ========================
+
 model Pet {
-  id              Int        @id @default(autoincrement())
-  userId          Int
-  user            User       @relation(fields: [userId], references: [id])
+  id     Int  @id @default(autoincrement())
+  userId Int
+  user   User @relation(fields: [userId], references: [id])
 
-  animalTypeId    Int
-  animalType      AnimalType @relation(fields: [animalTypeId], references: [id])
+  animalTypeId Int
+  animalType   AnimalType @relation(fields: [animalTypeId], references: [id])
 
-  breedId         Int?
-  breed           Breed?     @relation(fields: [breedId], references: [id])
+  breedId Int?
+  breed   Breed? @relation(fields: [breedId], references: [id])
 
-  profilePicId    Int?       @unique // ✅ এখানে @unique যোগ করুন
-  profilePic      Media?     @relation(fields: [profilePicId], references: [id])
+  // ✅ 1 pet = 1 profile pic (one-to-one) রাখতে চাইলে @unique ঠিক আছে
+
+  profilePicId Int?   @unique
+  profilePic   Media? @relation("PetProfilePic", fields: [profilePicId], references: [id])
+
 
   name            String
-  sex             Gender     @default(UNKNOWN) 
+  sex             Gender    @default(UNKNOWN)
   dateOfBirth     DateTime?
-  microchipNumber String?    @unique
-  
-  isRescue        Boolean    @default(false)
-  isNeutered      Boolean    @default(false)
-  
-  foodHabits      String?    @db.Text
-  healthDisorders String?    @db.Text
-  notes           String?    @db.Text
-  
-  status          PetStatus  @default(ACTIVE)
+  microchipNumber String?   @unique
 
-  weights           PetWeight[]
-  vaccinations      Vaccination[]
-  dewormingRecords  DewormingRecord[]
-  medicalHistories  MedicalHistory[]
+  isRescue   Boolean @default(false)
+  isNeutered Boolean @default(false)
 
-  createdAt       DateTime   @default(now())
-  updatedAt       DateTime   @updatedAt
-  deleted         Boolean    @default(false)
+  foodHabits      String? @db.Text
+  healthDisorders String? @db.Text
+  notes           String? @db.Text
+
+  status PetStatus @default(ACTIVE)
+
+  weights          PetWeight[]
+  vaccinations     Vaccination[]
+  dewormingRecords DewormingRecord[]
+  medicalHistories MedicalHistory[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  deleted   Boolean  @default(false)
 
   @@map("pets")
 }
+
 // ========================
-// ৫. ওজন ট্র্যাকিং
+// ৭. WEIGHT TRACKING
 // ========================
 
 model PetWeight {
-  id         Int      @id @default(autoincrement())
-  petId      Int
-  pet        Pet      @relation(fields: [petId], references: [id], onDelete: Cascade)
-  
-  weightKg   Float    
+  id    Int @id @default(autoincrement())
+  petId Int
+  pet   Pet @relation(fields: [petId], references: [id], onDelete: Cascade)
+
+  weightKg   Float
   notes      String?
   recordedAt DateTime @default(now())
   createdAt  DateTime @default(now())
@@ -159,92 +381,84 @@ model PetWeight {
 }
 
 // ========================
-// ৬. ভ্যাকসিনেশন সিস্টেম
+// ৮. VACCINATION SYSTEM
 // ========================
 
 model VaccineType {
-  id                 Int           @id @default(autoincrement())
-  name               String        @unique 
-  targetAnimalTypeId Int?
-  targetAnimalType   AnimalType?   @relation(fields: [targetAnimalTypeId], references: [id])
-  defaultIntervalDays Int          @default(365)
-  description        String?
-  vaccinations       Vaccination[]
+  id                  Int           @id @default(autoincrement())
+  name                String        @unique
+  targetAnimalTypeId  Int?
+  targetAnimalType    AnimalType?   @relation(fields: [targetAnimalTypeId], references: [id])
+  defaultIntervalDays Int           @default(365)
+  description         String?
+  vaccinations        Vaccination[]
 
   @@map("vaccine_types")
 }
 
 model Vaccination {
-  id             Int          @id @default(autoincrement())
+  id             Int         @id @default(autoincrement())
   petId          Int
-  pet            Pet          @relation(fields: [petId], references: [id], onDelete: Cascade)
+  pet            Pet         @relation(fields: [petId], references: [id], onDelete: Cascade)
   vaccineTypeId  Int
-  vaccineType    VaccineType  @relation(fields: [vaccineTypeId], references: [id])
-  administeredAt DateTime     @default(now()) 
-  nextDueDate    DateTime?    
+  vaccineType    VaccineType @relation(fields: [vaccineTypeId], references: [id])
+  administeredAt DateTime    @default(now())
+  nextDueDate    DateTime?
   batchNumber    String?
   vetClinic      String?
   notes          String?
-  createdAt      DateTime     @default(now())
+  createdAt      DateTime    @default(now())
 
   @@map("vaccinations")
 }
 
 // ========================
-// ৭. ডিওয়ার্মিং রেকর্ড
+// ৯. DEWORMING
 // ========================
 
 model DewormingRecord {
-  id             Int      @id @default(autoincrement())
+  id             Int       @id @default(autoincrement())
   petId          Int
-  pet            Pet      @relation(fields: [petId], references: [id], onDelete: Cascade)
+  pet            Pet       @relation(fields: [petId], references: [id], onDelete: Cascade)
   medicationName String
-  dosage         String?  
-  weightAtTime   Float?   
-  administeredAt DateTime @default(now())
+  dosage         String?
+  weightAtTime   Float?
+  administeredAt DateTime  @default(now())
   nextDueDate    DateTime?
   notes          String?
-  createdAt      DateTime @default(now())
+  createdAt      DateTime  @default(now())
 
   @@map("deworming_records")
 }
 
 // ========================
-// ৮. মেডিকেল হিস্ট্রি
+// ১০. MEDICAL HISTORY
 // ========================
 
 model MedicalHistory {
-  id           Int      @id @default(autoincrement())
+  id           Int       @id @default(autoincrement())
   petId        Int
-  pet          Pet      @relation(fields: [petId], references: [id], onDelete: Cascade)
-  
-  condition    String   // রোগের নাম বা কারণ
-  treatment    String?  @db.Text 
+  pet          Pet       @relation(fields: [petId], references: [id], onDelete: Cascade)
+  condition    String
+  treatment    String?   @db.Text
   doctorName   String?
   clinicName   String?
-  
-  // --- নতুন যুক্ত করা ফিল্ড (Vitals) ---
-  weightKg     Float?   // ভিসিটের সময় ওজন (e.g., 12.5)
-  temperature  Float?   // শরীরের তাপমাত্রা (e.g., 102.5 F)
-  // -----------------------------------
-
-  visitDate    DateTime @default(now())
+  visitDate    DateTime  @default(now())
   followUpDate DateTime?
-  
-  createdAt    DateTime @default(now())
-  
+  createdAt    DateTime  @default(now())
+
   @@map("medical_histories")
 }
 
 // ========================
-// ৯. ওয়ালেট ও রিওয়ার্ড সিস্টেম
+// ১১. USER WALLET (UNCHANGED)
 // ========================
 
 model UserWallet {
-  id        Int      @id @default(autoincrement())
-  userId    Int      @unique // ✅ প্রতি ইউজারের শুধু ১টি ওয়ালেট
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
+  id     Int  @id @default(autoincrement())
+  userId Int  @unique // ✅ প্রতি ইউজারের শুধু ১টি ওয়ালেট
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
   balance   Decimal  @default(0.00) @db.Decimal(10, 2)
   currency  String   @default("BDT")
   points    Int      @default(0)
@@ -252,32 +466,38 @@ model UserWallet {
   isActive  Boolean  @default(true)
   updatedAt DateTime @updatedAt
 
-  transactions WalletTransaction[] 
+  transactions WalletTransaction[]
+
   @@map("user_wallets")
 }
 
 model WalletTransaction {
-  id            Int               @id @default(autoincrement())
-  walletId      Int
-  wallet        UserWallet        @relation(fields: [walletId], references: [id], onDelete: Cascade)
-  
-  amount        Decimal           @db.Decimal(10, 2)
-  type          TransactionType   
-  status        TransactionStatus @default(INITIATED)
-  paymentMethod PaymentMethod     @default(SYSTEM)
-  transactionId String?           @unique
-  description   String?
-  referenceId   String?
-  referenceType String?
-  createdAt     DateTime          @default(now())
+  id       Int        @id @default(autoincrement())
+  walletId Int
+  wallet   UserWallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
 
+  type   TransactionType
+  status TransactionStatus @default(PENDING)
+
+  amount    Decimal        @db.Decimal(10, 2)
+  method    PaymentMethod?
+  reference String?
+
+  note      String?
+  createdAt DateTime @default(now())
+
+  @@index([walletId])
   @@map("wallet_transactions")
 }
+
+// ========================
+// ১২. REWARD HISTORY (UNCHANGED)
+// ========================
 
 model RewardHistory {
   id          Int      @id @default(autoincrement())
   userId      Int
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade) // ✅ রিলেশন যোগ করা হয়েছে
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   action      String
   points      Int
   description String?
