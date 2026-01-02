@@ -1,56 +1,25 @@
-require("dotenv").config();
-
 const express = require("express");
-const cors = require("cors");
-const corsOptions = require("./config/corsOptions");
-const appConfig = require("./config/appConfig");
-
-const v1Routes = require("./api/v1/routes");
-const { notFound, errorHandler } = require("./middleware/error.middleware");
-
 const app = express();
 
-app.use(cors(corsOptions));
+const appConfig = require("./config/appConfig");
+
+// middlewares
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-app.get("/health", (req, res) => res.json({ ok: true }));
+// ✅ API PREFIX (single source of truth)
+const PREFIX = appConfig.api?.prefix || "/api/v1";
 
-// ✅ Mount API
-app.use(appConfig.api.prefix, v1Routes);
+// ✅ single main router (Docker/Linux friendly)
+const apiRoutes = require("./api/v1/routes");
+app.use(PREFIX, apiRoutes);
 
-const listEndpoints = require("express-list-endpoints");
-if (process.env.NODE_ENV === "development") {
-  console.log(listEndpoints(app));
-}
-
-
-
-
-// --------------------
-// ✅ GLOBAL REQUEST LOGGER (এখানেই বসাবেন)
-// --------------------
-app.use((req, res, next) => {
-  console.log("\n================ REQUEST ================");
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl}`);
-  console.log("Content-Type:", req.headers["content-type"]);
-  console.log("Headers auth:", req.headers.authorization ? "YES" : "NO");
-  console.log("Body:", req.body);
-  console.log("=========================================");
-  next();
+// not found handler
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    message: `Route not found: ${req.method} ${req.originalUrl}`,
+  });
 });
-
-
-
-
-
-const path = require("path");
-
-app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
-
-
-// ✅ Errors
-app.use(notFound);
-app.use(errorHandler);
 
 module.exports = app;

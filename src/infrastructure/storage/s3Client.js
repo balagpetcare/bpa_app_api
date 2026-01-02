@@ -4,10 +4,11 @@ const appConfig = require("../../config/appConfig");
 const s3Client = new S3Client({
   region: appConfig.storage.region,
   endpoint: appConfig.storage.endpoint,
-  forcePathStyle: true, // MinIO required
+  // MinIO compatibility: use path-style addressing
+  forcePathStyle: appConfig.storage.forcePathStyle ?? true,
   credentials: {
-    accessKeyId: appConfig.storage.accessKey,
-    secretAccessKey: appConfig.storage.secretKey,
+    accessKeyId: appConfig.storage.accessKeyId,
+    secretAccessKey: appConfig.storage.secretAccessKey,
   },
 });
 

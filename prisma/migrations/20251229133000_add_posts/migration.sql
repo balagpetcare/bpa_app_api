@@ -1,0 +1,3 @@
+-- This migration was added for the new Home Feed / Posts feature.
+-- Recommended: run `npx prisma migrate dev` to generate the exact SQL for your environment.
+-- The Prisma schema already contains the source of truth.

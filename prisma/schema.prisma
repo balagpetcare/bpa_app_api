@@ -45,6 +45,19 @@ enum PaymentMethod {
 }
 
 // ========================
+// ১C. PET PROFILE UI SUPPORT ENUMS (NEW)
+// ========================
+
+enum FamilyRelation {
+  OWNER
+  DAD
+  MOM
+  BROTHER
+  SISTER
+  OTHER
+}
+
+// ========================
 // ১B. USER / PROFILE ENUMS (NEW)
 // ========================
 
@@ -65,6 +78,33 @@ enum AuthProvider {
   GOOGLE
   FACEBOOK
   APPLE
+}
+
+// ========================
+// ১D. SOCIAL GRAPH ENUMS (NEW)
+// ========================
+
+enum FriendRequestStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  CANCELED
+}
+
+// ========================
+// ১E. HOME FEED / POSTS (NEW)
+// ========================
+
+enum PostType {
+  TEXT
+  IMAGE
+  VIDEO
+  REEL
+}
+
+enum PostCategory {
+  GENERAL
+  FUNDRAISING
 }
 
 // ========================
@@ -207,12 +247,61 @@ model UserFollow {
   @@map("user_follows")
 }
 
+model UserProfileLike {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  likedById Int
+  createdAt DateTime @default(now())
+
+  user    User @relation("UserProfileLiked", fields: [userId], references: [id], onDelete: Cascade)
+  likedBy User @relation("UserProfileLiker", fields: [likedById], references: [id], onDelete: Cascade)
+
+  @@unique([userId, likedById])
+  @@index([userId])
+  @@index([likedById])
+  @@map("user_profile_likes")
+}
+
+model UserFriendRequest {
+  id         Int                 @id @default(autoincrement())
+  fromUserId Int
+  toUserId   Int
+  status     FriendRequestStatus @default(PENDING)
+  createdAt  DateTime            @default(now())
+  updatedAt  DateTime            @updatedAt
+
+  fromUser User @relation("FriendRequestFrom", fields: [fromUserId], references: [id], onDelete: Cascade)
+  toUser   User @relation("FriendRequestTo", fields: [toUserId], references: [id], onDelete: Cascade)
+
+  @@unique([fromUserId, toUserId])
+  @@index([toUserId])
+  @@index([fromUserId])
+  @@map("user_friend_requests")
+}
+
+model UserFriend {
+  id        Int      @id @default(autoincrement())
+  userAId   Int
+  userBId   Int
+  createdAt DateTime @default(now())
+
+  userA User @relation("UserFriendA", fields: [userAId], references: [id], onDelete: Cascade)
+  userB User @relation("UserFriendB", fields: [userBId], references: [id], onDelete: Cascade)
+
+  @@unique([userAId, userBId])
+  @@index([userAId])
+  @@index([userBId])
+  @@map("user_friends")
+}
+
 model Achievement {
-  id           Int     @id @default(autoincrement())
-  code         String  @unique
-  title        String
-  description  String?
-  pointsReward Int     @default(0)
+  id             Int     @id @default(autoincrement())
+  code           String  @unique
+  title          String
+  description    String?
+  requiredPoints Int     @default(0)
+  pointsReward   Int     @default(0)
+  howTo          String?
 
   iconMediaId Int?
   iconMedia   Media? @relation("AchievementIcon", fields: [iconMediaId], references: [id])
@@ -274,19 +363,229 @@ model User {
   followsFollowing UserFollow[] @relation("UserFollowing")
   followsFollowers UserFollow[] @relation("UserFollowers")
 
+  profileLikesReceived UserProfileLike[] @relation("UserProfileLiked")
+  profileLikesGiven    UserProfileLike[] @relation("UserProfileLiker")
+
+  friendRequestsSent     UserFriendRequest[] @relation("FriendRequestFrom")
+  friendRequestsReceived UserFriendRequest[] @relation("FriendRequestTo")
+
+  friendsA UserFriend[] @relation("UserFriendA")
+  friendsB UserFriend[] @relation("UserFriendB")
+
   // Existing relations
   pets            Pet[]
   wallet          UserWallet?
   rewardHistories RewardHistory[]
 
+  // Home feed / posts
+  posts            Post[]
+  postLikes        PostLike[]
+  postComments     PostComment[]
+  // postComments     PostComment[]
+  postCommentLikes PostCommentLike[]
   // NEW: opposite side of Media.owner
-  uploadedMedia Media[] @relation("UserUploadedMedia")
+  uploadedMedia    Media[]           @relation("UserUploadedMedia")
 
   // Premium profile features
   achievements UserAchievement[]
   galleryItems UserGalleryItem[]
 
+  // FUNDRAISING (Phase A) - opposite relation fields
+  fundraisingAccount FundraisingAccount?
+  donations          Donation[]
+
   @@map("users")
+}
+
+// ========================
+// 5B. POSTS / FEED (NEW)
+// ========================
+
+model Post {
+  id       Int  @id @default(autoincrement())
+  authorId Int
+  author   User @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  type     PostType     @default(TEXT)
+  category PostCategory @default(GENERAL)
+  caption  String?      @db.Text
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  media    PostMedia[]
+  likes    PostLike[]
+  comments PostComment[]
+
+  // FUNDRAISING (Phase A) - opposite relation field
+  fundraisingCampaign FundraisingCampaign?
+
+  @@index([authorId, createdAt])
+  @@map("posts")
+}
+
+model PostMedia {
+  id     Int  @id @default(autoincrement())
+  postId Int
+  post   Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  mediaId Int
+  media   Media @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+
+  order Int @default(0)
+
+  @@unique([postId, order])
+  @@index([postId])
+  @@map("post_media")
+}
+
+model PostLike {
+  id        Int      @id @default(autoincrement())
+  postId    Int
+  post      Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([postId, userId], name: "postId_userId")
+  @@index([userId])
+  @@map("post_likes")
+}
+
+model PostComment {
+  id     Int  @id @default(autoincrement())
+  postId Int
+  post   Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  userId Int
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  parentId Int?
+  parent   PostComment?  @relation("PostCommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies  PostComment[] @relation("PostCommentReplies")
+
+  likes PostCommentLike[] // ✅ একবার
+
+  text      String    @db.Text
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  @@index([postId, createdAt])
+  @@index([userId])
+  @@index([parentId])
+  @@map("post_comments")
+}
+
+model PostCommentLike {
+  id        Int         @id @default(autoincrement())
+  commentId Int
+  comment   PostComment @relation(fields: [commentId], references: [id], onDelete: Cascade)
+
+  userId Int
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([commentId, userId])
+  @@index([userId])
+  @@map("post_comment_likes")
+}
+
+// ========================
+// 5C. FUNDRAISING (PHASE A)
+// ========================
+
+enum FundraisingAccountStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+enum FundraisingCampaignStatus {
+  ACTIVE
+  PAUSED
+  ENDED
+}
+
+model FundraisingAccount {
+  id        Int                      @id @default(autoincrement())
+  userId    Int                      @unique
+  user      User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status    FundraisingAccountStatus @default(PENDING)
+  createdAt DateTime                 @default(now())
+  updatedAt DateTime                 @updatedAt
+  deletedAt DateTime?
+
+  documents FundraisingVerificationDocument[]
+  campaigns FundraisingCampaign[]
+
+  @@map("fundraising_accounts")
+}
+
+model FundraisingVerificationDocument {
+  id        Int                @id @default(autoincrement())
+  accountId Int
+  account   FundraisingAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  title     String
+  mediaId   Int
+  media     Media              @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+  createdAt DateTime           @default(now())
+  deletedAt DateTime?
+
+  @@index([accountId])
+  @@map("fundraising_verification_documents")
+}
+
+model FundraisingCampaign {
+  id        Int                @id @default(autoincrement())
+  postId    Int                @unique
+  post      Post               @relation(fields: [postId], references: [id], onDelete: Cascade)
+  accountId Int
+  account   FundraisingAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  title        String
+  targetAmount Int
+  deadline     DateTime
+  status       FundraisingCampaignStatus @default(ACTIVE)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  donations Donation[]
+  stats     FundraisingCampaignStats?
+
+  @@index([accountId, createdAt])
+  @@map("fundraising_campaigns")
+}
+
+model FundraisingCampaignStats {
+  campaignId     Int                 @id
+  campaign       FundraisingCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  raisedAmount   Int                 @default(0)
+  donorsCount    Int                 @default(0)
+  lastDonationAt DateTime?
+
+  @@map("fundraising_campaign_stats")
+}
+
+model Donation {
+  id         Int                 @id @default(autoincrement())
+  campaignId Int
+  campaign   FundraisingCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  donorId    Int
+  donor      User                @relation(fields: [donorId], references: [id], onDelete: Cascade)
+
+  amount Int
+  status TransactionStatus @default(SUCCESS)
+
+  createdAt DateTime @default(now())
+
+  @@index([campaignId, createdAt])
+  @@index([donorId])
+  @@map("donations")
 }
 
 // ========================
@@ -306,11 +605,17 @@ model Media {
   deletedAt DateTime?
 
   // relations
-  petProfilePic    Pet?              @relation("PetProfilePic")
-  userAvatars      UserProfile[]     @relation("UserAvatar")
-  userCovers       UserProfile[]     @relation("UserCover")
-  galleryItems     UserGalleryItem[] @relation("UserGalleryMedia")
-  achievementIcons Achievement[]     @relation("AchievementIcon")
+  petProfilePic                    Pet?                              @relation("PetProfilePic")
+  userAvatars                      UserProfile[]                     @relation("UserAvatar")
+  userCovers                       UserProfile[]                     @relation("UserCover")
+  galleryItems                     UserGalleryItem[]                 @relation("UserGalleryMedia")
+  achievementIcons                 Achievement[]                     @relation("AchievementIcon")
+  // NEW: posts can reference uploaded media (images/videos/reels)
+  postMedia                        PostMedia[]
+  // FUNDRAISING (Phase A) - opposite relation field
+  fundraisingVerificationDocuments FundraisingVerificationDocument[]
+  // Pet profile: family member avatar (optional)
+  petFamilyAvatars                 PetFamilyMember[]                 @relation("PetFamilyAvatar")
 
   @@index([ownerUserId])
   @@map("media")
@@ -336,7 +641,6 @@ model Pet {
   profilePicId Int?   @unique
   profilePic   Media? @relation("PetProfilePic", fields: [profilePicId], references: [id])
 
-
   name            String
   sex             Gender    @default(UNKNOWN)
   dateOfBirth     DateTime?
@@ -356,11 +660,32 @@ model Pet {
   dewormingRecords DewormingRecord[]
   medicalHistories MedicalHistory[]
 
+  // UI: family avatars on pet profile screen
+  familyMembers PetFamilyMember[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   deleted   Boolean  @default(false)
 
   @@map("pets")
+}
+
+model PetFamilyMember {
+  id    Int @id @default(autoincrement())
+  petId Int
+  pet   Pet @relation(fields: [petId], references: [id], onDelete: Cascade)
+
+  relation FamilyRelation @default(OTHER)
+  name     String
+
+  // optional avatar media
+  avatarMediaId Int?
+  avatarMedia   Media? @relation("PetFamilyAvatar", fields: [avatarMediaId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  @@index([petId])
+  @@map("pet_family_members")
 }
 
 // ========================

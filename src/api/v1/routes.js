@@ -9,6 +9,8 @@ router.use("/user/pets", require("./modules/pets/pets.routes"));
 
 router.use("/media", require("./modules/media/media.routes"));
 
+router.use("/posts", require("./modules/posts/posts.routes"));
+router.use("/fundraising", require("./modules/fundraising/fundraising.routes"));
 
 
 module.exports = router;
