@@ -18,6 +18,98 @@ exports.getFeed = async (req, res) => {
   }
 };
 
+// GET /api/v1/posts/user/:userId
+exports.getUserFeed = async (req, res) => {
+  try {
+    const meId = req.user?.id;
+    if (!meId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+    const userId = Number(req.params.userId);
+    if (!userId) return res.status(400).json({ success: false, message: 'Invalid userId' });
+
+    const posts = await service.getUserFeed({
+      meId,
+      userId,
+      limit: req.query.limit,
+      cursor: req.query.cursor,
+    });
+
+    return res.status(200).json({ success: true, data: posts });
+  } catch (e) {
+    console.error('posts.getUserFeed error:', e);
+    const status = e.statusCode || 500;
+    return res.status(status).json({ success: false, message: e.message || 'Failed' });
+  }
+};
+
+// GET /api/v1/posts/:postId
+exports.getById = async (req, res) => {
+  try {
+    const meId = req.user?.id;
+    if (!meId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+    const postId = Number(req.params.postId);
+    if (!postId) return res.status(400).json({ success: false, message: 'Invalid postId' });
+
+    const post = await service.getPostById({ meId, postId });
+    return res.status(200).json({ success: true, data: post });
+  } catch (e) {
+    console.error('posts.getById error:', e);
+    const status = e.statusCode || 500;
+    return res.status(status).json({ success: false, message: e.message || 'Failed' });
+  }
+};
+
+// GET /api/v1/posts/user/:userId/photos
+exports.getUserPhotos = async (req, res) => {
+  try {
+    const meId = req.user?.id;
+    if (!meId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+    const userId = Number(req.params.userId);
+    if (!userId) return res.status(400).json({ success: false, message: 'Invalid userId' });
+
+    const data = await service.getUserMediaGallery({
+      meId,
+      userId,
+      mediaType: 'IMAGE',
+      limit: req.query.limit,
+      cursor: req.query.cursor,
+    });
+
+    return res.status(200).json({ success: true, data });
+  } catch (e) {
+    console.error('posts.getUserPhotos error:', e);
+    const status = e.statusCode || 500;
+    return res.status(status).json({ success: false, message: e.message || 'Failed' });
+  }
+};
+
+// GET /api/v1/posts/user/:userId/videos
+exports.getUserVideos = async (req, res) => {
+  try {
+    const meId = req.user?.id;
+    if (!meId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+    const userId = Number(req.params.userId);
+    if (!userId) return res.status(400).json({ success: false, message: 'Invalid userId' });
+
+    const data = await service.getUserMediaGallery({
+      meId,
+      userId,
+      mediaType: 'VIDEO',
+      limit: req.query.limit,
+      cursor: req.query.cursor,
+    });
+
+    return res.status(200).json({ success: true, data });
+  } catch (e) {
+    console.error('posts.getUserVideos error:', e);
+    const status = e.statusCode || 500;
+    return res.status(status).json({ success: false, message: e.message || 'Failed' });
+  }
+};
+
 exports.create = async (req, res) => {
   try {
     const userId = req.user?.id;

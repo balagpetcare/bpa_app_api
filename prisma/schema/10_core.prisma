@@ -1,0 +1,585 @@
+// AUTO-SPLIT from original schema.prisma
+// Module: core
+
+enum Gender {
+  MALE
+  FEMALE
+  UNKNOWN
+}
+enum PetStatus {
+  ACTIVE
+  DECEASED
+  LOST
+  ADOPTED
+}
+enum FamilyRelation {
+  OWNER
+  DAD
+  MOM
+  BROTHER
+  SISTER
+  OTHER
+}
+enum UserStatus {
+  ACTIVE
+  BLOCKED
+  DELETED
+}
+enum ProfileVisibility {
+  PUBLIC
+  PRIVATE
+  FOLLOWERS_ONLY
+}
+enum AuthProvider {
+  LOCAL
+  GOOGLE
+  FACEBOOK
+  APPLE
+}
+enum FriendRequestStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  CANCELED
+}
+enum PostType {
+  TEXT
+  IMAGE
+  VIDEO
+  REEL
+}
+enum PostCategory {
+  GENERAL
+  FUNDRAISING
+  FUNDRAISING_UPDATE
+}
+model AnimalType {
+  id           Int           @id @default(autoincrement())
+  name         String        @unique
+  breeds       Breed[]
+  pets         Pet[]
+  vaccineTypes VaccineType[]
+
+  @@map("animal_types")
+}
+model Breed {
+  id           Int        @id @default(autoincrement())
+  name         String
+  animalTypeId Int
+  animalType   AnimalType @relation(fields: [animalTypeId], references: [id])
+  pets         Pet[]
+
+  @@unique([name, animalTypeId])
+  @@map("breeds")
+}
+model UserAuth {
+  id     Int  @id @default(autoincrement())
+  userId Int  @unique
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  provider AuthProvider @default(LOCAL)
+
+  email        String? @unique
+  phone        String? @unique
+  passwordHash String? // LOCAL only
+
+  passwordUpdatedAt DateTime?
+  emailVerifiedAt   DateTime?
+  phoneVerifiedAt   DateTime?
+
+  lastLoginAt    DateTime?
+  failedAttempts Int       @default(0)
+  lockedUntil    DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([email])
+  @@index([phone])
+  @@map("user_auth")
+}
+model UserProfile {
+  id     Int  @id @default(autoincrement())
+  userId Int  @unique
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  displayName String
+  username    String  @unique
+  bio         String? @db.Text
+
+  visibility ProfileVisibility @default(PUBLIC)
+
+  // privacy flags
+  showEmail Boolean @default(false)
+  showPhone Boolean @default(false)
+
+  // Media: avatar & cover
+  avatarMediaId Int?
+  avatarMedia   Media? @relation("UserAvatar", fields: [avatarMediaId], references: [id])
+
+  coverMediaId Int?
+  coverMedia   Media? @relation("UserCover", fields: [coverMediaId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([username])
+  @@map("user_profiles")
+}
+model UserStatsCache {
+  userId Int  @id
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  followersCount Int @default(0)
+  followingCount Int @default(0)
+  petsCount      Int @default(0)
+
+  // Mirror/cache for fast profile reads (source of truth: UserWallet.points)
+  pawPoints Int @default(0)
+
+  // Cached rank (optional)
+  rankGlobal Int?
+
+  updatedAt DateTime @updatedAt
+
+  @@map("user_stats_cache")
+}
+model UserSession {
+  id     Int  @id @default(autoincrement())
+  userId Int
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Store hash only (never store raw refresh token)
+  refreshTokenHash String @unique
+
+  deviceId  String?
+  userAgent String?
+  ip        String?
+
+  createdAt DateTime  @default(now())
+  expiresAt DateTime
+  revokedAt DateTime?
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("user_sessions")
+}
+model UserFollow {
+  id          Int      @id @default(autoincrement())
+  followerId  Int
+  followingId Int
+  createdAt   DateTime @default(now())
+
+  follower  User @relation("UserFollowing", fields: [followerId], references: [id], onDelete: Cascade)
+  following User @relation("UserFollowers", fields: [followingId], references: [id], onDelete: Cascade)
+
+  @@unique([followerId, followingId])
+  @@index([followingId])
+  @@index([followerId])
+  @@map("user_follows")
+}
+model UserProfileLike {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  likedById Int
+  createdAt DateTime @default(now())
+
+  user    User @relation("UserProfileLiked", fields: [userId], references: [id], onDelete: Cascade)
+  likedBy User @relation("UserProfileLiker", fields: [likedById], references: [id], onDelete: Cascade)
+
+  @@unique([userId, likedById])
+  @@index([userId])
+  @@index([likedById])
+  @@map("user_profile_likes")
+}
+model UserFriendRequest {
+  id         Int                 @id @default(autoincrement())
+  fromUserId Int
+  toUserId   Int
+  status     FriendRequestStatus @default(PENDING)
+  createdAt  DateTime            @default(now())
+  updatedAt  DateTime            @updatedAt
+
+  fromUser User @relation("FriendRequestFrom", fields: [fromUserId], references: [id], onDelete: Cascade)
+  toUser   User @relation("FriendRequestTo", fields: [toUserId], references: [id], onDelete: Cascade)
+
+  @@unique([fromUserId, toUserId])
+  @@index([toUserId])
+  @@index([fromUserId])
+  @@map("user_friend_requests")
+}
+model UserFriend {
+  id        Int      @id @default(autoincrement())
+  userAId   Int
+  userBId   Int
+  createdAt DateTime @default(now())
+
+  userA User @relation("UserFriendA", fields: [userAId], references: [id], onDelete: Cascade)
+  userB User @relation("UserFriendB", fields: [userBId], references: [id], onDelete: Cascade)
+
+  @@unique([userAId, userBId])
+  @@index([userAId])
+  @@index([userBId])
+  @@map("user_friends")
+}
+model Achievement {
+  id             Int     @id @default(autoincrement())
+  code           String  @unique
+  title          String
+  description    String?
+  requiredPoints Int     @default(0)
+  pointsReward   Int     @default(0)
+  howTo          String?
+
+  iconMediaId Int?
+  iconMedia   Media? @relation("AchievementIcon", fields: [iconMediaId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  users UserAchievement[]
+
+  @@map("achievements")
+}
+model UserAchievement {
+  id            Int      @id @default(autoincrement())
+  userId        Int
+  achievementId Int
+  unlockedAt    DateTime @default(now())
+
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  achievement Achievement @relation(fields: [achievementId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, achievementId])
+  @@index([userId])
+  @@map("user_achievements")
+}
+model UserGalleryItem {
+  id     Int  @id @default(autoincrement())
+  userId Int
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  mediaId Int
+  media   Media @relation("UserGalleryMedia", fields: [mediaId], references: [id], onDelete: Cascade)
+
+  caption   String?
+  createdAt DateTime @default(now())
+  deleted   Boolean  @default(false)
+
+  @@index([userId, createdAt])
+  @@map("user_gallery_items")
+}
+model User {
+  id        Int        @id @default(autoincrement())
+  status    UserStatus @default(ACTIVE)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  // Split tables (keep User thin)
+  auth     UserAuth?
+  profile  UserProfile?
+  stats    UserStatsCache?
+  sessions UserSession[]
+
+  // Social graph
+  followsFollowing UserFollow[] @relation("UserFollowing")
+  followsFollowers UserFollow[] @relation("UserFollowers")
+
+  profileLikesReceived UserProfileLike[] @relation("UserProfileLiked")
+  profileLikesGiven    UserProfileLike[] @relation("UserProfileLiker")
+
+  friendRequestsSent     UserFriendRequest[] @relation("FriendRequestFrom")
+  friendRequestsReceived UserFriendRequest[] @relation("FriendRequestTo")
+
+  friendsA UserFriend[] @relation("UserFriendA")
+  friendsB UserFriend[] @relation("UserFriendB")
+
+  // Existing relations
+  pets                   Pet[]
+  wallet                 UserWallet?
+  walletWithdrawRequests WalletWithdrawRequest[]
+  rewardHistories        RewardHistory[]
+
+  // Home feed / posts
+  posts                               Post[]
+  postLikes                           PostLike[]
+  postComments                        PostComment[]
+  // postComments     PostComment[]
+  postCommentLikes                    PostCommentLike[]
+  // NEW: opposite side of Media.owner
+  uploadedMedia                       Media[]                       @relation("UserUploadedMedia")
+  fundraisingAccountStatusLogsAsAdmin FundraisingAccountStatusLog[] @relation("FundraisingAccountStatusLogAdminUser")
+  fundraisingWithdrawRequestsAsAdmin  FundraisingWithdrawRequest[]  @relation("FundraisingWithdrawAdminUser")
+  walletWithdrawRequestsAsAdmin       WalletWithdrawRequest[]       @relation("WalletWithdrawAdminUser")
+
+  // Premium profile features
+  achievements UserAchievement[]
+  galleryItems UserGalleryItem[]
+
+  // FUNDRAISING (Phase A) - opposite relation fields
+  fundraisingAccount FundraisingAccount?
+  donations          Donation[]
+
+  // REPORTS (Phase B) - opposite relation field
+  reports Report[] @relation("UserReports")
+
+  @@map("users")
+}
+model Post {
+  id       Int  @id @default(autoincrement())
+  authorId Int
+  author   User @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  type     PostType     @default(TEXT)
+  category PostCategory @default(GENERAL)
+  caption  String?      @db.Text
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  media    PostMedia[]
+  likes    PostLike[]
+  comments PostComment[]
+
+  // FUNDRAISING (Phase A) - opposite relation field
+  fundraisingCampaign FundraisingCampaign?
+
+  // FUNDRAISING UPDATES (Phase B)
+  fundraisingUpdate FundraisingUpdate?
+
+  @@index([authorId, createdAt])
+  @@map("posts")
+}
+model PostMedia {
+  id     Int  @id @default(autoincrement())
+  postId Int
+  post   Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  mediaId Int
+  media   Media @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+
+  order Int @default(0)
+
+  @@unique([postId, order])
+  @@index([postId])
+  @@map("post_media")
+}
+model PostLike {
+  id        Int      @id @default(autoincrement())
+  postId    Int
+  post      Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([postId, userId], name: "postId_userId")
+  @@index([userId])
+  @@map("post_likes")
+}
+model PostComment {
+  id     Int  @id @default(autoincrement())
+  postId Int
+  post   Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  userId Int
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  parentId Int?
+  parent   PostComment?  @relation("PostCommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies  PostComment[] @relation("PostCommentReplies")
+
+  likes PostCommentLike[] // ✅ একবার
+
+  text      String    @db.Text
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  @@index([postId, createdAt])
+  @@index([userId])
+  @@index([parentId])
+  @@map("post_comments")
+}
+model PostCommentLike {
+  id        Int         @id @default(autoincrement())
+  commentId Int
+  comment   PostComment @relation(fields: [commentId], references: [id], onDelete: Cascade)
+
+  userId Int
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([commentId, userId])
+  @@index([userId])
+  @@map("post_comment_likes")
+}
+model Media {
+  id        Int      @id @default(autoincrement())
+  url       String
+  key       String?
+  type      String
+  createdAt DateTime @default(now())
+
+  ownerUserId Int
+  owner       User @relation("UserUploadedMedia", fields: [ownerUserId], references: [id], onDelete: Cascade)
+
+  deletedAt DateTime?
+
+  // relations
+  petProfilePic                    Pet?                              @relation("PetProfilePic")
+  userAvatars                      UserProfile[]                     @relation("UserAvatar")
+  userCovers                       UserProfile[]                     @relation("UserCover")
+  galleryItems                     UserGalleryItem[]                 @relation("UserGalleryMedia")
+  achievementIcons                 Achievement[]                     @relation("AchievementIcon")
+  // NEW: posts can reference uploaded media (images/videos/reels)
+  postMedia                        PostMedia[]
+  // FUNDRAISING (Phase A) - opposite relation field
+  fundraisingVerificationDocuments FundraisingVerificationDocument[]
+  // FUNDRAISING PAYOUT - proof uploads (optional)
+  fundraisingPayoutProofLogs       FundraisingPayoutTransferLog[]
+  // Pet profile: family member avatar (optional)
+  petFamilyAvatars                 PetFamilyMember[]                 @relation("PetFamilyAvatar")
+
+  @@index([ownerUserId])
+  @@map("media")
+}
+model Pet {
+  id     Int  @id @default(autoincrement())
+  userId Int
+  user   User @relation(fields: [userId], references: [id])
+
+  animalTypeId Int
+  animalType   AnimalType @relation(fields: [animalTypeId], references: [id])
+
+  breedId Int?
+  breed   Breed? @relation(fields: [breedId], references: [id])
+
+  // ✅ 1 pet = 1 profile pic (one-to-one) রাখতে চাইলে @unique ঠিক আছে
+
+  profilePicId Int?   @unique
+  profilePic   Media? @relation("PetProfilePic", fields: [profilePicId], references: [id])
+
+  name            String
+  sex             Gender    @default(UNKNOWN)
+  dateOfBirth     DateTime?
+  microchipNumber String?   @unique
+
+  isRescue   Boolean @default(false)
+  isNeutered Boolean @default(false)
+
+  foodHabits      String? @db.Text
+  healthDisorders String? @db.Text
+  notes           String? @db.Text
+
+  status PetStatus @default(ACTIVE)
+
+  weights          PetWeight[]
+  vaccinations     Vaccination[]
+  dewormingRecords DewormingRecord[]
+  medicalHistories MedicalHistory[]
+
+  // UI: family avatars on pet profile screen
+  familyMembers PetFamilyMember[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  deleted   Boolean  @default(false)
+
+  @@map("pets")
+}
+model PetFamilyMember {
+  id    Int @id @default(autoincrement())
+  petId Int
+  pet   Pet @relation(fields: [petId], references: [id], onDelete: Cascade)
+
+  relation FamilyRelation @default(OTHER)
+  name     String
+
+  // optional avatar media
+  avatarMediaId Int?
+  avatarMedia   Media? @relation("PetFamilyAvatar", fields: [avatarMediaId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  @@index([petId])
+  @@map("pet_family_members")
+}
+model PetWeight {
+  id    Int @id @default(autoincrement())
+  petId Int
+  pet   Pet @relation(fields: [petId], references: [id], onDelete: Cascade)
+
+  weightKg   Float
+  notes      String?
+  recordedAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  @@map("pet_weights")
+}
+model VaccineType {
+  id                  Int           @id @default(autoincrement())
+  name                String        @unique
+  targetAnimalTypeId  Int?
+  targetAnimalType    AnimalType?   @relation(fields: [targetAnimalTypeId], references: [id])
+  defaultIntervalDays Int           @default(365)
+  description         String?
+  vaccinations        Vaccination[]
+
+  @@map("vaccine_types")
+}
+model Vaccination {
+  id             Int         @id @default(autoincrement())
+  petId          Int
+  pet            Pet         @relation(fields: [petId], references: [id], onDelete: Cascade)
+  vaccineTypeId  Int
+  vaccineType    VaccineType @relation(fields: [vaccineTypeId], references: [id])
+  administeredAt DateTime    @default(now())
+  nextDueDate    DateTime?
+  batchNumber    String?
+  vetClinic      String?
+  notes          String?
+  createdAt      DateTime    @default(now())
+
+  @@map("vaccinations")
+}
+model DewormingRecord {
+  id             Int       @id @default(autoincrement())
+  petId          Int
+  pet            Pet       @relation(fields: [petId], references: [id], onDelete: Cascade)
+  medicationName String
+  dosage         String?
+  weightAtTime   Float?
+  administeredAt DateTime  @default(now())
+  nextDueDate    DateTime?
+  notes          String?
+  createdAt      DateTime  @default(now())
+
+  @@map("deworming_records")
+}
+model MedicalHistory {
+  id           Int       @id @default(autoincrement())
+  petId        Int
+  pet          Pet       @relation(fields: [petId], references: [id], onDelete: Cascade)
+  condition    String
+  treatment    String?   @db.Text
+  doctorName   String?
+  clinicName   String?
+  visitDate    DateTime  @default(now())
+  followUpDate DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@map("medical_histories")
+}
+model RewardHistory {
+  id          Int      @id @default(autoincrement())
+  userId      Int
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  action      String
+  points      Int
+  description String?
+  referenceId String?
+  createdAt   DateTime @default(now())
+
+  @@map("reward_histories")
+}

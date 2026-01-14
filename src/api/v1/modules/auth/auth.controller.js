@@ -45,7 +45,9 @@ exports.register = async (req, res) => {
     const { name, email, phone, password, address } = req.body;
 
     const emailNorm = (email || "").trim().toLowerCase();
-    const phoneNorm = (phone || "").trim();
+    const phoneNormRaw = (phone || "").trim();
+    // Normalize phone to digits-only for matching stored values consistently (e.g., "+880 17..." -> "88017...")
+    const phoneNorm = phoneNormRaw ? phoneNormRaw.replace(/\D/g, "") : "";
 
     if (!emailNorm && !phoneNorm) {
       return res.status(400).json({ success: false, message: "email or phone is required" });
@@ -59,7 +61,7 @@ exports.register = async (req, res) => {
     const existingAuth = await prisma.userAuth.findFirst({
       where: {
         OR: [
-          emailNorm ? { email: emailNorm } : undefined,
+          emailNorm ? { email: { equals: emailNorm, mode: "insensitive" } } : undefined,
           phoneNorm ? { phone: phoneNorm } : undefined,
         ].filter(Boolean),
       },
@@ -140,7 +142,9 @@ exports.login = async (req, res) => {
     const { email, phone, password } = req.body;
 
     const emailNorm = (email || "").trim().toLowerCase();
-    const phoneNorm = (phone || "").trim();
+    const phoneNormRaw = (phone || "").trim();
+    // Normalize phone to digits-only for matching stored values consistently (e.g., "+880 17..." -> "88017...")
+    const phoneNorm = phoneNormRaw ? phoneNormRaw.replace(/\D/g, "") : "";
 
     if (!emailNorm && !phoneNorm) {
       return res.status(400).json({ success: false, message: "email or phone is required" });
@@ -153,7 +157,7 @@ exports.login = async (req, res) => {
     const authRow = await prisma.userAuth.findFirst({
       where: {
         OR: [
-          emailNorm ? { email: emailNorm } : undefined,
+          emailNorm ? { email: { equals: emailNorm, mode: "insensitive" } } : undefined,
           phoneNorm ? { phone: phoneNorm } : undefined,
         ].filter(Boolean),
       },
@@ -177,6 +181,15 @@ exports.login = async (req, res) => {
     }
 
     const token = jwt.sign({ id: authRow.user.id }, appConfig.jwt.secret, { expiresIn: "7d" });
+
+    // ✅ Also set HttpOnly cookie (keeps old Bearer flow intact)
+    res.cookie("access_token", token, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+      path: "/",
+    });
 
     return res.status(200).json({
       success: true,
@@ -216,7 +229,65 @@ exports.getProfile = async (req, res) => {
 
     if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
-    return res.status(200).json({ success: true, data: user });
+    // Phase-1 admin access (no schema change):
+    // - ADMIN_USER_IDS: comma-separated user IDs
+    // - ADMIN_PHONES: comma-separated phones (supports +880 / spaces; compared by digits)
+    // - ADMIN_EMAILS: comma-separated emails (lowercased)
+    const allowIds = String(process.env.ADMIN_USER_IDS || "")
+      .split(",")
+      .map((x) => Number(x.trim()))
+      .filter(Boolean);
+
+    const allowPhones = String(process.env.ADMIN_PHONES || "")
+      .split(",")
+      .map((x) => String(x).trim())
+      .filter(Boolean)
+      .map((x) => x.replace(/\D/g, ""));
+
+    const allowEmails = String(process.env.ADMIN_EMAILS || "")
+      .split(",")
+      .map((x) => String(x).trim().toLowerCase())
+      .filter(Boolean);
+
+    const userPhoneRaw = (
+      user?.auth?.phone ||
+      user?.auth?.mobile ||
+      user?.phone ||
+      user?.profile?.phone ||
+      ""
+    );
+    let userPhoneDigits = String(userPhoneRaw).replace(/\D/g, "");
+    // BD normalize: if starts with 880, compare also last 11 digits
+    const userPhoneLast11 = userPhoneDigits.length > 11 ? userPhoneDigits.slice(-11) : userPhoneDigits;
+
+    const userEmail = String(user?.auth?.email || user?.email || "").toLowerCase();
+
+    const isAdmin =
+      allowIds.includes(user.id) ||
+      (userPhoneDigits && allowPhones.includes(userPhoneDigits)) ||
+      (userPhoneLast11 && allowPhones.includes(userPhoneLast11)) ||
+      (userEmail && allowEmails.includes(userEmail));
+
+    const role = isAdmin ? "ADMIN" : "USER";
+
+    const permissions = role === "ADMIN"
+      ? [
+          "dashboard.read",
+          "branch.read",
+          "branch.write",
+          "staff.read",
+          "staff.write",
+          "wallet.read",
+          "wallet.withdraw_request.read",
+          "wallet.withdraw.approve",
+          "fundraising.read",
+          "fundraising.verify",
+          "users.read",
+          "settings.write",
+        ]
+      : [];
+
+    return res.status(200).json({ success: true, data: user, role, permissions });
   } catch (error) {
     console.error("getProfile Error:", error);
     return res.status(500).json({ success: false, message: "Server Error" });

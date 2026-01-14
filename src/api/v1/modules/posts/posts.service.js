@@ -15,7 +15,9 @@ function normalizePostCategory(category) {
 async function getFeed({ userId, limit = 50, cursor }) {
   // Cursor pagination (optional)
   const take = Math.min(Number(limit) || 50, 100);
-  const where = { deletedAt: null };
+  // Exclude FUNDRAISING_UPDATE posts from the normal feed.
+  // These are campaign updates and must only appear inside the campaign details screen.
+  const where = { deletedAt: null, category: { not: 'FUNDRAISING_UPDATE' } };
 
   const args = {
     where,
@@ -39,7 +41,36 @@ async function getFeed({ userId, limit = 50, cursor }) {
         include: { media: { select: { id: true, url: true, type: true } } },
       },
       fundraisingCampaign: {
-        select: { id: true },
+        select: {
+          id: true,
+          title: true,
+          targetAmount: true,
+          deadline: true,
+          // category: true,
+          locationText: true,
+          account: { select: { status: true } },
+          stats: { select: { raisedAmount: true, donorsCount: true } },
+          donations: {
+            take: 3,
+            orderBy: { createdAt: 'desc' },
+            select: {
+              amount: true,
+              createdAt: true,
+              donor: {
+                select: {
+                  id: true,
+                  profile: {
+                    select: {
+                      displayName: true,
+                      username: true,
+                      avatarMedia: { select: { url: true } },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
       },
       // Like button state for the current user (optional)
       likes: userId
@@ -66,6 +97,219 @@ async function getFeed({ userId, limit = 50, cursor }) {
     // keep payload small
     likes: undefined,
   }));
+}
+
+async function getUserFeed({ meId, userId, limit = 50, cursor }) {
+  const take = Math.min(Number(limit) || 50, 100);
+  const where = {
+    deletedAt: null,
+    authorId: Number(userId),
+    category: { not: 'FUNDRAISING_UPDATE' },
+  };
+
+  const args = {
+    where,
+    orderBy: { createdAt: 'desc' },
+    take,
+    include: {
+      author: {
+        select: {
+          id: true,
+          profile: {
+            select: {
+              displayName: true,
+              username: true,
+              avatarMedia: { select: { url: true } },
+            },
+          },
+        },
+      },
+      media: {
+        orderBy: { order: 'asc' },
+        include: { media: { select: { id: true, url: true, type: true } } },
+      },
+      fundraisingCampaign: {
+        select: {
+          id: true,
+          title: true,
+          targetAmount: true,
+          deadline: true,
+          locationText: true,
+          account: { select: { status: true } },
+          stats: { select: { raisedAmount: true, donorsCount: true } },
+          donations: {
+            take: 3,
+            orderBy: { createdAt: 'desc' },
+            select: {
+              amount: true,
+              createdAt: true,
+              donor: {
+                select: {
+                  id: true,
+                  profile: {
+                    select: {
+                      displayName: true,
+                      username: true,
+                      avatarMedia: { select: { url: true } },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      likes: meId
+        ? {
+            where: { userId: Number(meId) },
+            select: { id: true },
+            take: 1,
+          }
+        : false,
+      _count: { select: { likes: true, comments: true } },
+    },
+  };
+
+  if (cursor) {
+    args.skip = 1;
+    args.cursor = { id: Number(cursor) };
+  }
+
+  const posts = await prisma.post.findMany(args);
+  return posts.map((p) => ({
+    ...p,
+    isLikedByMe: Array.isArray(p.likes) && p.likes.length > 0,
+    likes: undefined,
+  }));
+}
+
+async function getPostById({ meId, postId }) {
+  const id = Number(postId);
+  const post = await prisma.post.findFirst({
+    // Keep fundraising updates out of normal single post API.
+    where: { id, deletedAt: null, category: { not: 'FUNDRAISING_UPDATE' } },
+    include: {
+      author: {
+        select: {
+          id: true,
+          profile: {
+            select: {
+              displayName: true,
+              username: true,
+              avatarMedia: { select: { url: true } },
+            },
+          },
+        },
+      },
+      media: {
+        orderBy: { order: 'asc' },
+        include: { media: { select: { id: true, url: true, type: true } } },
+      },
+      fundraisingCampaign: {
+        select: {
+          id: true,
+          title: true,
+          targetAmount: true,
+          deadline: true,
+          locationText: true,
+          account: { select: { status: true } },
+          stats: { select: { raisedAmount: true, donorsCount: true } },
+          donations: {
+            take: 3,
+            orderBy: { createdAt: 'desc' },
+            select: {
+              amount: true,
+              createdAt: true,
+              donor: {
+                select: {
+                  id: true,
+                  profile: {
+                    select: {
+                      displayName: true,
+                      username: true,
+                      avatarMedia: { select: { url: true } },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      likes: meId
+        ? {
+            where: { userId: Number(meId) },
+            select: { id: true },
+            take: 1,
+          }
+        : false,
+      _count: { select: { likes: true, comments: true } },
+    },
+  });
+
+  if (!post) {
+    const err = new Error('Post not found');
+    err.statusCode = 404;
+    throw err;
+  }
+
+  return {
+    ...post,
+    isLikedByMe: Array.isArray(post.likes) && post.likes.length > 0,
+    likes: undefined,
+  };
+}
+
+// Returns a light-weight media list for profile gallery screens.
+// Shape: { items: [{ postId, mediaId, url, createdAt }], nextCursor }
+async function getUserMediaGallery({ meId, userId, mediaType, limit = 50, cursor }) {
+  const take = Math.min(Number(limit) || 50, 100);
+  const type = String(mediaType || '').toUpperCase() === 'VIDEO' ? 'VIDEO' : 'IMAGE';
+
+  // We paginate by post id (createdAt desc) to keep cursor simple.
+  const where = {
+    deletedAt: null,
+    authorId: Number(userId),
+    category: { not: 'FUNDRAISING_UPDATE' },
+  };
+
+  const args = {
+    where,
+    orderBy: { createdAt: 'desc' },
+    take,
+    include: {
+      media: {
+        orderBy: { order: 'asc' },
+        include: { media: { select: { id: true, url: true, type: true } } },
+      },
+    },
+  };
+  if (cursor) {
+    args.skip = 1;
+    args.cursor = { id: Number(cursor) };
+  }
+
+  const posts = await prisma.post.findMany(args);
+  const items = [];
+  for (const p of posts) {
+    for (const pm of p.media || []) {
+      const m = pm.media;
+      if (!m) continue;
+      const mt = String(m.type || '').toUpperCase();
+      if (type === 'IMAGE' && mt !== 'IMAGE') continue;
+      if (type === 'VIDEO' && mt !== 'VIDEO') continue;
+      if (!m.url) continue;
+      items.push({
+        postId: p.id,
+        mediaId: m.id,
+        url: m.url,
+        createdAt: p.createdAt,
+      });
+    }
+  }
+
+  const nextCursor = posts.length === take ? String(posts[posts.length - 1].id) : null;
+  return { items, nextCursor };
 }
 
 async function createPost({ userId, caption, type, category, mediaIds = [] }) {
@@ -370,39 +614,6 @@ async function addComment({ userId, postId, text, parentId }) {
           },
         },
       },
-      _count: { select: { likes: true } },
-      likes: false,
-    },
-  });
-  return { ...created, likeCount: created._count?.likes ?? 0, isLikedByMe: false, _count: undefined };
-}
-
-async function addComment({ userId, postId, text }) {
-  const t = String(text || '').trim();
-  if (!t) {
-    const err = new Error('Comment text is required');
-    err.statusCode = 400;
-    throw err;
-  }
-  const created = await prisma.postComment.create({
-    data: {
-      postId: Number(postId),
-      userId: Number(userId),
-      text: t,
-    },
-    include: {
-      user: {
-        select: {
-          id: true,
-          profile: {
-            select: {
-              displayName: true,
-              username: true,
-              avatarMedia: { select: { url: true } },
-            },
-          },
-        },
-      },
     },
   });
   return created;
@@ -448,6 +659,9 @@ async function replyComment({ userId, postId, commentId, text }) {
 
 module.exports = {
   getFeed,
+  getUserFeed,
+  getPostById,
+  getUserMediaGallery,
   createPost,
   updatePost,
   softDeletePost,

@@ -229,3 +229,120 @@ exports.updatePet = async (req, res) => {
     return res.status(500).json({ success: false, message: e.message || "Server error" });
   }
 };
+
+// --------------------------------------------------
+// GET /api/v1/user/pets/:id  (raw pet record)
+// --------------------------------------------------
+exports.getPetById = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    const petId = Number(req.params.id);
+
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    if (!petId) return res.status(400).json({ success: false, message: "Invalid pet id" });
+
+    const pet = await prisma.pet.findFirst({
+      where: { id: petId, userId: Number(userId), deleted: false },
+      include: {
+        animalType: true,
+        breed: true,
+        profilePic: true,
+        weights: { orderBy: { recordedAt: "desc" }, take: 1 },
+      },
+    });
+
+    if (!pet) return res.status(404).json({ success: false, message: "Pet not found" });
+    return res.status(200).json({
+      success: true,
+      data: { ...pet, id: Number(pet.id), userId: Number(pet.userId) },
+    });
+  } catch (e) {
+    console.error("getPetById error:", e);
+    return res.status(500).json({ success: false, message: "Failed to load pet" });
+  }
+};
+
+// --------------------------------------------------
+// DELETE /api/v1/user/pets/:id  (soft delete)
+// --------------------------------------------------
+exports.deletePet = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    const petId = Number(req.params.id);
+
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    if (!petId) return res.status(400).json({ success: false, message: "Invalid pet id" });
+
+    const upd = await prisma.pet.updateMany({
+      where: { id: petId, userId: Number(userId), deleted: false },
+      data: { deleted: true },
+    });
+
+    if (upd.count === 0) {
+      return res.status(404).json({ success: false, message: "Pet not found" });
+    }
+
+    return res.status(200).json({ success: true, message: "Pet deleted" });
+  } catch (e) {
+    console.error("deletePet error:", e);
+    return res.status(500).json({ success: false, message: e.message || "Server error" });
+  }
+};
+
+// --------------------------------------------------
+// GET /api/v1/user/pets/:id/profile (aggregated for Pet Profile UI)
+// Shape matches Flutter PetProfileModel
+// --------------------------------------------------
+exports.getPetProfile = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    const petId = Number(req.params.id);
+
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    if (!petId) return res.status(400).json({ success: false, message: "Invalid pet id" });
+
+    const pet = await prisma.pet.findFirst({
+      where: { id: petId, userId: Number(userId), deleted: false },
+      include: {
+        breed: true,
+        profilePic: true,
+        weights: { orderBy: { recordedAt: "desc" }, take: 1 },
+      },
+    });
+
+    if (!pet) return res.status(404).json({ success: false, message: "Pet not found" });
+
+    // Age in years (rough)
+    let ageYears = null;
+    if (pet.dateOfBirth) {
+      const dob = new Date(pet.dateOfBirth);
+      const now = new Date();
+      const years = now.getFullYear() - dob.getFullYear();
+      ageYears = years >= 0 ? years : null;
+    }
+
+    const latestWeight = Array.isArray(pet.weights) && pet.weights.length ? pet.weights[0] : null;
+
+    const data = {
+      id: Number(pet.id),
+      name: pet.name,
+      photoUrl: pet.profilePic?.url || null,
+      ageYears,
+      gender: pet.sex || null,
+      breed: pet.breed?.name || null,
+      weightKg: latestWeight?.weightKg ?? null,
+      healthStatus: {
+        vaccinated: false,
+        nextDueDate: null,
+      },
+      pawPoints: 0,
+      tier: null,
+      familyMembers: [],
+    };
+
+    return res.status(200).json({ success: true, data });
+  } catch (e) {
+    console.error("getPetProfile error:", e);
+    return res.status(500).json({ success: false, message: "Failed to load pet profile" });
+  }
+};

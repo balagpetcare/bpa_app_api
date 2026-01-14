@@ -1,0 +1,305 @@
+// AUTO-SPLIT from original schema.prisma
+// Module: fundraising
+
+enum PayoutMethodType {
+  MFS
+  BANK
+}
+enum FundraisingWithdrawRequestStatus {
+  SUBMITTED
+  UNDER_REVIEW
+  APPROVED
+  TRANSFERRED
+  REJECTED
+  CANCELED
+}
+enum ReportTargetType {
+  POST
+  FUNDRAISING
+  USER
+  PET
+}
+enum ReportStatus {
+  PENDING
+  REVIEWED
+  DISMISSED
+}
+model FundraisingUpdate {
+  id         Int                 @id @default(autoincrement())
+  campaignId Int
+  campaign   FundraisingCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  postId Int  @unique
+  post   Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  @@index([campaignId, createdAt])
+  @@map("fundraising_updates")
+}
+enum FundraisingAccountStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+}
+enum FundraisingAccountType {
+  INDIVIDUAL
+  ORGANIZATION
+}
+enum FundraisingCampaignStatus {
+  ACTIVE
+  PAUSED
+  ENDED
+}
+model FundraisingAccount {
+  id     Int                      @id @default(autoincrement())
+  userId Int                      @unique
+  user   User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status FundraisingAccountStatus @default(PENDING)
+
+  accountType FundraisingAccountType?
+
+  // Verification / identity details
+  permanentAddress String? @db.Text
+  presentAddress   String? @db.Text
+  occupation       String?
+  area             String?
+  rescueSinceYear  Int?
+
+  // Organization-only fields
+  orgName        String?
+  orgDescription String? @db.Text
+  orgWorkType    String?
+
+  submittedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  documents FundraisingVerificationDocument[]
+  campaigns FundraisingCampaign[]
+
+  // audit log for verification review / status changes
+  statusLogs FundraisingAccountStatusLog[]
+
+  divisionId Int?
+  division   BdDivision? @relation(fields: [divisionId], references: [id], onDelete: SetNull)
+
+  districtId Int?
+  district   BdDistrict? @relation(fields: [districtId], references: [id], onDelete: SetNull)
+
+  upazilaId Int?
+  upazila   BdUpazila? @relation(fields: [upazilaId], references: [id], onDelete: SetNull)
+
+  areaId Int?
+  bdArea BdArea? @relation(fields: [areaId], references: [id], onDelete: SetNull)
+
+  dateOfBirth                DateTime?
+  nationalIdNumber           String?
+  birthRegNumber             String?
+  studentIdNumber            String?
+  FundraisingPayoutMethod    FundraisingPayoutMethod[]
+  FundraisingWithdrawRequest FundraisingWithdrawRequest[]
+
+  @@index([divisionId])
+  @@index([districtId])
+  @@index([upazilaId])
+  @@index([areaId])
+  @@map("fundraising_accounts")
+}
+model FundraisingAccountStatusLog {
+  id        Int                @id @default(autoincrement())
+  accountId Int
+  account   FundraisingAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  fromStatus FundraisingAccountStatus
+  toStatus   FundraisingAccountStatus
+
+  adminUserId Int?
+  adminUser   User? @relation("FundraisingAccountStatusLogAdminUser", fields: [adminUserId], references: [id], onDelete: SetNull)
+
+  note      String?  @db.Text
+  createdAt DateTime @default(now())
+
+  @@index([accountId, createdAt])
+  @@index([adminUserId])
+  @@map("fundraising_account_status_logs")
+}
+model FundraisingVerificationDocument {
+  id        Int                @id @default(autoincrement())
+  accountId Int
+  account   FundraisingAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  title     String
+  mediaId   Int
+  media     Media              @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+  createdAt DateTime           @default(now())
+  deletedAt DateTime?
+
+  @@index([accountId])
+  @@map("fundraising_verification_documents")
+}
+model FundraisingCampaign {
+  id        Int                @id @default(autoincrement())
+  postId    Int                @unique
+  post      Post               @relation(fields: [postId], references: [id], onDelete: Cascade)
+  accountId Int
+  account   FundraisingAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  title        String
+  targetAmount Int
+  deadline     DateTime
+
+  category     String?
+  locationText String?
+  status       FundraisingCampaignStatus @default(ACTIVE)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  donations                  Donation[]
+  stats                      FundraisingCampaignStats?
+  updates                    FundraisingUpdate[]
+  FundraisingWithdrawRequest FundraisingWithdrawRequest[]
+
+  @@index([accountId, createdAt])
+  @@map("fundraising_campaigns")
+}
+model FundraisingCampaignStats {
+  campaignId      Int                 @id
+  campaign        FundraisingCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  raisedAmount    Int                 @default(0)
+  withdrawnAmount Int                 @default(0)
+  donorsCount     Int                 @default(0)
+  lastDonationAt  DateTime?
+  lastPayoutAt    DateTime?
+
+  @@map("fundraising_campaign_stats")
+}
+model Donation {
+  id         Int                 @id @default(autoincrement())
+  campaignId Int
+  campaign   FundraisingCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  donorId    Int
+  donor      User                @relation(fields: [donorId], references: [id], onDelete: Cascade)
+
+  amount Int
+  status TransactionStatus @default(SUCCESS)
+
+  createdAt DateTime @default(now())
+
+  @@index([campaignId, createdAt])
+  @@index([donorId])
+  @@map("donations")
+}
+model FundraisingPayoutMethodCatalog {
+  id       Int              @id @default(autoincrement())
+  code     String           @unique
+  name     String
+  type     PayoutMethodType
+  isActive Boolean          @default(true)
+
+  // Optional JSON describing required fields (e.g., {"walletNumber":true})
+  requirementsJson String? @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  methods FundraisingPayoutMethod[]
+
+  @@index([isActive])
+  @@map("fundraising_payout_method_catalog")
+}
+model FundraisingPayoutMethod {
+  id        Int                @id @default(autoincrement())
+  accountId Int
+  account   FundraisingAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  catalogId Int
+  catalog   FundraisingPayoutMethodCatalog @relation(fields: [catalogId], references: [id], onDelete: Restrict)
+
+  label       String?
+  detailsJson String  @db.Text
+
+  isDefault Boolean @default(false)
+  isActive  Boolean @default(true)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  withdrawRequests FundraisingWithdrawRequest[]
+
+  @@index([accountId])
+  @@index([catalogId])
+  @@index([isDefault])
+  @@map("fundraising_payout_methods")
+}
+model FundraisingWithdrawRequest {
+  id         Int                 @id @default(autoincrement())
+  campaignId Int
+  campaign   FundraisingCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  accountId Int
+  account   FundraisingAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  methodId Int
+  method   FundraisingPayoutMethod @relation(fields: [methodId], references: [id], onDelete: Restrict)
+
+  amount Int
+  status FundraisingWithdrawRequestStatus @default(SUBMITTED)
+
+  note String? @db.Text
+
+  adminUserId Int?
+  adminUser   User? @relation("FundraisingWithdrawAdminUser", fields: [adminUserId], references: [id], onDelete: SetNull)
+
+  reviewedAt  DateTime?
+  processedAt DateTime?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  transferLog FundraisingPayoutTransferLog?
+
+  @@index([campaignId, createdAt])
+  @@index([accountId, createdAt])
+  @@index([status, createdAt])
+  @@index([adminUserId])
+  @@map("fundraising_withdraw_requests")
+}
+model FundraisingPayoutTransferLog {
+  id        Int                        @id @default(autoincrement())
+  requestId Int                        @unique
+  request   FundraisingWithdrawRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  // manual proof/reference now; later can store provider response
+  reference          String?
+  proofMediaId       Int?
+  proofMedia         Media?  @relation(fields: [proofMediaId], references: [id], onDelete: SetNull)
+  methodSnapshotJson String? @db.Text
+
+  createdAt DateTime @default(now())
+
+  @@index([proofMediaId])
+  @@map("fundraising_payout_transfer_logs")
+}
+model Report {
+  id         Int              @id @default(autoincrement())
+  type       ReportTargetType
+  targetId   Int
+  reporterId Int
+  reporter   User             @relation("UserReports", fields: [reporterId], references: [id], onDelete: Cascade)
+  reasonCode String
+  details    String?          @db.Text
+  status     ReportStatus     @default(PENDING)
+  createdAt  DateTime         @default(now())
+  reviewedAt DateTime?
+
+  @@index([type, targetId])
+  @@index([reporterId])
+  @@map("reports")
+}

@@ -1,0 +1,1 @@
+export const emitNotification=(io,user,payload)=>{ io.to('user_'+user).emit('notification',payload); }
