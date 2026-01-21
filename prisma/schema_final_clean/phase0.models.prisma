@@ -1,0 +1,191 @@
+// ===============================
+// Phase-0 Foundation Models
+// Copy-paste into your prisma/schema.prisma (at bottom)
+// ===============================
+
+enum OrganizationStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum BranchCapability {
+  clinic
+  shop
+  online_sales
+  delivery_hub
+  hq_warehouse
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  LOGIN
+  STATUS_CHANGE
+  APPROVE
+  REJECT
+}
+
+model Organization {
+  id        Int                @id @default(autoincrement())
+  name      String
+  slug      String             @unique
+  status    OrganizationStatus @default(ACTIVE)
+
+  branches  Branch[]
+  roles     Role[]
+  staff     StaffProfile[]
+  auditLogs AuditLog[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Branch {
+  id        Int          @id @default(autoincrement())
+  orgId     Int
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  name      String
+  code      String
+  address   String?
+
+  // Optional: link to your Bangladesh location tables (if you already have them)
+  // bdAreaId Int?
+  // bdArea   BdArea? @relation(fields: [bdAreaId], references: [id])
+
+  isActive  Boolean @default(true)
+
+  capabilities BranchCapabilityLink[]
+  staff        StaffBranchAssignment[]
+  auditLogs    AuditLog[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([orgId, code])
+  @@index([orgId])
+}
+
+model BranchCapabilityLink {
+  id         Int             @id @default(autoincrement())
+  branchId   Int
+  branch     Branch          @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  capability BranchCapability
+
+  createdAt DateTime @default(now())
+
+  @@unique([branchId, capability])
+  @@index([capability])
+}
+
+model StaffProfile {
+  id        Int          @id @default(autoincrement())
+  userId    Int          @unique
+  orgId     Int
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  fullName  String?
+  phone     String?
+  title     String?
+
+  roles      StaffRole[]
+  branches   StaffBranchAssignment[]
+  auditActor AuditLog[] @relation("AuditActor")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([orgId])
+}
+
+model Role {
+  id        Int          @id @default(autoincrement())
+  orgId     Int
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  key       String
+  name      String
+
+  permissions RolePermission[]
+  staff       StaffRole[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([orgId, key])
+  @@index([orgId])
+}
+
+model Permission {
+  id          Int    @id @default(autoincrement())
+  key         String @unique
+  description String?
+
+  roles       RolePermission[]
+  createdAt   DateTime @default(now())
+}
+
+model RolePermission {
+  id           Int        @id @default(autoincrement())
+  roleId       Int
+  permissionId Int
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@index([permissionId])
+}
+
+model StaffRole {
+  id      Int          @id @default(autoincrement())
+  staffId Int
+  roleId  Int
+
+  staff StaffProfile @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  role  Role         @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([staffId, roleId])
+  @@index([roleId])
+}
+
+model StaffBranchAssignment {
+  id       Int @id @default(autoincrement())
+  staffId  Int
+  branchId Int
+
+  position String?
+
+  staff  StaffProfile @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  branch Branch       @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@unique([staffId, branchId])
+  @@index([branchId])
+}
+
+model AuditLog {
+  id        Int          @id @default(autoincrement())
+  orgId     Int?
+  branchId  Int?
+  actorId   Int?
+
+  org       Organization? @relation(fields: [orgId], references: [id], onDelete: SetNull)
+  branch    Branch?       @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  actor     StaffProfile? @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  action     AuditAction
+  entityType String
+  entityId   String
+
+  before     Json?
+  after      Json?
+  metadata   Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([orgId])
+  @@index([branchId])
+  @@index([actorId])
+  @@index([entityType, entityId])
+}

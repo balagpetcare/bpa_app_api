@@ -4,10 +4,12 @@
 generator client {
   provider = "prisma-client-js"
 }
+
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
+
 // AUTO-SPLIT from original schema.prisma
 // Module: core
 
@@ -16,12 +18,14 @@ enum Gender {
   FEMALE
   UNKNOWN
 }
+
 enum PetStatus {
   ACTIVE
   DECEASED
   LOST
   ADOPTED
 }
+
 enum FamilyRelation {
   OWNER
   DAD
@@ -30,39 +34,46 @@ enum FamilyRelation {
   SISTER
   OTHER
 }
+
 enum UserStatus {
   ACTIVE
   BLOCKED
   DELETED
 }
+
 enum ProfileVisibility {
   PUBLIC
   PRIVATE
   FOLLOWERS_ONLY
 }
+
 enum AuthProvider {
   LOCAL
   GOOGLE
   FACEBOOK
   APPLE
 }
+
 enum FriendRequestStatus {
   PENDING
   ACCEPTED
   REJECTED
   CANCELED
 }
+
 enum PostType {
   TEXT
   IMAGE
   VIDEO
   REEL
 }
+
 enum PostCategory {
   GENERAL
   FUNDRAISING
   FUNDRAISING_UPDATE
 }
+
 model AnimalType {
   id           Int           @id @default(autoincrement())
   name         String        @unique
@@ -72,6 +83,7 @@ model AnimalType {
 
   @@map("animal_types")
 }
+
 model Breed {
   id           Int        @id @default(autoincrement())
   name         String
@@ -82,6 +94,7 @@ model Breed {
   @@unique([name, animalTypeId])
   @@map("breeds")
 }
+
 model UserAuth {
   id     Int  @id @default(autoincrement())
   userId Int  @unique
@@ -108,6 +121,7 @@ model UserAuth {
   @@index([phone])
   @@map("user_auth")
 }
+
 model UserProfile {
   id     Int  @id @default(autoincrement())
   userId Int  @unique
@@ -136,6 +150,7 @@ model UserProfile {
   @@index([username])
   @@map("user_profiles")
 }
+
 model UserStatsCache {
   userId Int  @id
   user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -154,6 +169,7 @@ model UserStatsCache {
 
   @@map("user_stats_cache")
 }
+
 model UserSession {
   id     Int  @id @default(autoincrement())
   userId Int
@@ -174,6 +190,7 @@ model UserSession {
   @@index([expiresAt])
   @@map("user_sessions")
 }
+
 model UserFollow {
   id          Int      @id @default(autoincrement())
   followerId  Int
@@ -188,6 +205,7 @@ model UserFollow {
   @@index([followerId])
   @@map("user_follows")
 }
+
 model UserProfileLike {
   id        Int      @id @default(autoincrement())
   userId    Int
@@ -202,6 +220,7 @@ model UserProfileLike {
   @@index([likedById])
   @@map("user_profile_likes")
 }
+
 model UserFriendRequest {
   id         Int                 @id @default(autoincrement())
   fromUserId Int
@@ -218,6 +237,7 @@ model UserFriendRequest {
   @@index([fromUserId])
   @@map("user_friend_requests")
 }
+
 model UserFriend {
   id        Int      @id @default(autoincrement())
   userAId   Int
@@ -232,6 +252,7 @@ model UserFriend {
   @@index([userBId])
   @@map("user_friends")
 }
+
 model Achievement {
   id             Int     @id @default(autoincrement())
   code           String  @unique
@@ -250,6 +271,7 @@ model Achievement {
 
   @@map("achievements")
 }
+
 model UserAchievement {
   id            Int      @id @default(autoincrement())
   userId        Int
@@ -263,6 +285,7 @@ model UserAchievement {
   @@index([userId])
   @@map("user_achievements")
 }
+
 model UserGalleryItem {
   id     Int  @id @default(autoincrement())
   userId Int
@@ -278,6 +301,7 @@ model UserGalleryItem {
   @@index([userId, createdAt])
   @@map("user_gallery_items")
 }
+
 model User {
   id        Int        @id @default(autoincrement())
   status    UserStatus @default(ACTIVE)
@@ -335,9 +359,502 @@ model User {
   // PARTNER ONBOARDING (Org/Branch)
   partnerApplications PartnerApplication[]
   ownedOrganizations  Organization[]
+  ownerProfile        OwnerProfile?
+
+  // PHASE-1 KYC / Verification
+  ownerKyc                 OwnerKyc?
+  ownerKycReviewed         OwnerKyc[]                 @relation("OwnerKycReviewedBy")
+  orgLegalProfilesReviewed OrganizationLegalProfile[] @relation("OrgKycReviewedBy")
+  branchProfilesReviewed   BranchProfileDetails[]     @relation("BranchKycReviewedBy")
+  verificationLogsAsAdmin  VerificationLog[]          @relation("VerificationLogAdmin")
+
+  // ============================
+  // V3 VERIFICATION (opposites)
+  // ============================
+
+  verificationCasesReviewed   VerificationCase[]      @relation("VerificationCaseReviewedBy")
+  verificationDocsChecked     VerificationDocument[]  @relation("VerificationDocCheckedBy")
+  verificationCaseEventsAdmin VerificationCaseEvent[] @relation("VerificationCaseEventAdmin")
+
+  notifications              Notification[]
+  verificationLockedAttempts VerificationLockedUpdateAttempt[]
+
+  // === BPA PATCH: memberships + product approval ===
+  orgMemberships     OrgMember[]
+  branchMemberships  BranchMember[]
+  productsCreated    Product[]              @relation("ProductCreatedBy")
+  productCRRequested ProductChangeRequest[] @relation("ProductCRRequestedBy")
+  productCRReviewed  ProductChangeRequest[] @relation("ProductCRReviewedBy")
+
+  // === BPA PATCH: staff invites (token-based) ===
+  staffInvitesSent     StaffInvite[] @relation("StaffInviteInvitedBy")
+  staffInvitesAccepted StaffInvite[] @relation("StaffInviteAcceptedBy")
+
+  // ✅ invitedBy opposite relations
+  orgMembersInvited    OrgMember[]    @relation("OrgMemberInvitedBy")
+  branchMembersInvited BranchMember[] @relation("BranchMemberInvitedBy")
 
   @@map("users")
 }
+
+// Owner profile (separate from UserProfile). This keeps onboarding / KYC fields
+// isolated and avoids breaking Flutter/public user profile flows.
+model OwnerProfile {
+  id     Int  @id @default(autoincrement())
+  userId Int  @unique
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Minimal onboarding profile (fast, low-friction). KYC-grade fields live in OwnerKyc.
+  // NOTE: All fields are OPTIONAL except name, to avoid breaking existing flows.
+  name         String
+  supportPhone String?
+  supportEmail String?
+
+  // Optional location pointers for quick filtering/search (full address stays in OwnerKyc.presentAddressJson)
+  divisionId Int?
+  districtId Int?
+  upazilaId  Int?
+  areaId     Int?
+
+  nid         String?
+  dateOfBirth DateTime?
+  genderText  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([divisionId])
+  @@index([districtId])
+  @@index([upazilaId])
+  @@index([areaId])
+  @@map("owner_profiles")
+}
+
+// -----------------------------
+// PHASE-1: Owner/Org/Branch KYC
+// -----------------------------
+
+model OwnerKyc {
+  id     Int @id @default(autoincrement())
+  userId Int @unique
+
+  fullName    String
+  fatherName  String?
+  motherName  String?
+  dateOfBirth DateTime?
+  genderText  String?
+  nationality String?   @default("Bangladeshi")
+
+  nidNumber     String?
+  nidIssueDate  DateTime?
+  nidAddressRaw String?
+
+  mobile String?
+  email  String?
+
+  presentAddressJson   Json?
+  permanentAddressJson Json?
+
+  emergencyContactName  String?
+  emergencyContactPhone String?
+
+  verificationStatus VerificationStatus @default(UNSUBMITTED)
+  submittedAt        DateTime?
+  reviewedAt         DateTime?
+  reviewedByAdminId  Int?
+  reviewNote         String?
+  rejectionReason    String?
+  riskScore          Int?               @default(0)
+
+  isLocked   Boolean   @default(false)
+  lockReason String?
+  deletedAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user            User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  reviewedByAdmin User?              @relation("OwnerKycReviewedBy", fields: [reviewedByAdminId], references: [id], onDelete: SetNull)
+  documents       OwnerKycDocument[]
+
+  @@index([verificationStatus])
+  @@index([reviewedByAdminId])
+  @@map("owner_kyc")
+}
+
+model OwnerKycDocument {
+  id         Int @id @default(autoincrement())
+  ownerKycId Int
+
+  type   DocumentType
+  status DocumentStatus @default(SUBMITTED)
+
+  mediaId Int
+  media   Media @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+
+  docNumber  String?
+  issueDate  DateTime?
+  expiryDate DateTime?
+  note       String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  ownerKyc OwnerKyc @relation(fields: [ownerKycId], references: [id], onDelete: Cascade)
+
+  @@index([ownerKycId])
+  @@index([type])
+  @@map("owner_kyc_documents")
+}
+
+model OrganizationLegalProfile {
+  id    Int @id @default(autoincrement())
+  orgId Int @unique
+
+  organizationName String
+  registrationType RegistrationType @default(PROPRIETORSHIP)
+
+  tradeLicenseNumber     String?
+  tradeLicenseIssueDate  DateTime?
+  tradeLicenseExpiryDate DateTime?
+  issuingAuthority       String?
+
+  tinNumber String?
+  binNumber String?
+
+  officialPhone String?
+  officialEmail String?
+  website       String?
+  facebookPage  String?
+
+  bankAccountName   String?
+  bankAccountNumber String?
+  bankName          String?
+  bankBranchName    String?
+  routingNumber     String?
+
+  payoutBkash  String?
+  payoutNagad  String?
+  payoutRocket String?
+
+  verificationStatus VerificationStatus @default(UNSUBMITTED)
+  submittedAt        DateTime?
+  reviewedAt         DateTime?
+  reviewedByAdminId  Int?
+  reviewNote         String?
+  rejectionReason    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  reviewedByAdmin User?        @relation("OrgKycReviewedBy", fields: [reviewedByAdminId], references: [id], onDelete: SetNull)
+
+  documents OrganizationDocument[]
+  directors OrganizationDirector[]
+
+  @@index([verificationStatus])
+  @@index([reviewedByAdminId])
+  @@map("org_legal_profiles")
+}
+
+model OrganizationDocument {
+  id                Int @id @default(autoincrement())
+  orgLegalProfileId Int
+
+  type   DocumentType
+  status DocumentStatus @default(SUBMITTED)
+
+  mediaId Int
+  media   Media @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+
+  docNumber  String?
+  issueDate  DateTime?
+  expiryDate DateTime?
+  note       String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  orgLegalProfile OrganizationLegalProfile @relation(fields: [orgLegalProfileId], references: [id], onDelete: Cascade)
+
+  @@index([orgLegalProfileId])
+  @@index([type])
+  @@map("org_documents")
+}
+
+model OrganizationDirector {
+  id                Int @id @default(autoincrement())
+  orgLegalProfileId Int
+
+  name   String
+  role   String?
+  mobile String?
+  email  String?
+
+  nidNumber       String?
+  sharePercentage Float?
+
+  nidFrontMediaId  Int?
+  nidBackMediaId   Int?
+  signatureMediaId Int?
+
+  nidFrontMedia  Media? @relation("DirectorNidFront", fields: [nidFrontMediaId], references: [id], onDelete: SetNull)
+  nidBackMedia   Media? @relation("DirectorNidBack", fields: [nidBackMediaId], references: [id], onDelete: SetNull)
+  signatureMedia Media? @relation("DirectorSignature", fields: [signatureMediaId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  orgLegalProfile OrganizationLegalProfile @relation(fields: [orgLegalProfileId], references: [id], onDelete: Cascade)
+
+  @@index([orgLegalProfileId])
+  @@map("org_directors")
+}
+
+model BranchProfileDetails {
+  id       Int @id @default(autoincrement())
+  branchId Int @unique
+
+  branchPhone String?
+  branchEmail String?
+
+  managerName      String?
+  managerPhone     String?
+  managerNidNumber String?
+
+  addressJson   Json?
+  latitude      Float?
+  longitude     Float?
+  googleMapLink String?
+
+  openingHoursJson  Json?
+  weeklyOffDaysJson Json?
+
+  vetLicenseNumber  String?
+  drugLicenseNumber String?
+
+  verificationStatus VerificationStatus @default(UNSUBMITTED)
+  submittedAt        DateTime?
+  reviewedAt         DateTime?
+  reviewedByAdminId  Int?
+  reviewNote         String?
+  rejectionReason    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  branch          Branch           @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  reviewedByAdmin User?            @relation("BranchKycReviewedBy", fields: [reviewedByAdminId], references: [id], onDelete: SetNull)
+  documents       BranchDocument[]
+
+  @@index([verificationStatus])
+  @@index([reviewedByAdminId])
+  @@map("branch_profile_details")
+}
+
+model BranchDocument {
+  id              Int @id @default(autoincrement())
+  branchProfileId Int
+
+  type   DocumentType
+  status DocumentStatus @default(SUBMITTED)
+
+  mediaId Int
+  media   Media @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+
+  docNumber  String?
+  issueDate  DateTime?
+  expiryDate DateTime?
+  note       String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  branchProfile BranchProfileDetails @relation(fields: [branchProfileId], references: [id], onDelete: Cascade)
+
+  @@index([branchProfileId])
+  @@index([type])
+  @@map("branch_documents")
+}
+
+model VerificationLog {
+  id         Int                    @id @default(autoincrement())
+  entityType VerificationEntityType
+  entityId   Int
+
+  action     VerificationAction
+  fromStatus VerificationStatus?
+  toStatus   VerificationStatus?
+
+  adminUserId Int?
+  adminUser   User? @relation("VerificationLogAdmin", fields: [adminUserId], references: [id], onDelete: SetNull)
+
+  note      String?
+  createdAt DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([adminUserId])
+  @@map("verification_logs")
+}
+
+// ------------------------------
+// Universal Verification (V1)
+// ------------------------------
+model VerificationCase {
+  id         Int                    @id @default(autoincrement())
+  entityType VerificationEntityType
+  entityId   Int
+
+  status VerificationCaseStatus @default(DRAFT)
+
+  /// V2: Owner/Org/Branch draft data snapshot (non-breaking add-only)
+  /// This keeps Flutter/public APIs untouched while Owner Panel uses a unified verification case payload.
+  payloadJson Json?
+
+  submittedAt DateTime?
+  reviewedAt  DateTime?
+
+  reviewedByAdminId Int?
+  reviewedByAdmin   User? @relation("VerificationCaseReviewedBy", fields: [reviewedByAdminId], references: [id], onDelete: SetNull)
+
+  reviewSummary String? @db.Text
+
+  // optional "lock" for admin hold / compliance
+  isLocked   Boolean @default(false)
+  lockReason String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  documents VerificationDocument[]
+  events    VerificationCaseEvent[]
+
+  @@index([entityType, entityId])
+  @@index([status])
+  @@index([reviewedByAdminId])
+  @@map("verification_cases")
+}
+
+model VerificationDocument {
+  id     Int @id @default(autoincrement())
+  caseId Int
+
+  docType    DocumentType
+  status     VerificationDocStatus @default(PENDING)
+  isRequired Boolean               @default(true)
+
+  // store file in Media table (MinIO/S3)
+  mediaId Int
+  media   Media @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+
+  version Int @default(1)
+
+  docNumber  String?
+  issueDate  DateTime?
+  expiryDate DateTime?
+
+  rejectReason String?
+  instruction  String?
+
+  checkedAt        DateTime?
+  checkedByAdminId Int?
+  checkedByAdmin   User?     @relation("VerificationDocCheckedBy", fields: [checkedByAdminId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  verificationCase VerificationCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId])
+  @@index([docType])
+  @@index([status])
+  @@index([checkedByAdminId])
+  @@map("verification_documents")
+}
+
+model VerificationCaseEvent {
+  id     Int @id @default(autoincrement())
+  caseId Int
+
+  action VerificationAction
+  from   VerificationCaseStatus?
+  to     VerificationCaseStatus?
+
+  actorAdminId Int?
+  actorAdmin   User? @relation("VerificationCaseEventAdmin", fields: [actorAdminId], references: [id], onDelete: SetNull)
+
+  note String? @db.Text
+
+  createdAt DateTime @default(now())
+
+  verificationCase VerificationCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId])
+  @@index([actorAdminId])
+  @@map("verification_case_events")
+}
+
+enum NotificationType {
+  VERIFICATION_CASE_SUBMITTED
+  VERIFICATION_CASE_APPROVED
+  VERIFICATION_CASE_REJECTED
+  VERIFICATION_DOCUMENT_APPROVED
+  VERIFICATION_DOCUMENT_REJECTED
+  SYSTEM
+}
+
+model Notification {
+  id     Int  @id @default(autoincrement())
+  userId Int
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  type    NotificationType
+  title   String
+  message String           @db.Text
+  meta    Json?
+
+  readAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, readAt])
+  @@index([type])
+  @@map("notifications")
+}
+
+// ------------------------------
+// Universal Verification (V3.4)
+// Monitoring: track legacy update attempts while an entity is locked for verification.
+// Soft-mode friendly (no breaking changes).
+// ------------------------------
+model VerificationLockedUpdateAttempt {
+  id Int @id @default(autoincrement())
+
+  userId Int?
+  user   User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  entityType VerificationEntityType
+  entityId   Int
+
+  reason String?
+
+  endpoint  String
+  method    String
+  ip        String?
+  userAgent String?
+
+  payloadJson Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([entityType, entityId, createdAt])
+  @@index([createdAt])
+  @@index([userId])
+  @@map("verification_locked_update_attempts")
+}
+
 model Post {
   id       Int  @id @default(autoincrement())
   authorId Int
@@ -364,6 +881,7 @@ model Post {
   @@index([authorId, createdAt])
   @@map("posts")
 }
+
 model PostMedia {
   id     Int  @id @default(autoincrement())
   postId Int
@@ -378,6 +896,7 @@ model PostMedia {
   @@index([postId])
   @@map("post_media")
 }
+
 model PostLike {
   id        Int      @id @default(autoincrement())
   postId    Int
@@ -390,6 +909,7 @@ model PostLike {
   @@index([userId])
   @@map("post_likes")
 }
+
 model PostComment {
   id     Int  @id @default(autoincrement())
   postId Int
@@ -414,6 +934,7 @@ model PostComment {
   @@index([parentId])
   @@map("post_comments")
 }
+
 model PostCommentLike {
   id        Int         @id @default(autoincrement())
   commentId Int
@@ -428,6 +949,7 @@ model PostCommentLike {
   @@index([userId])
   @@map("post_comment_likes")
 }
+
 model Media {
   id        Int      @id @default(autoincrement())
   url       String
@@ -455,9 +977,21 @@ model Media {
   // Pet profile: family member avatar (optional)
   petFamilyAvatars                 PetFamilyMember[]                 @relation("PetFamilyAvatar")
 
+  // PHASE-1 KYC / Verification (opposite relations)
+  ownerKycDocuments     OwnerKycDocument[]
+  organizationDocuments OrganizationDocument[]
+  branchDocuments       BranchDocument[]
+  directorNidFronts     OrganizationDirector[] @relation("DirectorNidFront")
+  directorNidBacks      OrganizationDirector[] @relation("DirectorNidBack")
+  directorSignatures    OrganizationDirector[] @relation("DirectorSignature")
+
+  // V3 VERIFICATION
+  verificationDocuments VerificationDocument[]
+
   @@index([ownerUserId])
   @@map("media")
 }
+
 model Pet {
   id     Int  @id @default(autoincrement())
   userId Int
@@ -493,6 +1027,7 @@ model Pet {
   dewormingRecords DewormingRecord[]
   medicalHistories MedicalHistory[]
 
+
   // UI: family avatars on pet profile screen
   familyMembers PetFamilyMember[]
 
@@ -502,6 +1037,7 @@ model Pet {
 
   @@map("pets")
 }
+
 model PetFamilyMember {
   id    Int @id @default(autoincrement())
   petId Int
@@ -519,6 +1055,7 @@ model PetFamilyMember {
   @@index([petId])
   @@map("pet_family_members")
 }
+
 model PetWeight {
   id    Int @id @default(autoincrement())
   petId Int
@@ -531,6 +1068,7 @@ model PetWeight {
 
   @@map("pet_weights")
 }
+
 model VaccineType {
   id                  Int           @id @default(autoincrement())
   name                String        @unique
@@ -542,6 +1080,7 @@ model VaccineType {
 
   @@map("vaccine_types")
 }
+
 model Vaccination {
   id             Int         @id @default(autoincrement())
   petId          Int
@@ -557,6 +1096,7 @@ model Vaccination {
 
   @@map("vaccinations")
 }
+
 model DewormingRecord {
   id             Int       @id @default(autoincrement())
   petId          Int
@@ -571,6 +1111,7 @@ model DewormingRecord {
 
   @@map("deworming_records")
 }
+
 model MedicalHistory {
   id           Int       @id @default(autoincrement())
   petId        Int
@@ -585,6 +1126,7 @@ model MedicalHistory {
 
   @@map("medical_histories")
 }
+
 model RewardHistory {
   id          Int      @id @default(autoincrement())
   userId      Int
@@ -597,6 +1139,7 @@ model RewardHistory {
 
   @@map("reward_histories")
 }
+
 // AUTO-SPLIT from original schema.prisma
 // Module: wallet
 
@@ -604,11 +1147,13 @@ enum TransactionType {
   CREDIT
   DEBIT
 }
+
 enum TransactionStatus {
   PENDING
   SUCCESS
   FAILED
 }
+
 enum PaymentMethod {
   CASH
   BKASH
@@ -617,17 +1162,20 @@ enum PaymentMethod {
   BANK
   CARD
 }
+
 enum WalletSourceType {
   DONATION
   WALLET_WITHDRAW_REQUEST
   FUNDRAISING_WITHDRAW_REQUEST
   ADMIN_ADJUSTMENT
 }
+
 enum PayoutProvider {
   BKASH
   NAGAD
   ROCKET
 }
+
 enum WalletWithdrawRequestStatus {
   SUBMITTED
   UNDER_REVIEW
@@ -639,6 +1187,7 @@ enum WalletWithdrawRequestStatus {
   REJECTED
   CANCELED
 }
+
 model UserWallet {
   id     Int  @id @default(autoincrement())
   userId Int  @unique // ✅ প্রতি ইউজারের শুধু ১টি ওয়ালেট
@@ -665,6 +1214,7 @@ model UserWallet {
 
   @@map("user_wallets")
 }
+
 model WalletTransaction {
   id       Int        @id @default(autoincrement())
   walletId Int
@@ -688,6 +1238,7 @@ model WalletTransaction {
   @@index([sourceType, sourceId])
   @@map("wallet_transactions")
 }
+
 model WalletWithdrawRequest {
   id Int @id @default(autoincrement())
 
@@ -737,6 +1288,7 @@ model WalletWithdrawRequest {
   @@index([provider, providerPayoutId])
   @@map("wallet_withdraw_requests")
 }
+
 model PayoutEventLog {
   id Int @id @default(autoincrement())
 
@@ -755,6 +1307,7 @@ model PayoutEventLog {
   @@index([withdrawRequestId])
   @@map("payout_event_logs")
 }
+
 // AUTO-SPLIT from original schema.prisma
 // Module: fundraising
 
@@ -762,6 +1315,7 @@ enum PayoutMethodType {
   MFS
   BANK
 }
+
 enum FundraisingWithdrawRequestStatus {
   SUBMITTED
   UNDER_REVIEW
@@ -770,17 +1324,20 @@ enum FundraisingWithdrawRequestStatus {
   REJECTED
   CANCELED
 }
+
 enum ReportTargetType {
   POST
   FUNDRAISING
   USER
   PET
 }
+
 enum ReportStatus {
   PENDING
   REVIEWED
   DISMISSED
 }
+
 model FundraisingUpdate {
   id         Int                 @id @default(autoincrement())
   campaignId Int
@@ -796,20 +1353,24 @@ model FundraisingUpdate {
   @@index([campaignId, createdAt])
   @@map("fundraising_updates")
 }
+
 enum FundraisingAccountStatus {
   PENDING
   VERIFIED
   REJECTED
 }
+
 enum FundraisingAccountType {
   INDIVIDUAL
   ORGANIZATION
 }
+
 enum FundraisingCampaignStatus {
   ACTIVE
   PAUSED
   ENDED
 }
+
 model FundraisingAccount {
   id     Int                      @id @default(autoincrement())
   userId Int                      @unique
@@ -866,6 +1427,7 @@ model FundraisingAccount {
   @@index([areaId])
   @@map("fundraising_accounts")
 }
+
 model FundraisingAccountStatusLog {
   id        Int                @id @default(autoincrement())
   accountId Int
@@ -884,6 +1446,7 @@ model FundraisingAccountStatusLog {
   @@index([adminUserId])
   @@map("fundraising_account_status_logs")
 }
+
 model FundraisingVerificationDocument {
   id        Int                @id @default(autoincrement())
   accountId Int
@@ -897,6 +1460,7 @@ model FundraisingVerificationDocument {
   @@index([accountId])
   @@map("fundraising_verification_documents")
 }
+
 model FundraisingCampaign {
   id        Int                @id @default(autoincrement())
   postId    Int                @unique
@@ -924,6 +1488,7 @@ model FundraisingCampaign {
   @@index([accountId, createdAt])
   @@map("fundraising_campaigns")
 }
+
 model FundraisingCampaignStats {
   campaignId      Int                 @id
   campaign        FundraisingCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
@@ -935,6 +1500,7 @@ model FundraisingCampaignStats {
 
   @@map("fundraising_campaign_stats")
 }
+
 model Donation {
   id         Int                 @id @default(autoincrement())
   campaignId Int
@@ -951,6 +1517,7 @@ model Donation {
   @@index([donorId])
   @@map("donations")
 }
+
 model FundraisingPayoutMethodCatalog {
   id       Int              @id @default(autoincrement())
   code     String           @unique
@@ -969,6 +1536,7 @@ model FundraisingPayoutMethodCatalog {
   @@index([isActive])
   @@map("fundraising_payout_method_catalog")
 }
+
 model FundraisingPayoutMethod {
   id        Int                @id @default(autoincrement())
   accountId Int
@@ -994,6 +1562,7 @@ model FundraisingPayoutMethod {
   @@index([isDefault])
   @@map("fundraising_payout_methods")
 }
+
 model FundraisingWithdrawRequest {
   id         Int                 @id @default(autoincrement())
   campaignId Int
@@ -1028,6 +1597,7 @@ model FundraisingWithdrawRequest {
   @@index([adminUserId])
   @@map("fundraising_withdraw_requests")
 }
+
 model FundraisingPayoutTransferLog {
   id        Int                        @id @default(autoincrement())
   requestId Int                        @unique
@@ -1044,6 +1614,7 @@ model FundraisingPayoutTransferLog {
   @@index([proofMediaId])
   @@map("fundraising_payout_transfer_logs")
 }
+
 model Report {
   id         Int              @id @default(autoincrement())
   type       ReportTargetType
@@ -1060,6 +1631,7 @@ model Report {
   @@index([reporterId])
   @@map("reports")
 }
+
 // AUTO-SPLIT from original schema.prisma
 // Module: location
 
@@ -1077,6 +1649,7 @@ model BdDivision {
 
   @@map("bd_divisions")
 }
+
 model BdDistrict {
   id     Int     @id @default(autoincrement())
   code   String  @unique
@@ -1098,6 +1671,7 @@ model BdDistrict {
   @@index([divisionId])
   @@map("bd_districts")
 }
+
 model BdUpazila {
   id     Int     @id @default(autoincrement())
   code   String  @unique
@@ -1116,6 +1690,7 @@ model BdUpazila {
   @@index([districtId])
   @@map("bd_upazilas")
 }
+
 model BdArea {
   id     Int     @id @default(autoincrement())
   code   String  @unique
@@ -1147,6 +1722,80 @@ model BdArea {
 }
 
 // ===============================
+// Dhaka Fast Location (DNCC/DSCC -> Area) — Ward বাদ
+// Used by Owner/Admin onboarding dropdown search.
+// ===============================
+
+model CityCorporation {
+  id        Int      @id @default(autoincrement())
+  code      String   @unique // DNCC / DSCC
+  nameEn    String
+  nameBn    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  areas Area[]
+
+  @@map("city_corporations")
+}
+
+model Area {
+  id                Int             @id @default(autoincrement())
+  cityCorporationId Int
+  cityCorporation   CityCorporation @relation(fields: [cityCorporationId], references: [id], onDelete: Cascade)
+
+  parentId Int?
+  parent   Area?  @relation("AreaParent", fields: [parentId], references: [id], onDelete: Cascade)
+  children Area[] @relation("AreaParent")
+
+  nameEn         String
+  nameBn         String?
+  searchKeywords String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([cityCorporationId, parentId, nameEn])
+  @@index([cityCorporationId])
+  @@index([parentId])
+  @@map("areas")
+}
+
+enum AuditEntityType {
+  ORGANIZATION
+  BRANCH
+  OWNER_KYC
+}
+
+enum AuditActorRole {
+  OWNER
+  ADMIN
+  SUPER_ADMIN
+  STAFF
+}
+
+model AuditLog {
+  id         Int             @id @default(autoincrement())
+  actorId    String
+  actorRole  AuditActorRole
+  action     String
+  entityType AuditEntityType
+  entityId   String
+
+  before Json?
+  after  Json?
+
+  ip        String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@index([actorId])
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// ===============================
 // Partner Onboarding (V21)
 // ===============================
 
@@ -1166,11 +1815,93 @@ enum BranchStatus {
   BLOCKED
 }
 
+enum BranchTypeCode {
+  CLINIC
+  PET_SHOP
+  DELIVERY_HUB
+  WAREHOUSE_DC
+  GROOMING_SPA
+  BOARDING_DAYCARE
+  FOSTER_SHELTER
+  TRAINING_BEHAVIOR
+  PHARMACY_DIAGNOSTICS
+}
+
 enum VerificationStatus {
   UNSUBMITTED
   SUBMITTED
   VERIFIED
   REJECTED
+}
+
+// Phase-1 KYC / Verification enums (add-only)
+enum VerificationEntityType {
+  OWNER
+  ORGANIZATION
+  BRANCH
+}
+
+enum VerificationAction {
+  SUBMIT
+  APPROVE
+  REJECT
+  NOTE
+  LOCK
+  UNLOCK
+}
+
+// Universal Verification Workflow (Phase-1, add-only)
+// This is a new, generic workflow that will run in parallel with existing KYC tables.
+// هدف: Flutter/public API না ভেঙে ধীরে ধীরে Owner/Org/Branch verification কে standardize করা।
+enum VerificationCaseStatus {
+  DRAFT
+  SUBMITTED
+  REJECTED
+  APPROVED
+}
+
+enum VerificationDocStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum DocumentType {
+  // Owner KYC
+  NID_FRONT
+  NID_BACK
+  SELFIE_WITH_NID
+
+  // Organization legal
+  TRADE_LICENSE
+  TIN_CERT
+  BIN_CERT
+  INCORPORATION_CERT
+  PARTNERSHIP_DEED
+  BOARD_RESOLUTION
+  BANK_CHEQUE_LEAF
+
+  // Branch photos / licenses
+  STORE_FRONT_PHOTO
+  STORE_INSIDE_PHOTO
+  SIGNBOARD_PHOTO
+  VET_LICENSE
+  DRUG_LICENSE
+
+  OTHER
+}
+
+enum DocumentStatus {
+  SUBMITTED
+  VERIFIED
+  REJECTED
+}
+
+enum RegistrationType {
+  PROPRIETORSHIP
+  PARTNERSHIP
+  LIMITED_COMPANY
+  NGO
 }
 
 enum PublishRequestStatus {
@@ -1180,21 +1911,21 @@ enum PublishRequestStatus {
 }
 
 model PartnerApplication {
-  id        Int           @id @default(autoincrement())
-  userId    Int
-  status    PartnerStatus @default(PENDING_REVIEW)
+  id     Int           @id @default(autoincrement())
+  userId Int
+  status PartnerStatus @default(PENDING_REVIEW)
 
-  businessName    String
-  nidNumber       String
-  tradeLicenseNo  String?
-  docsJson        Json?
+  businessName   String
+  nidNumber      String
+  tradeLicenseNo String?
+  docsJson       Json?
 
-  submittedAt DateTime @default(now())
-  reviewedAt  DateTime?
-  reviewNote  String?
+  submittedAt       DateTime  @default(now())
+  reviewedAt        DateTime?
+  reviewNote        String?
   reviewedByAdminId Int?
 
-  user      User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@map("partner_applications")
@@ -1212,48 +1943,338 @@ model Organization {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  owner    User    @relation(fields: [ownerUserId], references: [id], onDelete: Restrict)
+  owner    User     @relation(fields: [ownerUserId], references: [id], onDelete: Restrict)
   branches Branch[]
+
+  // PHASE-1 KYC / Verification
+  legalProfile OrganizationLegalProfile?
+
+  // === BPA PATCH: memberships + product approval ===
+  members               OrgMember[]
+  products              Product[]
+  productChangeRequests ProductChangeRequest[]
+
+  // === BPA PATCH: staff invites ===
+  staffInvites  StaffInvite[]
+  // ✅ BranchMember.org opposite
+  branchMembers BranchMember[]
 
   @@index([ownerUserId])
   @@map("organizations")
 }
 
 model Branch {
-  id        Int @id @default(autoincrement())
-  orgId     Int
-  name      String
-  status    BranchStatus @default(DRAFT)
+  id     Int          @id @default(autoincrement())
+  orgId  Int
+  name   String
+  status BranchStatus @default(DRAFT)
 
   // what this branch IS (shop/clinic/delivery)
   capabilitiesJson Json @default("{}")
+
+  // new: branch can have multiple types (hybrid supported)
+  types        BranchToType[]
   // what modules are ENABLED (pos/ecommerce/appointments...) — admin unlocks on approval
-  featuresJson     Json @default("{}")
+  featuresJson Json           @default("{}")
 
   verificationStatus VerificationStatus @default(UNSUBMITTED)
-  addressJson Json?
+  addressJson        Json?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  org             Organization           @relation(fields: [orgId], references: [id], onDelete: Cascade)
   publishRequests BranchPublishRequest[]
+  typeLinks       BranchTypeOnBranch[]
+  // PHASE-1 KYC / Verification
+  profileDetails  BranchProfileDetails?
+
+  // === BPA PATCH: branch memberships + product change requests ===
+  members               BranchMember[]
+  productChangeRequests ProductChangeRequest[] @relation("ProductCRFromBranch")
+
+  // === BPA PATCH: staff invites ===
+  staffInvites StaffInvite[]
 
   @@index([orgId])
   @@map("branches")
 }
 
-model BranchPublishRequest {
-  id        Int @id @default(autoincrement())
-  branchId  Int
-  status    PublishRequestStatus @default(PENDING)
-  submittedAt DateTime @default(now())
-  reviewedAt  DateTime?
-  reviewedByAdminId Int?
-  note      String?
+model BranchTypeOnBranch {
+  branchId     Int
+  branchTypeId Int
+  isPrimary    Boolean  @default(false)
+  createdAt    DateTime @default(now())
 
-  branch    Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  branch     Branch     @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  branchType BranchType @relation(fields: [branchTypeId], references: [id], onDelete: Cascade)
+
+  @@id([branchId, branchTypeId])
+  @@index([branchTypeId])
+}
+
+model BranchPublishRequest {
+  id                Int                  @id @default(autoincrement())
+  branchId          Int
+  status            PublishRequestStatus @default(PENDING)
+  submittedAt       DateTime             @default(now())
+  reviewedAt        DateTime?
+  reviewedByAdminId Int?
+  note              String?
+
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
 
   @@index([branchId])
   @@map("branch_publish_requests")
+}
+
+model BranchType {
+  id        Int      @id @default(autoincrement())
+  code      String   @unique
+  nameEn    String
+  nameBn    String?
+  isActive  Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  branches     BranchTypeOnBranch[]
+  BranchToType BranchToType[]
+
+  @@map("branch_types")
+}
+
+// Master: Organization Types (used by dropdowns for organization/branch creation)
+// Kept independent from Organization model for backward compatibility.
+model OrganizationType {
+  id        Int      @id @default(autoincrement())
+  code      String   @unique
+  nameEn    String
+  nameBn    String?
+  isActive  Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("organization_types")
+}
+
+model BranchToType {
+  branchId Int
+  typeId   Int
+
+  branch Branch     @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  type   BranchType @relation(fields: [typeId], references: [id], onDelete: Cascade)
+
+  @@id([branchId, typeId])
+  @@index([typeId])
+  @@map("branch_to_types")
+}
+
+// ============================
+// SUPER ADMIN ACCESS CONTROL
+// ============================
+// Only users whose email/phone exists here (and isActive=true)
+// may access the Super Admin (Admin) web panel.
+model SuperAdminWhitelist {
+  id Int @id @default(autoincrement())
+
+  // Store normalized values
+  email String? @unique
+  phone String? @unique
+
+  isActive Boolean @default(true)
+  note     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("super_admin_whitelist")
+}
+
+// === BPA PATCH: Membership + Product Approval (Branch-based) ===
+
+enum MemberRole {
+  OWNER
+  ORG_ADMIN
+  BRANCH_MANAGER
+  BRANCH_STAFF
+  SELLER
+  DELIVERY_MANAGER
+  DELIVERY_STAFF
+}
+
+enum MemberStatus {
+  INVITED
+  ACTIVE
+  SUSPENDED
+}
+
+enum ChangeRequestType {
+  CREATE_PRODUCT
+  CREATE_VARIANT
+  EDIT_PRODUCT
+}
+
+enum ChangeRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum ProductStatus {
+  ACTIVE
+  INACTIVE
+}
+
+model OrgMember {
+  id     Int @id @default(autoincrement())
+  orgId  Int
+  userId Int
+
+  role   MemberRole
+  status MemberStatus @default(ACTIVE)
+
+  invitedByUserId Int?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  invitedBy User?        @relation("OrgMemberInvitedBy", fields: [invitedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([orgId, userId])
+  @@index([orgId, role])
+  @@index([userId])
+  @@map("org_members")
+}
+
+model BranchMember {
+  id       Int @id @default(autoincrement())
+  orgId    Int
+  branchId Int
+  userId   Int
+
+  role   MemberRole
+  status MemberStatus @default(ACTIVE)
+
+  invitedByUserId Int?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  branch    Branch       @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  invitedBy User?        @relation("BranchMemberInvitedBy", fields: [invitedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([branchId, userId])
+  @@index([orgId, branchId, role])
+  @@index([userId])
+  @@map("branch_members")
+}
+
+model Product {
+  id     Int           @id @default(autoincrement())
+  orgId  Int
+  name   String
+  slug   String
+  status ProductStatus @default(ACTIVE)
+
+  createdByUserId Int
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdBy User         @relation("ProductCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+
+  variants ProductVariant[]
+
+  @@unique([orgId, slug])
+  @@index([orgId, status])
+  @@map("products")
+}
+
+model ProductVariant {
+  id         Int      @id @default(autoincrement())
+  productId  Int
+  sku        String   @unique
+  title      String
+  attributes Json?
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId, isActive])
+  @@map("product_variants")
+}
+
+model ProductChangeRequest {
+  id     Int                 @id @default(autoincrement())
+  orgId  Int
+  type   ChangeRequestType
+  status ChangeRequestStatus @default(PENDING)
+
+  requestedByUserId     Int
+  requestedFromBranchId Int?
+  payload               Json
+
+  reviewedByUserId Int?
+  reviewedAt       DateTime?
+  note             String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org                 Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  requestedBy         User         @relation("ProductCRRequestedBy", fields: [requestedByUserId], references: [id], onDelete: Restrict)
+  requestedFromBranch Branch?      @relation("ProductCRFromBranch", fields: [requestedFromBranchId], references: [id], onDelete: SetNull)
+  reviewedBy          User?        @relation("ProductCRReviewedBy", fields: [reviewedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, status, type])
+  @@index([requestedByUserId])
+  @@index([requestedFromBranchId])
+  @@map("product_change_requests")
+}
+
+// === BPA PATCH: Staff Invite Tokens
+
+enum StaffInviteStatus {
+  PENDING
+  ACCEPTED
+  REVOKED
+  EXPIRED
+}
+
+model StaffInvite {
+  id       Int               @id @default(autoincrement())
+  orgId    Int
+  branchId Int
+  role     MemberRole
+  status   StaffInviteStatus @default(PENDING)
+
+  email       String?
+  phone       String?
+  displayName String?
+
+  tokenHash String   @unique
+  expiresAt DateTime
+
+  invitedByUserId Int
+  invitedBy       User @relation("StaffInviteInvitedBy", fields: [invitedByUserId], references: [id], onDelete: Restrict)
+
+  acceptedByUserId Int?
+  acceptedBy       User? @relation("StaffInviteAcceptedBy", fields: [acceptedByUserId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  branch Branch       @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, branchId, status])
+  @@index([email])
+  @@index([phone])
+  @@map("staff_invites")
 }

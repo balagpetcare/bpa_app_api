@@ -1,0 +1,1747 @@
+// AUTO-SPLIT from original schema.prisma
+// Module: base
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// AUTO-SPLIT from original schema.prisma
+// Module: core
+
+enum Gender {
+  MALE
+  FEMALE
+  UNKNOWN
+}
+
+enum PetStatus {
+  ACTIVE
+  DECEASED
+  LOST
+  ADOPTED
+}
+
+enum FamilyRelation {
+  OWNER
+  DAD
+  MOM
+  BROTHER
+  SISTER
+  OTHER
+}
+
+enum UserStatus {
+  ACTIVE
+  BLOCKED
+  DELETED
+}
+
+enum ProfileVisibility {
+  PUBLIC
+  PRIVATE
+  FOLLOWERS_ONLY
+}
+
+enum AuthProvider {
+  LOCAL
+  GOOGLE
+  FACEBOOK
+  APPLE
+}
+
+enum FriendRequestStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  CANCELED
+}
+
+enum PostType {
+  TEXT
+  IMAGE
+  VIDEO
+  REEL
+}
+
+enum PostCategory {
+  GENERAL
+  FUNDRAISING
+  FUNDRAISING_UPDATE
+}
+
+model AnimalType {
+  id           Int           @id @default(autoincrement())
+  name         String        @unique
+  breeds       Breed[]
+  pets         Pet[]
+  vaccineTypes VaccineType[]
+
+  @@map("animal_types")
+}
+
+model Breed {
+  id           Int        @id @default(autoincrement())
+  name         String
+  animalTypeId Int
+  animalType   AnimalType @relation(fields: [animalTypeId], references: [id])
+  pets         Pet[]
+
+  @@unique([name, animalTypeId])
+  @@map("breeds")
+}
+
+model UserAuth {
+  id     Int  @id @default(autoincrement())
+  userId Int  @unique
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  provider AuthProvider @default(LOCAL)
+
+  email        String? @unique
+  phone        String? @unique
+  passwordHash String? // LOCAL only
+
+  passwordUpdatedAt DateTime?
+  emailVerifiedAt   DateTime?
+  phoneVerifiedAt   DateTime?
+
+  lastLoginAt    DateTime?
+  failedAttempts Int       @default(0)
+  lockedUntil    DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([email])
+  @@index([phone])
+  @@map("user_auth")
+}
+
+model UserProfile {
+  id     Int  @id @default(autoincrement())
+  userId Int  @unique
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  displayName String
+  username    String  @unique
+  bio         String? @db.Text
+
+  visibility ProfileVisibility @default(PUBLIC)
+
+  // privacy flags
+  showEmail Boolean @default(false)
+  showPhone Boolean @default(false)
+
+  // Media: avatar & cover
+  avatarMediaId Int?
+  avatarMedia   Media? @relation("UserAvatar", fields: [avatarMediaId], references: [id])
+
+  coverMediaId Int?
+  coverMedia   Media? @relation("UserCover", fields: [coverMediaId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([username])
+  @@map("user_profiles")
+}
+
+model UserStatsCache {
+  userId Int  @id
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  followersCount Int @default(0)
+  followingCount Int @default(0)
+  petsCount      Int @default(0)
+
+  // Mirror/cache for fast profile reads (source of truth: UserWallet.points)
+  pawPoints Int @default(0)
+
+  // Cached rank (optional)
+  rankGlobal Int?
+
+  updatedAt DateTime @updatedAt
+
+  @@map("user_stats_cache")
+}
+
+model UserSession {
+  id     Int  @id @default(autoincrement())
+  userId Int
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Store hash only (never store raw refresh token)
+  refreshTokenHash String @unique
+
+  deviceId  String?
+  userAgent String?
+  ip        String?
+
+  createdAt DateTime  @default(now())
+  expiresAt DateTime
+  revokedAt DateTime?
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("user_sessions")
+}
+
+model UserFollow {
+  id          Int      @id @default(autoincrement())
+  followerId  Int
+  followingId Int
+  createdAt   DateTime @default(now())
+
+  follower  User @relation("UserFollowing", fields: [followerId], references: [id], onDelete: Cascade)
+  following User @relation("UserFollowers", fields: [followingId], references: [id], onDelete: Cascade)
+
+  @@unique([followerId, followingId])
+  @@index([followingId])
+  @@index([followerId])
+  @@map("user_follows")
+}
+
+model UserProfileLike {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  likedById Int
+  createdAt DateTime @default(now())
+
+  user    User @relation("UserProfileLiked", fields: [userId], references: [id], onDelete: Cascade)
+  likedBy User @relation("UserProfileLiker", fields: [likedById], references: [id], onDelete: Cascade)
+
+  @@unique([userId, likedById])
+  @@index([userId])
+  @@index([likedById])
+  @@map("user_profile_likes")
+}
+
+model UserFriendRequest {
+  id         Int                 @id @default(autoincrement())
+  fromUserId Int
+  toUserId   Int
+  status     FriendRequestStatus @default(PENDING)
+  createdAt  DateTime            @default(now())
+  updatedAt  DateTime            @updatedAt
+
+  fromUser User @relation("FriendRequestFrom", fields: [fromUserId], references: [id], onDelete: Cascade)
+  toUser   User @relation("FriendRequestTo", fields: [toUserId], references: [id], onDelete: Cascade)
+
+  @@unique([fromUserId, toUserId])
+  @@index([toUserId])
+  @@index([fromUserId])
+  @@map("user_friend_requests")
+}
+
+model UserFriend {
+  id        Int      @id @default(autoincrement())
+  userAId   Int
+  userBId   Int
+  createdAt DateTime @default(now())
+
+  userA User @relation("UserFriendA", fields: [userAId], references: [id], onDelete: Cascade)
+  userB User @relation("UserFriendB", fields: [userBId], references: [id], onDelete: Cascade)
+
+  @@unique([userAId, userBId])
+  @@index([userAId])
+  @@index([userBId])
+  @@map("user_friends")
+}
+
+model Achievement {
+  id             Int     @id @default(autoincrement())
+  code           String  @unique
+  title          String
+  description    String?
+  requiredPoints Int     @default(0)
+  pointsReward   Int     @default(0)
+  howTo          String?
+
+  iconMediaId Int?
+  iconMedia   Media? @relation("AchievementIcon", fields: [iconMediaId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  users UserAchievement[]
+
+  @@map("achievements")
+}
+
+model UserAchievement {
+  id            Int      @id @default(autoincrement())
+  userId        Int
+  achievementId Int
+  unlockedAt    DateTime @default(now())
+
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  achievement Achievement @relation(fields: [achievementId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, achievementId])
+  @@index([userId])
+  @@map("user_achievements")
+}
+
+model UserGalleryItem {
+  id     Int  @id @default(autoincrement())
+  userId Int
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  mediaId Int
+  media   Media @relation("UserGalleryMedia", fields: [mediaId], references: [id], onDelete: Cascade)
+
+  caption   String?
+  createdAt DateTime @default(now())
+  deleted   Boolean  @default(false)
+
+  @@index([userId, createdAt])
+  @@map("user_gallery_items")
+}
+
+model User {
+  id        Int        @id @default(autoincrement())
+  status    UserStatus @default(ACTIVE)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  // Split tables (keep User thin)
+  auth     UserAuth?
+  profile  UserProfile?
+  stats    UserStatsCache?
+  sessions UserSession[]
+
+  // Social graph
+  followsFollowing UserFollow[] @relation("UserFollowing")
+  followsFollowers UserFollow[] @relation("UserFollowers")
+
+  profileLikesReceived UserProfileLike[] @relation("UserProfileLiked")
+  profileLikesGiven    UserProfileLike[] @relation("UserProfileLiker")
+
+  friendRequestsSent     UserFriendRequest[] @relation("FriendRequestFrom")
+  friendRequestsReceived UserFriendRequest[] @relation("FriendRequestTo")
+
+  friendsA UserFriend[] @relation("UserFriendA")
+  friendsB UserFriend[] @relation("UserFriendB")
+
+  // Existing relations
+  pets                   Pet[]
+  wallet                 UserWallet?
+  walletWithdrawRequests WalletWithdrawRequest[]
+  rewardHistories        RewardHistory[]
+
+  // Home feed / posts
+  posts                               Post[]
+  postLikes                           PostLike[]
+  postComments                        PostComment[]
+  // postComments     PostComment[]
+  postCommentLikes                    PostCommentLike[]
+  // NEW: opposite side of Media.owner
+  uploadedMedia                       Media[]                       @relation("UserUploadedMedia")
+  fundraisingAccountStatusLogsAsAdmin FundraisingAccountStatusLog[] @relation("FundraisingAccountStatusLogAdminUser")
+  fundraisingWithdrawRequestsAsAdmin  FundraisingWithdrawRequest[]  @relation("FundraisingWithdrawAdminUser")
+  walletWithdrawRequestsAsAdmin       WalletWithdrawRequest[]       @relation("WalletWithdrawAdminUser")
+
+  // Premium profile features
+  achievements UserAchievement[]
+  galleryItems UserGalleryItem[]
+
+  // FUNDRAISING (Phase A) - opposite relation fields
+  fundraisingAccount FundraisingAccount?
+  donations          Donation[]
+
+  // REPORTS (Phase B) - opposite relation field
+  reports Report[] @relation("UserReports")
+
+  // PARTNER ONBOARDING (Org/Branch)
+  partnerApplications PartnerApplication[]
+  ownedOrganizations  Organization[]
+  ownerProfile        OwnerProfile?
+
+  // PHASE-1 KYC / Verification
+  ownerKyc                 OwnerKyc?
+  ownerKycReviewed         OwnerKyc[]                 @relation("OwnerKycReviewedBy")
+  orgLegalProfilesReviewed OrganizationLegalProfile[] @relation("OrgKycReviewedBy")
+  branchProfilesReviewed   BranchProfileDetails[]     @relation("BranchKycReviewedBy")
+  verificationLogsAsAdmin  VerificationLog[]          @relation("VerificationLogAdmin")
+
+  @@map("users")
+}
+
+// Owner profile (separate from UserProfile). This keeps onboarding / KYC fields
+// isolated and avoids breaking Flutter/public user profile flows.
+model OwnerProfile {
+  id     Int  @id @default(autoincrement())
+  userId Int  @unique
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name String
+  nid  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@map("owner_profiles")
+}
+
+// -----------------------------
+// PHASE-1: Owner/Org/Branch KYC
+// -----------------------------
+
+model OwnerKyc {
+  id     Int @id @default(autoincrement())
+  userId Int @unique
+
+  fullName    String
+  fatherName  String?
+  motherName  String?
+  dateOfBirth DateTime?
+  genderText  String?
+  nationality String?   @default("Bangladeshi")
+
+  nidNumber     String?
+  nidIssueDate  DateTime?
+  nidAddressRaw String?
+
+  mobile String?
+  email  String?
+
+  presentAddressJson   Json?
+  permanentAddressJson Json?
+
+  emergencyContactName  String?
+  emergencyContactPhone String?
+
+  verificationStatus VerificationStatus @default(UNSUBMITTED)
+  submittedAt        DateTime?
+  reviewedAt         DateTime?
+  reviewedByAdminId  Int?
+  reviewNote         String?
+  rejectionReason    String?
+  riskScore          Int?               @default(0)
+
+  isLocked   Boolean   @default(false)
+  lockReason String?
+  deletedAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user            User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  reviewedByAdmin User?              @relation("OwnerKycReviewedBy", fields: [reviewedByAdminId], references: [id], onDelete: SetNull)
+  documents       OwnerKycDocument[]
+
+  @@index([verificationStatus])
+  @@index([reviewedByAdminId])
+  @@map("owner_kyc")
+}
+
+model OwnerKycDocument {
+  id         Int @id @default(autoincrement())
+  ownerKycId Int
+
+  type   DocumentType
+  status DocumentStatus @default(SUBMITTED)
+
+  mediaId Int
+  media   Media @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+
+  docNumber  String?
+  issueDate  DateTime?
+  expiryDate DateTime?
+  note       String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  ownerKyc OwnerKyc @relation(fields: [ownerKycId], references: [id], onDelete: Cascade)
+
+  @@index([ownerKycId])
+  @@index([type])
+  @@map("owner_kyc_documents")
+}
+
+model OrganizationLegalProfile {
+  id    Int @id @default(autoincrement())
+  orgId Int @unique
+
+  organizationName String
+  registrationType RegistrationType @default(PROPRIETORSHIP)
+
+  tradeLicenseNumber     String?
+  tradeLicenseIssueDate  DateTime?
+  tradeLicenseExpiryDate DateTime?
+  issuingAuthority       String?
+
+  tinNumber String?
+  binNumber String?
+
+  officialPhone String?
+  officialEmail String?
+  website       String?
+  facebookPage  String?
+
+  bankAccountName   String?
+  bankAccountNumber String?
+  bankName          String?
+  bankBranchName    String?
+  routingNumber     String?
+
+  payoutBkash  String?
+  payoutNagad  String?
+  payoutRocket String?
+
+  verificationStatus VerificationStatus @default(UNSUBMITTED)
+  submittedAt        DateTime?
+  reviewedAt         DateTime?
+  reviewedByAdminId  Int?
+  reviewNote         String?
+  rejectionReason    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  reviewedByAdmin User?        @relation("OrgKycReviewedBy", fields: [reviewedByAdminId], references: [id], onDelete: SetNull)
+
+  documents OrganizationDocument[]
+  directors OrganizationDirector[]
+
+  @@index([verificationStatus])
+  @@index([reviewedByAdminId])
+  @@map("org_legal_profiles")
+}
+
+model OrganizationDocument {
+  id                Int @id @default(autoincrement())
+  orgLegalProfileId Int
+
+  type   DocumentType
+  status DocumentStatus @default(SUBMITTED)
+
+  mediaId Int
+  media   Media @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+
+  docNumber  String?
+  issueDate  DateTime?
+  expiryDate DateTime?
+  note       String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  orgLegalProfile OrganizationLegalProfile @relation(fields: [orgLegalProfileId], references: [id], onDelete: Cascade)
+
+  @@index([orgLegalProfileId])
+  @@index([type])
+  @@map("org_documents")
+}
+
+model OrganizationDirector {
+  id                Int @id @default(autoincrement())
+  orgLegalProfileId Int
+
+  name   String
+  role   String?
+  mobile String?
+  email  String?
+
+  nidNumber       String?
+  sharePercentage Float?
+
+  nidFrontMediaId  Int?
+  nidBackMediaId   Int?
+  signatureMediaId Int?
+
+  nidFrontMedia  Media? @relation("DirectorNidFront", fields: [nidFrontMediaId], references: [id], onDelete: SetNull)
+  nidBackMedia   Media? @relation("DirectorNidBack", fields: [nidBackMediaId], references: [id], onDelete: SetNull)
+  signatureMedia Media? @relation("DirectorSignature", fields: [signatureMediaId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  orgLegalProfile OrganizationLegalProfile @relation(fields: [orgLegalProfileId], references: [id], onDelete: Cascade)
+
+  @@index([orgLegalProfileId])
+  @@map("org_directors")
+}
+
+model BranchProfileDetails {
+  id       Int @id @default(autoincrement())
+  branchId Int @unique
+
+  branchPhone String?
+  branchEmail String?
+
+  managerName      String?
+  managerPhone     String?
+  managerNidNumber String?
+
+  addressJson   Json?
+  latitude      Float?
+  longitude     Float?
+  googleMapLink String?
+
+  openingHoursJson  Json?
+  weeklyOffDaysJson Json?
+
+  vetLicenseNumber  String?
+  drugLicenseNumber String?
+
+  verificationStatus VerificationStatus @default(UNSUBMITTED)
+  submittedAt        DateTime?
+  reviewedAt         DateTime?
+  reviewedByAdminId  Int?
+  reviewNote         String?
+  rejectionReason    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  branch          Branch           @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  reviewedByAdmin User?            @relation("BranchKycReviewedBy", fields: [reviewedByAdminId], references: [id], onDelete: SetNull)
+  documents       BranchDocument[]
+
+  @@index([verificationStatus])
+  @@index([reviewedByAdminId])
+  @@map("branch_profile_details")
+}
+
+model BranchDocument {
+  id              Int @id @default(autoincrement())
+  branchProfileId Int
+
+  type   DocumentType
+  status DocumentStatus @default(SUBMITTED)
+
+  mediaId Int
+  media   Media @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+
+  docNumber  String?
+  issueDate  DateTime?
+  expiryDate DateTime?
+  note       String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  branchProfile BranchProfileDetails @relation(fields: [branchProfileId], references: [id], onDelete: Cascade)
+
+  @@index([branchProfileId])
+  @@index([type])
+  @@map("branch_documents")
+}
+
+model VerificationLog {
+  id         Int                    @id @default(autoincrement())
+  entityType VerificationEntityType
+  entityId   Int
+
+  action     VerificationAction
+  fromStatus VerificationStatus?
+  toStatus   VerificationStatus?
+
+  adminUserId Int?
+  adminUser   User? @relation("VerificationLogAdmin", fields: [adminUserId], references: [id], onDelete: SetNull)
+
+  note      String?
+  createdAt DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([adminUserId])
+  @@map("verification_logs")
+}
+
+model Post {
+  id       Int  @id @default(autoincrement())
+  authorId Int
+  author   User @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  type     PostType     @default(TEXT)
+  category PostCategory @default(GENERAL)
+  caption  String?      @db.Text
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  media    PostMedia[]
+  likes    PostLike[]
+  comments PostComment[]
+
+  // FUNDRAISING (Phase A) - opposite relation field
+  fundraisingCampaign FundraisingCampaign?
+
+  // FUNDRAISING UPDATES (Phase B)
+  fundraisingUpdate FundraisingUpdate?
+
+  @@index([authorId, createdAt])
+  @@map("posts")
+}
+
+model PostMedia {
+  id     Int  @id @default(autoincrement())
+  postId Int
+  post   Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  mediaId Int
+  media   Media @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+
+  order Int @default(0)
+
+  @@unique([postId, order])
+  @@index([postId])
+  @@map("post_media")
+}
+
+model PostLike {
+  id        Int      @id @default(autoincrement())
+  postId    Int
+  post      Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([postId, userId], name: "postId_userId")
+  @@index([userId])
+  @@map("post_likes")
+}
+
+model PostComment {
+  id     Int  @id @default(autoincrement())
+  postId Int
+  post   Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  userId Int
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  parentId Int?
+  parent   PostComment?  @relation("PostCommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies  PostComment[] @relation("PostCommentReplies")
+
+  likes PostCommentLike[] // ✅ একবার
+
+  text      String    @db.Text
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  @@index([postId, createdAt])
+  @@index([userId])
+  @@index([parentId])
+  @@map("post_comments")
+}
+
+model PostCommentLike {
+  id        Int         @id @default(autoincrement())
+  commentId Int
+  comment   PostComment @relation(fields: [commentId], references: [id], onDelete: Cascade)
+
+  userId Int
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([commentId, userId])
+  @@index([userId])
+  @@map("post_comment_likes")
+}
+
+model Media {
+  id        Int      @id @default(autoincrement())
+  url       String
+  key       String?
+  type      String
+  createdAt DateTime @default(now())
+
+  ownerUserId Int
+  owner       User @relation("UserUploadedMedia", fields: [ownerUserId], references: [id], onDelete: Cascade)
+
+  deletedAt DateTime?
+
+  // relations
+  petProfilePic                    Pet?                              @relation("PetProfilePic")
+  userAvatars                      UserProfile[]                     @relation("UserAvatar")
+  userCovers                       UserProfile[]                     @relation("UserCover")
+  galleryItems                     UserGalleryItem[]                 @relation("UserGalleryMedia")
+  achievementIcons                 Achievement[]                     @relation("AchievementIcon")
+  // NEW: posts can reference uploaded media (images/videos/reels)
+  postMedia                        PostMedia[]
+  // FUNDRAISING (Phase A) - opposite relation field
+  fundraisingVerificationDocuments FundraisingVerificationDocument[]
+  // FUNDRAISING PAYOUT - proof uploads (optional)
+  fundraisingPayoutProofLogs       FundraisingPayoutTransferLog[]
+  // Pet profile: family member avatar (optional)
+  petFamilyAvatars                 PetFamilyMember[]                 @relation("PetFamilyAvatar")
+
+  // PHASE-1 KYC / Verification (opposite relations)
+  ownerKycDocuments     OwnerKycDocument[]
+  organizationDocuments OrganizationDocument[]
+  branchDocuments       BranchDocument[]
+  directorNidFronts     OrganizationDirector[] @relation("DirectorNidFront")
+  directorNidBacks      OrganizationDirector[] @relation("DirectorNidBack")
+  directorSignatures    OrganizationDirector[] @relation("DirectorSignature")
+
+  @@index([ownerUserId])
+  @@map("media")
+}
+
+model Pet {
+  id     Int  @id @default(autoincrement())
+  userId Int
+  user   User @relation(fields: [userId], references: [id])
+
+  animalTypeId Int
+  animalType   AnimalType @relation(fields: [animalTypeId], references: [id])
+
+  breedId Int?
+  breed   Breed? @relation(fields: [breedId], references: [id])
+
+  // ✅ 1 pet = 1 profile pic (one-to-one) রাখতে চাইলে @unique ঠিক আছে
+
+  profilePicId Int?   @unique
+  profilePic   Media? @relation("PetProfilePic", fields: [profilePicId], references: [id])
+
+  name            String
+  sex             Gender    @default(UNKNOWN)
+  dateOfBirth     DateTime?
+  microchipNumber String?   @unique
+
+  isRescue   Boolean @default(false)
+  isNeutered Boolean @default(false)
+
+  foodHabits      String? @db.Text
+  healthDisorders String? @db.Text
+  notes           String? @db.Text
+
+  status PetStatus @default(ACTIVE)
+
+  weights          PetWeight[]
+  vaccinations     Vaccination[]
+  dewormingRecords DewormingRecord[]
+  medicalHistories MedicalHistory[]
+
+  // UI: family avatars on pet profile screen
+  familyMembers PetFamilyMember[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  deleted   Boolean  @default(false)
+
+  @@map("pets")
+}
+
+model PetFamilyMember {
+  id    Int @id @default(autoincrement())
+  petId Int
+  pet   Pet @relation(fields: [petId], references: [id], onDelete: Cascade)
+
+  relation FamilyRelation @default(OTHER)
+  name     String
+
+  // optional avatar media
+  avatarMediaId Int?
+  avatarMedia   Media? @relation("PetFamilyAvatar", fields: [avatarMediaId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  @@index([petId])
+  @@map("pet_family_members")
+}
+
+model PetWeight {
+  id    Int @id @default(autoincrement())
+  petId Int
+  pet   Pet @relation(fields: [petId], references: [id], onDelete: Cascade)
+
+  weightKg   Float
+  notes      String?
+  recordedAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  @@map("pet_weights")
+}
+
+model VaccineType {
+  id                  Int           @id @default(autoincrement())
+  name                String        @unique
+  targetAnimalTypeId  Int?
+  targetAnimalType    AnimalType?   @relation(fields: [targetAnimalTypeId], references: [id])
+  defaultIntervalDays Int           @default(365)
+  description         String?
+  vaccinations        Vaccination[]
+
+  @@map("vaccine_types")
+}
+
+model Vaccination {
+  id             Int         @id @default(autoincrement())
+  petId          Int
+  pet            Pet         @relation(fields: [petId], references: [id], onDelete: Cascade)
+  vaccineTypeId  Int
+  vaccineType    VaccineType @relation(fields: [vaccineTypeId], references: [id])
+  administeredAt DateTime    @default(now())
+  nextDueDate    DateTime?
+  batchNumber    String?
+  vetClinic      String?
+  notes          String?
+  createdAt      DateTime    @default(now())
+
+  @@map("vaccinations")
+}
+
+model DewormingRecord {
+  id             Int       @id @default(autoincrement())
+  petId          Int
+  pet            Pet       @relation(fields: [petId], references: [id], onDelete: Cascade)
+  medicationName String
+  dosage         String?
+  weightAtTime   Float?
+  administeredAt DateTime  @default(now())
+  nextDueDate    DateTime?
+  notes          String?
+  createdAt      DateTime  @default(now())
+
+  @@map("deworming_records")
+}
+
+model MedicalHistory {
+  id           Int       @id @default(autoincrement())
+  petId        Int
+  pet          Pet       @relation(fields: [petId], references: [id], onDelete: Cascade)
+  condition    String
+  treatment    String?   @db.Text
+  doctorName   String?
+  clinicName   String?
+  visitDate    DateTime  @default(now())
+  followUpDate DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@map("medical_histories")
+}
+
+model RewardHistory {
+  id          Int      @id @default(autoincrement())
+  userId      Int
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  action      String
+  points      Int
+  description String?
+  referenceId String?
+  createdAt   DateTime @default(now())
+
+  @@map("reward_histories")
+}
+
+// AUTO-SPLIT from original schema.prisma
+// Module: wallet
+
+enum TransactionType {
+  CREDIT
+  DEBIT
+}
+
+enum TransactionStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
+
+enum PaymentMethod {
+  CASH
+  BKASH
+  NAGAD
+  ROCKET
+  BANK
+  CARD
+}
+
+enum WalletSourceType {
+  DONATION
+  WALLET_WITHDRAW_REQUEST
+  FUNDRAISING_WITHDRAW_REQUEST
+  ADMIN_ADJUSTMENT
+}
+
+enum PayoutProvider {
+  BKASH
+  NAGAD
+  ROCKET
+}
+
+enum WalletWithdrawRequestStatus {
+  SUBMITTED
+  UNDER_REVIEW
+  APPROVED
+  QUEUED
+  PROCESSING
+  TRANSFERRED
+  FAILED
+  REJECTED
+  CANCELED
+}
+
+model UserWallet {
+  id     Int  @id @default(autoincrement())
+  userId Int  @unique // ✅ প্রতি ইউজারের শুধু ১টি ওয়ালেট
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // NOTE:
+  // balance = availableBalance + pendingBalance + lockedBalance
+  // Keep balance for backward-compatibility and quick reads.
+  balance Decimal @default(0.00) @db.Decimal(10, 2)
+
+  // V1 split balances
+  availableBalance Decimal  @default(0.00) @db.Decimal(10, 2)
+  pendingBalance   Decimal  @default(0.00) @db.Decimal(10, 2)
+  lockedBalance    Decimal  @default(0.00) @db.Decimal(10, 2)
+  currency         String   @default("BDT")
+  points           Int      @default(0)
+  tier             String   @default("Bronze")
+  isActive         Boolean  @default(true)
+  updatedAt        DateTime @updatedAt
+
+  transactions WalletTransaction[]
+
+  withdrawRequests WalletWithdrawRequest[]
+
+  @@map("user_wallets")
+}
+
+model WalletTransaction {
+  id       Int        @id @default(autoincrement())
+  walletId Int
+  wallet   UserWallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+
+  type   TransactionType
+  status TransactionStatus @default(PENDING)
+
+  amount    Decimal        @db.Decimal(10, 2)
+  method    PaymentMethod?
+  reference String?
+
+  // V1: link a transaction to its source entity
+  sourceType WalletSourceType?
+  sourceId   Int?
+
+  note      String?
+  createdAt DateTime @default(now())
+
+  @@index([walletId])
+  @@index([sourceType, sourceId])
+  @@map("wallet_transactions")
+}
+
+model WalletWithdrawRequest {
+  id Int @id @default(autoincrement())
+
+  walletId Int
+  wallet   UserWallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+
+  userId Int
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  amount Decimal @db.Decimal(10, 2)
+
+  method            PaymentMethod
+  payoutDetailsJson String        @db.Text
+
+  // Session-3 Payout automation
+  provider             PayoutProvider?
+  providerPayoutId     String?
+  providerStatus       String?
+  providerResponseJson String?         @db.Text
+
+  failureCode    String?
+  failureMessage String? @db.Text
+
+  attemptCount        Int       @default(0)
+  nextRetryAt         DateTime?
+  processingStartedAt DateTime?
+  completedAt         DateTime?
+
+  status WalletWithdrawRequestStatus @default(SUBMITTED)
+
+  note String? @db.Text
+
+  adminUserId Int?
+  adminUser   User? @relation("WalletWithdrawAdminUser", fields: [adminUserId], references: [id], onDelete: SetNull)
+
+  reviewedAt  DateTime?
+  processedAt DateTime?
+
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  payoutEventLogs PayoutEventLog[]
+
+  @@index([walletId, createdAt])
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+  @@index([adminUserId])
+  @@index([provider, providerPayoutId])
+  @@map("wallet_withdraw_requests")
+}
+
+model PayoutEventLog {
+  id Int @id @default(autoincrement())
+
+  provider          PayoutProvider
+  providerEventId   String?
+  providerPayoutId  String?
+  withdrawRequestId Int?
+  withdrawRequest   WalletWithdrawRequest? @relation(fields: [withdrawRequestId], references: [id], onDelete: SetNull)
+
+  payloadJson    String   @db.Text
+  signatureValid Boolean  @default(false)
+  receivedAt     DateTime @default(now())
+
+  @@index([provider, providerEventId])
+  @@index([provider, providerPayoutId])
+  @@index([withdrawRequestId])
+  @@map("payout_event_logs")
+}
+
+// AUTO-SPLIT from original schema.prisma
+// Module: fundraising
+
+enum PayoutMethodType {
+  MFS
+  BANK
+}
+
+enum FundraisingWithdrawRequestStatus {
+  SUBMITTED
+  UNDER_REVIEW
+  APPROVED
+  TRANSFERRED
+  REJECTED
+  CANCELED
+}
+
+enum ReportTargetType {
+  POST
+  FUNDRAISING
+  USER
+  PET
+}
+
+enum ReportStatus {
+  PENDING
+  REVIEWED
+  DISMISSED
+}
+
+model FundraisingUpdate {
+  id         Int                 @id @default(autoincrement())
+  campaignId Int
+  campaign   FundraisingCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  postId Int  @unique
+  post   Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  @@index([campaignId, createdAt])
+  @@map("fundraising_updates")
+}
+
+enum FundraisingAccountStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+enum FundraisingAccountType {
+  INDIVIDUAL
+  ORGANIZATION
+}
+
+enum FundraisingCampaignStatus {
+  ACTIVE
+  PAUSED
+  ENDED
+}
+
+model FundraisingAccount {
+  id     Int                      @id @default(autoincrement())
+  userId Int                      @unique
+  user   User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status FundraisingAccountStatus @default(PENDING)
+
+  accountType FundraisingAccountType?
+
+  // Verification / identity details
+  permanentAddress String? @db.Text
+  presentAddress   String? @db.Text
+  occupation       String?
+  area             String?
+  rescueSinceYear  Int?
+
+  // Organization-only fields
+  orgName        String?
+  orgDescription String? @db.Text
+  orgWorkType    String?
+
+  submittedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  documents FundraisingVerificationDocument[]
+  campaigns FundraisingCampaign[]
+
+  // audit log for verification review / status changes
+  statusLogs FundraisingAccountStatusLog[]
+
+  divisionId Int?
+  division   BdDivision? @relation(fields: [divisionId], references: [id], onDelete: SetNull)
+
+  districtId Int?
+  district   BdDistrict? @relation(fields: [districtId], references: [id], onDelete: SetNull)
+
+  upazilaId Int?
+  upazila   BdUpazila? @relation(fields: [upazilaId], references: [id], onDelete: SetNull)
+
+  areaId Int?
+  bdArea BdArea? @relation(fields: [areaId], references: [id], onDelete: SetNull)
+
+  dateOfBirth                DateTime?
+  nationalIdNumber           String?
+  birthRegNumber             String?
+  studentIdNumber            String?
+  FundraisingPayoutMethod    FundraisingPayoutMethod[]
+  FundraisingWithdrawRequest FundraisingWithdrawRequest[]
+
+  @@index([divisionId])
+  @@index([districtId])
+  @@index([upazilaId])
+  @@index([areaId])
+  @@map("fundraising_accounts")
+}
+
+model FundraisingAccountStatusLog {
+  id        Int                @id @default(autoincrement())
+  accountId Int
+  account   FundraisingAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  fromStatus FundraisingAccountStatus
+  toStatus   FundraisingAccountStatus
+
+  adminUserId Int?
+  adminUser   User? @relation("FundraisingAccountStatusLogAdminUser", fields: [adminUserId], references: [id], onDelete: SetNull)
+
+  note      String?  @db.Text
+  createdAt DateTime @default(now())
+
+  @@index([accountId, createdAt])
+  @@index([adminUserId])
+  @@map("fundraising_account_status_logs")
+}
+
+model FundraisingVerificationDocument {
+  id        Int                @id @default(autoincrement())
+  accountId Int
+  account   FundraisingAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  title     String
+  mediaId   Int
+  media     Media              @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+  createdAt DateTime           @default(now())
+  deletedAt DateTime?
+
+  @@index([accountId])
+  @@map("fundraising_verification_documents")
+}
+
+model FundraisingCampaign {
+  id        Int                @id @default(autoincrement())
+  postId    Int                @unique
+  post      Post               @relation(fields: [postId], references: [id], onDelete: Cascade)
+  accountId Int
+  account   FundraisingAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  title        String
+  targetAmount Int
+  deadline     DateTime
+
+  category     String?
+  locationText String?
+  status       FundraisingCampaignStatus @default(ACTIVE)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  donations                  Donation[]
+  stats                      FundraisingCampaignStats?
+  updates                    FundraisingUpdate[]
+  FundraisingWithdrawRequest FundraisingWithdrawRequest[]
+
+  @@index([accountId, createdAt])
+  @@map("fundraising_campaigns")
+}
+
+model FundraisingCampaignStats {
+  campaignId      Int                 @id
+  campaign        FundraisingCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  raisedAmount    Int                 @default(0)
+  withdrawnAmount Int                 @default(0)
+  donorsCount     Int                 @default(0)
+  lastDonationAt  DateTime?
+  lastPayoutAt    DateTime?
+
+  @@map("fundraising_campaign_stats")
+}
+
+model Donation {
+  id         Int                 @id @default(autoincrement())
+  campaignId Int
+  campaign   FundraisingCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  donorId    Int
+  donor      User                @relation(fields: [donorId], references: [id], onDelete: Cascade)
+
+  amount Int
+  status TransactionStatus @default(SUCCESS)
+
+  createdAt DateTime @default(now())
+
+  @@index([campaignId, createdAt])
+  @@index([donorId])
+  @@map("donations")
+}
+
+model FundraisingPayoutMethodCatalog {
+  id       Int              @id @default(autoincrement())
+  code     String           @unique
+  name     String
+  type     PayoutMethodType
+  isActive Boolean          @default(true)
+
+  // Optional JSON describing required fields (e.g., {"walletNumber":true})
+  requirementsJson String? @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  methods FundraisingPayoutMethod[]
+
+  @@index([isActive])
+  @@map("fundraising_payout_method_catalog")
+}
+
+model FundraisingPayoutMethod {
+  id        Int                @id @default(autoincrement())
+  accountId Int
+  account   FundraisingAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  catalogId Int
+  catalog   FundraisingPayoutMethodCatalog @relation(fields: [catalogId], references: [id], onDelete: Restrict)
+
+  label       String?
+  detailsJson String  @db.Text
+
+  isDefault Boolean @default(false)
+  isActive  Boolean @default(true)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  withdrawRequests FundraisingWithdrawRequest[]
+
+  @@index([accountId])
+  @@index([catalogId])
+  @@index([isDefault])
+  @@map("fundraising_payout_methods")
+}
+
+model FundraisingWithdrawRequest {
+  id         Int                 @id @default(autoincrement())
+  campaignId Int
+  campaign   FundraisingCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  accountId Int
+  account   FundraisingAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  methodId Int
+  method   FundraisingPayoutMethod @relation(fields: [methodId], references: [id], onDelete: Restrict)
+
+  amount Int
+  status FundraisingWithdrawRequestStatus @default(SUBMITTED)
+
+  note String? @db.Text
+
+  adminUserId Int?
+  adminUser   User? @relation("FundraisingWithdrawAdminUser", fields: [adminUserId], references: [id], onDelete: SetNull)
+
+  reviewedAt  DateTime?
+  processedAt DateTime?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  transferLog FundraisingPayoutTransferLog?
+
+  @@index([campaignId, createdAt])
+  @@index([accountId, createdAt])
+  @@index([status, createdAt])
+  @@index([adminUserId])
+  @@map("fundraising_withdraw_requests")
+}
+
+model FundraisingPayoutTransferLog {
+  id        Int                        @id @default(autoincrement())
+  requestId Int                        @unique
+  request   FundraisingWithdrawRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  // manual proof/reference now; later can store provider response
+  reference          String?
+  proofMediaId       Int?
+  proofMedia         Media?  @relation(fields: [proofMediaId], references: [id], onDelete: SetNull)
+  methodSnapshotJson String? @db.Text
+
+  createdAt DateTime @default(now())
+
+  @@index([proofMediaId])
+  @@map("fundraising_payout_transfer_logs")
+}
+
+model Report {
+  id         Int              @id @default(autoincrement())
+  type       ReportTargetType
+  targetId   Int
+  reporterId Int
+  reporter   User             @relation("UserReports", fields: [reporterId], references: [id], onDelete: Cascade)
+  reasonCode String
+  details    String?          @db.Text
+  status     ReportStatus     @default(PENDING)
+  createdAt  DateTime         @default(now())
+  reviewedAt DateTime?
+
+  @@index([type, targetId])
+  @@index([reporterId])
+  @@map("reports")
+}
+
+// AUTO-SPLIT from original schema.prisma
+// Module: location
+
+model BdDivision {
+  id     Int     @id @default(autoincrement())
+  code   String  @unique
+  nameEn String
+  nameBn String?
+
+  districts BdDistrict[]
+
+  fundraisingAccounts FundraisingAccount[]
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+
+  @@map("bd_divisions")
+}
+
+model BdDistrict {
+  id     Int     @id @default(autoincrement())
+  code   String  @unique
+  nameEn String
+  nameBn String?
+
+  divisionId Int
+  division   BdDivision @relation(fields: [divisionId], references: [id], onDelete: Cascade)
+
+  upazilas BdUpazila[]
+
+  // ✅ Opposite relation for BdArea.district ("BdDistrictAreas")
+  areas BdArea[] @relation("BdDistrictAreas")
+
+  fundraisingAccounts FundraisingAccount[]
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+
+  @@index([divisionId])
+  @@map("bd_districts")
+}
+
+model BdUpazila {
+  id     Int     @id @default(autoincrement())
+  code   String  @unique
+  nameEn String
+  nameBn String?
+
+  districtId Int
+  district   BdDistrict @relation(fields: [districtId], references: [id], onDelete: Cascade)
+
+  areas BdArea[]
+
+  fundraisingAccounts FundraisingAccount[]
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+
+  @@index([districtId])
+  @@map("bd_upazilas")
+}
+
+model BdArea {
+  id     Int     @id @default(autoincrement())
+  code   String  @unique
+  nameEn String
+  nameBn String?
+  type   String
+
+  // Legacy: union/area under upazila
+  upazilaId Int?
+  upazila   BdUpazila? @relation(fields: [upazilaId], references: [id], onDelete: SetNull)
+
+  // New: city-corporation / zone / ward-area hierarchy (Dhaka etc.)
+  districtId Int?
+  district   BdDistrict? @relation("BdDistrictAreas", fields: [districtId], references: [id], onDelete: SetNull)
+
+  parentId Int?
+  parent   BdArea?  @relation("BdAreaTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children BdArea[] @relation("BdAreaTree")
+
+  fundraisingAccounts FundraisingAccount[]
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+
+  @@unique([parentId, nameEn, type])
+  @@index([upazilaId])
+  @@index([districtId])
+  @@index([parentId])
+  @@map("bd_areas")
+}
+
+// ===============================
+// Partner Onboarding (V21)
+// ===============================
+
+enum PartnerStatus {
+  NOT_APPLIED
+  PENDING_REVIEW
+  APPROVED
+  REJECTED
+  SUSPENDED
+}
+
+enum BranchStatus {
+  DRAFT
+  PENDING_REVIEW
+  ACTIVE
+  INACTIVE
+  BLOCKED
+}
+
+enum BranchTypeCode {
+  CLINIC
+  PET_SHOP
+  DELIVERY_HUB
+  WAREHOUSE_DC
+  GROOMING_SPA
+  BOARDING_DAYCARE
+  FOSTER_SHELTER
+  TRAINING_BEHAVIOR
+  PHARMACY_DIAGNOSTICS
+}
+
+enum VerificationStatus {
+  UNSUBMITTED
+  SUBMITTED
+  VERIFIED
+  REJECTED
+}
+
+// Phase-1 KYC / Verification enums (add-only)
+enum VerificationEntityType {
+  OWNER
+  ORGANIZATION
+  BRANCH
+}
+
+enum VerificationAction {
+  SUBMIT
+  APPROVE
+  REJECT
+  NOTE
+  LOCK
+  UNLOCK
+}
+
+enum DocumentType {
+  // Owner KYC
+  NID_FRONT
+  NID_BACK
+  SELFIE_WITH_NID
+
+  // Organization legal
+  TRADE_LICENSE
+  TIN_CERT
+  BIN_CERT
+  INCORPORATION_CERT
+  PARTNERSHIP_DEED
+  BOARD_RESOLUTION
+  BANK_CHEQUE_LEAF
+
+  // Branch photos / licenses
+  STORE_FRONT_PHOTO
+  STORE_INSIDE_PHOTO
+  SIGNBOARD_PHOTO
+  VET_LICENSE
+  DRUG_LICENSE
+
+  OTHER
+}
+
+enum DocumentStatus {
+  SUBMITTED
+  VERIFIED
+  REJECTED
+}
+
+enum RegistrationType {
+  PROPRIETORSHIP
+  PARTNERSHIP
+  LIMITED_COMPANY
+  NGO
+}
+
+enum PublishRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model PartnerApplication {
+  id     Int           @id @default(autoincrement())
+  userId Int
+  status PartnerStatus @default(PENDING_REVIEW)
+
+  businessName   String
+  nidNumber      String
+  tradeLicenseNo String?
+  docsJson       Json?
+
+  submittedAt       DateTime  @default(now())
+  reviewedAt        DateTime?
+  reviewNote        String?
+  reviewedByAdminId Int?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("partner_applications")
+}
+
+model Organization {
+  id          Int           @id @default(autoincrement())
+  ownerUserId Int
+  status      PartnerStatus @default(PENDING_REVIEW)
+
+  name         String
+  supportPhone String?
+  addressJson  Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  owner    User     @relation(fields: [ownerUserId], references: [id], onDelete: Restrict)
+  branches Branch[]
+
+  // PHASE-1 KYC / Verification
+  legalProfile OrganizationLegalProfile?
+
+  @@index([ownerUserId])
+  @@map("organizations")
+}
+
+model Branch {
+  id     Int          @id @default(autoincrement())
+  orgId  Int
+  name   String
+  status BranchStatus @default(DRAFT)
+
+  // what this branch IS (shop/clinic/delivery)
+  capabilitiesJson Json @default("{}")
+
+  // new: branch can have multiple types (hybrid supported)
+  types        BranchToType[]
+  // what modules are ENABLED (pos/ecommerce/appointments...) — admin unlocks on approval
+  featuresJson Json           @default("{}")
+
+  verificationStatus VerificationStatus @default(UNSUBMITTED)
+  addressJson        Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org             Organization           @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  publishRequests BranchPublishRequest[]
+  typeLinks       BranchTypeOnBranch[]
+  // PHASE-1 KYC / Verification
+  profileDetails  BranchProfileDetails?
+
+  @@index([orgId])
+  @@map("branches")
+}
+
+model BranchTypeOnBranch {
+  branchId     Int
+  branchTypeId Int
+  isPrimary    Boolean  @default(false)
+  createdAt    DateTime @default(now())
+
+  branch     Branch     @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  branchType BranchType @relation(fields: [branchTypeId], references: [id], onDelete: Cascade)
+
+  @@id([branchId, branchTypeId])
+  @@index([branchTypeId])
+}
+
+model BranchPublishRequest {
+  id                Int                  @id @default(autoincrement())
+  branchId          Int
+  status            PublishRequestStatus @default(PENDING)
+  submittedAt       DateTime             @default(now())
+  reviewedAt        DateTime?
+  reviewedByAdminId Int?
+  note              String?
+
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@index([branchId])
+  @@map("branch_publish_requests")
+}
+
+model BranchType {
+  id        Int      @id @default(autoincrement())
+  code      String   @unique
+  nameEn    String
+  nameBn    String?
+  isActive  Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  branches     BranchTypeOnBranch[]
+  BranchToType BranchToType[]
+
+  @@map("branch_types")
+}
+
+model BranchToType {
+  branchId Int
+  typeId   Int
+
+  branch Branch     @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  type   BranchType @relation(fields: [typeId], references: [id], onDelete: Cascade)
+
+  @@id([branchId, typeId])
+  @@index([typeId])
+  @@map("branch_to_types")
+}

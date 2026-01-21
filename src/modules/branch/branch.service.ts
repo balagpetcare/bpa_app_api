@@ -1,89 +1,72 @@
 import { prisma } from "../../lib/prisma";
-import type { BranchCapability } from "@prisma/client";
 import { logAudit } from "../audit/audit.service";
 import type { Request } from "express";
+import type { AuditEntityType } from "@prisma/client";
 
 export async function listBranches(orgId: number) {
   return prisma.branch.findMany({
     where: { orgId },
-    include: { capabilities: true },
-    orderBy: { id: "desc" },
+    orderBy: { id: "desc" as const },
   });
 }
 
-export async function createBranch(req: Request, orgId: number, input: {
+type CreateBranchInput = {
   name: string;
-  code: string;
-  address?: string;
-  capabilities?: BranchCapability[];
-}) {
+  address?: unknown; // address is stored as addressJson in current schema
+  capabilities?: unknown[]; // stored as capabilitiesJson (array/object)
+};
+
+export async function createBranch(req: Request, orgId: number, input: CreateBranchInput) {
   const created = await prisma.branch.create({
     data: {
       orgId,
-      name: input.name,
-      code: input.code,
-      address: input.address,
-      capabilities: input.capabilities?.length
-        ? {
-            create: input.capabilities.map((c) => ({ capability: c })),
-          }
-        : undefined,
-    },
-    include: { capabilities: true },
+      name: String(input.name),
+      // Current Prisma schema in this repo uses JSON columns
+      addressJson: (input as any).addressJson ?? input.address ?? null,
+      capabilitiesJson: (input as any).capabilitiesJson ?? input.capabilities ?? null,
+    } as any,
   });
 
   await logAudit({
     req,
     action: "CREATE",
-    entityType: "Branch",
+    entityType: "BRANCH" as AuditEntityType,
     entityId: created.id,
     after: created,
-    orgId,
   });
 
   return created;
 }
 
-export async function updateBranch(req: Request, branchId: number, input: {
+type UpdateBranchInput = {
   name?: string;
-  address?: string;
-  isActive?: boolean;
-  capabilities?: BranchCapability[]; // full replace
-}) {
+  address?: unknown;
+  capabilities?: unknown[]; // full replace
+};
+
+export async function updateBranch(req: Request, branchId: number, input: UpdateBranchInput) {
   const before = await prisma.branch.findUnique({
     where: { id: branchId },
-    include: { capabilities: true },
   });
   if (!before) throw Object.assign(new Error("Branch not found"), { statusCode: 404 });
 
-  const updated = await prisma.$transaction(async (tx) => {
-    if (input.capabilities) {
-      await tx.branchCapabilityLink.deleteMany({ where: { branchId } });
-      await tx.branchCapabilityLink.createMany({
-        data: input.capabilities.map((c) => ({ branchId, capability: c })),
-        skipDuplicates: true,
-      });
-    }
-
-    return tx.branch.update({
-      where: { id: branchId },
-      data: {
-        name: input.name,
-        address: input.address,
-        isActive: input.isActive,
-      },
-      include: { capabilities: true },
-    });
+  const updated = await prisma.branch.update({
+    where: { id: branchId },
+    data: {
+      name: input.name ?? undefined,
+      addressJson: (input as any).addressJson ?? (input.address !== undefined ? input.address : undefined),
+      capabilitiesJson:
+        (input as any).capabilitiesJson ?? (input.capabilities !== undefined ? input.capabilities : undefined),
+    } as any,
   });
 
   await logAudit({
     req,
     action: "UPDATE",
-    entityType: "Branch",
+    entityType: "BRANCH" as AuditEntityType,
     entityId: branchId,
     before,
     after: updated,
-    orgId: before.orgId,
   });
 
   return updated;

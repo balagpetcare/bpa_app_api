@@ -21,21 +21,14 @@ export async function authRequired(req: AuthedRequest, res: Response, next: Next
 
     const user = await prisma.user.findUnique({
       where: { id: payload.uid },
-      include: {
-        platformRoles: { include: { role: { include: { permissions: true } } } },
-      },
+      include: { auth: true, profile: true },
     });
 
     if (!user) return fail(res, 401, "Invalid token user");
     if (user.status === "BLOCKED") return fail(res, 403, "User is blocked");
 
     const permissions = new Set<string>();
-    let isPlatformAdmin = false;
-
-    for (const pr of user.platformRoles) {
-      if (pr.role.code === "SUPER_ADMIN" || pr.role.code === "BPA_ADMIN") isPlatformAdmin = true;
-      for (const p of pr.role.permissions) permissions.add(p.code);
-    }
+    const isPlatformAdmin = false;
 
     req.user = {
       id: user.id,

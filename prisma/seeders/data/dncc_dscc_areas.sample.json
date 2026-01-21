@@ -1,0 +1,19 @@
+{
+  "corporations": [
+    {"code":"DNCC","nameEn":"Dhaka North City Corporation","nameBn":"ঢাকা উত্তর সিটি কর্পোরেশন"},
+    {"code":"DSCC","nameEn":"Dhaka South City Corporation","nameBn":"ঢাকা দক্ষিণ সিটি কর্পোরেশন"}
+  ],
+  "areas": {
+    "DNCC": [
+      {"nameEn":"Banasree","nameBn":"বনশ্রী","keywords":"banasree, block a, block b"},
+      {"nameEn":"Badda","nameBn":"বাড্ডা","keywords":"badda, north badda, middle badda"},
+      {"nameEn":"Basundhara","nameBn":"বসুন্ধরা","keywords":"basundhara, block a, block b"},
+      {"nameEn":"Mirpur 10","nameBn":"মিরপুর ১০","keywords":"mirpur 10, circle"}
+    ],
+    "DSCC": [
+      {"nameEn":"Dhanmondi 27","nameBn":"ধানমন্ডি ২৭","keywords":"dhanmondi, road 27"},
+      {"nameEn":"Dhanmondi 15","nameBn":"ধানমন্ডি ১৫","keywords":"dhanmondi, road 15"},
+      {"nameEn":"Lalbagh","nameBn":"লালবাগ","keywords":"old dhaka, lalbagh"}
+    ]
+  }
+}

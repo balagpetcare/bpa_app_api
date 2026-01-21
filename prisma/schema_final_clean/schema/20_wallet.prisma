@@ -1,0 +1,158 @@
+// AUTO-SPLIT from original schema.prisma
+// Module: wallet
+
+enum TransactionType {
+  CREDIT
+  DEBIT
+}
+enum TransactionStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
+enum PaymentMethod {
+  CASH
+  BKASH
+  NAGAD
+  ROCKET
+  BANK
+  CARD
+}
+enum WalletSourceType {
+  DONATION
+  WALLET_WITHDRAW_REQUEST
+  FUNDRAISING_WITHDRAW_REQUEST
+  ADMIN_ADJUSTMENT
+}
+enum PayoutProvider {
+  BKASH
+  NAGAD
+  ROCKET
+}
+enum WalletWithdrawRequestStatus {
+  SUBMITTED
+  UNDER_REVIEW
+  APPROVED
+  QUEUED
+  PROCESSING
+  TRANSFERRED
+  FAILED
+  REJECTED
+  CANCELED
+}
+model UserWallet {
+  id     Int  @id @default(autoincrement())
+  userId Int  @unique // ✅ প্রতি ইউজারের শুধু ১টি ওয়ালেট
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // NOTE:
+  // balance = availableBalance + pendingBalance + lockedBalance
+  // Keep balance for backward-compatibility and quick reads.
+  balance Decimal @default(0.00) @db.Decimal(10, 2)
+
+  // V1 split balances
+  availableBalance Decimal  @default(0.00) @db.Decimal(10, 2)
+  pendingBalance   Decimal  @default(0.00) @db.Decimal(10, 2)
+  lockedBalance    Decimal  @default(0.00) @db.Decimal(10, 2)
+  currency         String   @default("BDT")
+  points           Int      @default(0)
+  tier             String   @default("Bronze")
+  isActive         Boolean  @default(true)
+  updatedAt        DateTime @updatedAt
+
+  transactions WalletTransaction[]
+
+  withdrawRequests WalletWithdrawRequest[]
+
+  @@map("user_wallets")
+}
+model WalletTransaction {
+  id       Int        @id @default(autoincrement())
+  walletId Int
+  wallet   UserWallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+
+  type   TransactionType
+  status TransactionStatus @default(PENDING)
+
+  amount    Decimal        @db.Decimal(10, 2)
+  method    PaymentMethod?
+  reference String?
+
+  // V1: link a transaction to its source entity
+  sourceType WalletSourceType?
+  sourceId   Int?
+
+  note      String?
+  createdAt DateTime @default(now())
+
+  @@index([walletId])
+  @@index([sourceType, sourceId])
+  @@map("wallet_transactions")
+}
+model WalletWithdrawRequest {
+  id Int @id @default(autoincrement())
+
+  walletId Int
+  wallet   UserWallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+
+  userId Int
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  amount Decimal @db.Decimal(10, 2)
+
+  method            PaymentMethod
+  payoutDetailsJson String        @db.Text
+
+  // Session-3 Payout automation
+  provider             PayoutProvider?
+  providerPayoutId     String?
+  providerStatus       String?
+  providerResponseJson String?         @db.Text
+
+  failureCode    String?
+  failureMessage String? @db.Text
+
+  attemptCount        Int       @default(0)
+  nextRetryAt         DateTime?
+  processingStartedAt DateTime?
+  completedAt         DateTime?
+
+  status WalletWithdrawRequestStatus @default(SUBMITTED)
+
+  note String? @db.Text
+
+  adminUserId Int?
+  adminUser   User? @relation("WalletWithdrawAdminUser", fields: [adminUserId], references: [id], onDelete: SetNull)
+
+  reviewedAt  DateTime?
+  processedAt DateTime?
+
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  payoutEventLogs PayoutEventLog[]
+
+  @@index([walletId, createdAt])
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+  @@index([adminUserId])
+  @@index([provider, providerPayoutId])
+  @@map("wallet_withdraw_requests")
+}
+model PayoutEventLog {
+  id Int @id @default(autoincrement())
+
+  provider          PayoutProvider
+  providerEventId   String?
+  providerPayoutId  String?
+  withdrawRequestId Int?
+  withdrawRequest   WalletWithdrawRequest? @relation(fields: [withdrawRequestId], references: [id], onDelete: SetNull)
+
+  payloadJson    String   @db.Text
+  signatureValid Boolean  @default(false)
+  receivedAt     DateTime @default(now())
+
+  @@index([provider, providerEventId])
+  @@index([provider, providerPayoutId])
+  @@index([withdrawRequestId])
+  @@map("payout_event_logs")
+}

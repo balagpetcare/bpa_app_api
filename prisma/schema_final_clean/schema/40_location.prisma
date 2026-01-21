@@ -1,0 +1,85 @@
+// AUTO-SPLIT from original schema.prisma
+// Module: location
+
+model BdDivision {
+  id     Int     @id @default(autoincrement())
+  code   String  @unique
+  nameEn String
+  nameBn String?
+
+  districts BdDistrict[]
+
+  fundraisingAccounts FundraisingAccount[]
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+
+  @@map("bd_divisions")
+}
+model BdDistrict {
+  id     Int     @id @default(autoincrement())
+  code   String  @unique
+  nameEn String
+  nameBn String?
+
+  divisionId Int
+  division   BdDivision @relation(fields: [divisionId], references: [id], onDelete: Cascade)
+
+  upazilas BdUpazila[]
+
+  // ✅ Opposite relation for BdArea.district ("BdDistrictAreas")
+  areas BdArea[] @relation("BdDistrictAreas")
+
+  fundraisingAccounts FundraisingAccount[]
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+
+  @@index([divisionId])
+  @@map("bd_districts")
+}
+model BdUpazila {
+  id     Int     @id @default(autoincrement())
+  code   String  @unique
+  nameEn String
+  nameBn String?
+
+  districtId Int
+  district   BdDistrict @relation(fields: [districtId], references: [id], onDelete: Cascade)
+
+  areas BdArea[]
+
+  fundraisingAccounts FundraisingAccount[]
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+
+  @@index([districtId])
+  @@map("bd_upazilas")
+}
+model BdArea {
+  id     Int     @id @default(autoincrement())
+  code   String  @unique
+  nameEn String
+  nameBn String?
+  type   String
+
+  // Legacy: union/area under upazila
+  upazilaId Int?
+  upazila   BdUpazila? @relation(fields: [upazilaId], references: [id], onDelete: SetNull)
+
+  // New: city-corporation / zone / ward-area hierarchy (Dhaka etc.)
+  districtId Int?
+  district   BdDistrict? @relation("BdDistrictAreas", fields: [districtId], references: [id], onDelete: SetNull)
+
+  parentId Int?
+  parent   BdArea?  @relation("BdAreaTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children BdArea[] @relation("BdAreaTree")
+
+  fundraisingAccounts FundraisingAccount[]
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+
+  @@unique([parentId, nameEn, type])
+  @@index([upazilaId])
+  @@index([districtId])
+  @@index([parentId])
+  @@map("bd_areas")
+}

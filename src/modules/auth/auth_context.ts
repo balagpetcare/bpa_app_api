@@ -35,7 +35,7 @@ export async function getAuthContext(req: Request): Promise<AuthContext> {
 
   // Resolve staff + permissions (if staff in org)
   if (orgId) {
-    const staff = await prisma.staffProfile.findFirst({
+    const staff = await (prisma as any).staffProfile.findFirst({
       where: { userId, orgId },
       include: {
         roles: { include: { role: { include: { permissions: { include: { permission: true } } } } } },
@@ -57,7 +57,7 @@ export async function getAuthContext(req: Request): Promise<AuthContext> {
         staffId: staff.id,
         orgId,
         branchIds: staff.branches.map((b) => b.branchId),
-        permissions,
+        permissions: (permissions as any[]).map(String),
       };
     }
   }

@@ -1,11 +1,11 @@
 import type { Request } from "express";
 import { prisma } from "../../lib/prisma";
-import type { AuditAction } from "@prisma/client";
+import type { AuditEntityType } from "@prisma/client";
 
 export type AuditParams = {
   req: Request;
-  action: AuditAction;
-  entityType: string;
+  action: string;
+  entityType: AuditEntityType;
   entityId: string | number;
   before?: unknown;
   after?: unknown;
@@ -31,9 +31,7 @@ export async function logAudit(p: AuditParams) {
   const actorId = auth?.staffId ?? null;
 
   return prisma.auditLog.create({
-    data: {
-      orgId,
-      branchId,
+    data: ({
       actorId,
       action: p.action,
       entityType: p.entityType,
@@ -45,7 +43,7 @@ export async function logAudit(p: AuditParams) {
         ua,
         requestId,
         ...(p.metadata || {}),
-      } as any,
-    },
+      },
+    } as any),
   });
 }

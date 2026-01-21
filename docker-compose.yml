@@ -38,6 +38,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: bpa_api
+    command: npm run dev
     env_file:
       - .env.docker
     ports:

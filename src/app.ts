@@ -1,29 +1,37 @@
-import express from "express";
-import cors from "cors";
-import dotenv from "dotenv";
+// BPA API Express app (TypeScript source, CommonJS runtime style)
+require("dotenv").config();
 
-import { authRoutes } from "./routes/auth.routes";
-import { partnerRoutes } from "./routes/partner.routes";
-import { adminRoutes } from "./routes/admin.routes";
+const express = require("express");
+const cors = require("cors");
+const helmet = require("helmet");
+const cookieParser = require("cookie-parser");
 
-dotenv.config();
+const { env } = require("./config/env");
+const apiV1Routes = require("./api/v1/routes");
 
-export function makeApp() {
-  const app = express();
-  app.use(cors());
-  app.use(express.json({ limit: "10mb" }));
+const { notFoundHandler, errorHandler } = require("./api/v1/middlewares/errors");
 
-  app.get("/health", (_req, res) => res.json({ ok: true }));
+const app = express();
 
-  app.use("/api/v1/auth", authRoutes());
-  app.use("/api/v1/partner", partnerRoutes());
-  app.use("/api/v1/admin", adminRoutes());
+// Security & basics
+app.use(helmet());
+app.use(cors({ origin: true, credentials: true }));
+app.use(cookieParser());
 
-  app.use((err: any, _req: any, res: any, _next: any) => {
-    // eslint-disable-next-line no-console
-    console.error(err);
-    return res.status(500).json({ success: false, error: { message: "Internal Server Error" } });
-  });
+// Body parsing
+app.use(express.json({ limit: "20mb" }));
+app.use(express.urlencoded({ extended: true }));
 
-  return app;
-}
+// Health
+app.get("/health", (_req, res) => res.json({ ok: true, service: "bpa_api" }));
+
+// API mount
+app.use(env.apiPrefix || "/api/v1", apiV1Routes);
+
+// Errors
+app.use(notFoundHandler);
+app.use(errorHandler);
+
+module.exports = app;
+
+export {};
