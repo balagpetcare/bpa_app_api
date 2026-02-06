@@ -14,6 +14,12 @@ export default async function seedMembershipBackfill(prisma: PrismaClient) {
 
   let orgMemberUpserts = 0;
   let branchMemberUpserts = 0;
+  let producerStaffUpserts = 0;
+
+  const producerOwnerRole = await prisma.role.findUnique({
+    where: { key: "PRODUCER_OWNER" },
+    select: { id: true },
+  });
 
   for (const org of orgs) {
     if (!org.ownerUserId) continue;
@@ -76,6 +82,33 @@ export default async function seedMembershipBackfill(prisma: PrismaClient) {
     }
   }
 
+  if (producerOwnerRole?.id) {
+    const producerOrgs = await prisma.producerOrg.findMany({
+      select: { id: true, ownerUserId: true },
+    });
+
+    for (const org of producerOrgs) {
+      if (!org.ownerUserId) continue;
+
+      await prisma.producerOrgStaff.upsert({
+        where: {
+          producerOrgId_userId: {
+            producerOrgId: org.id,
+            userId: org.ownerUserId,
+          },
+        },
+        update: { roleId: producerOwnerRole.id },
+        create: {
+          producerOrgId: org.id,
+          userId: org.ownerUserId,
+          roleId: producerOwnerRole.id,
+          invitedBy: null,
+        },
+      });
+      producerStaffUpserts++;
+    }
+  }
+
   // eslint-disable-next-line no-console
-  console.log(`✅ Membership backfill done. orgMembers upserted: ${orgMemberUpserts}, branchMembers upserted: ${branchMemberUpserts}`);
+  console.log(`✅ Membership backfill done. orgMembers upserted: ${orgMemberUpserts}, branchMembers upserted: ${branchMemberUpserts}, producerStaff upserted: ${producerStaffUpserts}`);
 }

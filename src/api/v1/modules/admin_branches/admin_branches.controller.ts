@@ -144,6 +144,18 @@ exports.getById = async (req, res) => {
       typeLinks: { include: { branchType: true } },
       profileDetails: { include: { documents: { include: { media: true } } } },
       publishRequests: { orderBy: { id: "desc" } },
+      members: {
+        include: {
+          user: {
+            select: {
+              id: true,
+              auth: { select: { email: true, phone: true } },
+              profile: { select: { displayName: true } },
+            },
+          },
+          roles: { include: { role: { select: { key: true, label: true } } } },
+        },
+      },
     },
   });
 

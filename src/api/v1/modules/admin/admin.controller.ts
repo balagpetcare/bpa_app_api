@@ -1,4 +1,4 @@
-const { writeAudit } = require('../../../middlewares/auditWriter');
+const { writeAudit } = require('../../../../middlewares/auditWriter');
 const metricsSvc = require('../../services/verificationMetrics.service');
 
 function getPrisma(req) {

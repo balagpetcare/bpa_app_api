@@ -47,9 +47,11 @@ module.exports = async function auth(req, res, next) {
 
     // Determine role.
     // - If token already contains role, trust it.
+    // - If userType is STAFF, check memberships to determine role.
     // - Else infer ADMIN from allowlist.
     // - Otherwise default to OWNER so any logged-in user can onboard as an owner.
     let role = payload?.role ? String(payload.role).toUpperCase() : null;
+    const userType = payload?.userType ? String(payload.userType).toUpperCase() : null;
 
     if (!role) {
       const allowIds = String(process.env.ADMIN_USER_IDS || "")
@@ -58,7 +60,13 @@ module.exports = async function auth(req, res, next) {
         .filter(Boolean);
 
       const isAdmin = allowIds.includes(userId);
-      role = isAdmin ? "ADMIN" : "OWNER";
+      
+      // If userType is STAFF, don't default to OWNER - let controllers determine based on memberships
+      if (userType === "STAFF") {
+        role = "STAFF"; // Generic staff role, specific role determined by membership
+      } else {
+        role = isAdmin ? "ADMIN" : "OWNER";
+      }
     }
 
     // Optional: ensure user exists (avoids orphan tokens)
@@ -73,7 +81,7 @@ module.exports = async function auth(req, res, next) {
         .json({ success: false, message: "Unauthorized: user not found" });
     }
 
-    req.user = { ...(payload || {}), id: userId, role };
+    req.user = { ...(payload || {}), id: userId, role, userType: userType || null };
     return next();
   } catch (e) {
     return res

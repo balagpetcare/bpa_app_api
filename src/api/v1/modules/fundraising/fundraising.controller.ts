@@ -1,5 +1,7 @@
 const service = require('./fundraising.service');
 const { logAdminAction } = require('../../../../infrastructure/audit/auditLogger');
+const { writeAudit } = require('../../../../middlewares/auditWriter');
+const { sendPolicyDenied, sendPendingReview } = require('../../utils/policyResponses');
 
 function attachLast3Donors(c) {
   if (!c || !c.donations) return c;
@@ -15,6 +17,7 @@ exports.getFeed = async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+    const countryCode = req.countryContext?.countryCode || "BD";
 
     const data = await service.getFeed({
       userId,
@@ -22,6 +25,7 @@ exports.getFeed = async (req, res) => {
       cursor: req.query.cursor,
       verified: req.query.verified,
       sort: req.query.sort,      category: req.query.category,      location: req.query.location,
+      countryCode,
     });
 
     return res.status(200).json({ success: true, data: (data || []).map(attachLast3Donors) });
@@ -36,7 +40,7 @@ exports.getCampaign = async (req, res) => {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
-    const data = await service.getCampaign({ id: req.params.id });
+    const data = await service.getCampaign({ id: req.params.id, countryCode: req.countryContext?.countryCode });
     return res.status(200).json({ success: true, data: attachLast3Donors(data) });
   } catch (e) {
     const status = (e as any)?.statusCode || 500;
@@ -51,7 +55,7 @@ exports.getCampaignSingle = async (req, res) => {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
-    const data = await service.getCampaignSingle({ id: req.params.id });
+    const data = await service.getCampaignSingle({ id: req.params.id, countryCode: req.countryContext?.countryCode });
     // preserve existing shape for campaign while adding extra fields
     return res.status(200).json({ success: true, data: {
       campaign: attachLast3Donors(data.campaign),
@@ -72,11 +76,22 @@ exports.createCampaign = async (req, res) => {
 
     const created = await service.createCampaign({
       userId,
+      countryCode: req.countryContext?.countryCode,
       title: req.body.title,
       caption: req.body.caption,
       targetAmount: req.body.targetAmount,
       deadline: req.body.deadline,      category: req.body.category,      locationText: req.body.locationText,
       mediaIds: req.body.mediaIds,
+    });
+
+    await writeAudit({
+      prisma: req.prisma,
+      req,
+      action: "FUNDRAISING_CAMPAIGN_CREATE",
+      entityType: "FUNDRAISING_CAMPAIGN",
+      entityId: created.id,
+      before: null,
+      after: created,
     });
 
     return res.status(201).json({ success: true, data: created });
@@ -95,12 +110,23 @@ exports.updateCampaign = async (req, res) => {
     const updated = await service.updateCampaign({
       userId,
       id: req.params.id,
+      countryCode: req.countryContext?.countryCode,
       title: req.body.title,
       caption: req.body.caption,
       targetAmount: req.body.targetAmount,
       deadline: req.body.deadline,      category: req.body.category,      locationText: req.body.locationText,
       status: req.body.status,
       mediaIds: req.body.mediaIds,
+    });
+
+    await writeAudit({
+      prisma: req.prisma,
+      req,
+      action: "FUNDRAISING_CAMPAIGN_UPDATE",
+      entityType: "FUNDRAISING_CAMPAIGN",
+      entityId: updated.id,
+      before: null,
+      after: updated,
     });
 
     return res.status(200).json({ success: true, data: updated });
@@ -116,7 +142,18 @@ exports.deleteCampaign = async (req, res) => {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
-    const result = await service.deleteCampaign({ userId, id: req.params.id });
+    const result = await service.deleteCampaign({ userId, id: req.params.id, countryCode: req.countryContext?.countryCode });
+
+    await writeAudit({
+      prisma: req.prisma,
+      req,
+      action: "FUNDRAISING_CAMPAIGN_DELETE",
+      entityType: "FUNDRAISING_CAMPAIGN",
+      entityId: req.params.id,
+      before: null,
+      after: result,
+    });
+
     return res.status(200).json({ success: true, data: result });
   } catch (e) {
     const status = (e as any)?.statusCode || 500;
@@ -130,14 +167,29 @@ exports.donate = async (req, res) => {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
+    const idempotencyKey = (req.headers['idempotency-key'] || req.headers['Idempotency-Key']) ? String(req.headers['idempotency-key'] || req.headers['Idempotency-Key']).trim() : null;
+    const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip || null;
+    const userAgent = req.headers['user-agent'] ? String(req.headers['user-agent']) : null;
+
     const result = await service.donate({
       donorId: userId,
       campaignId: req.params.id,
       amount: req.body.amount,
+      countryContext: req.countryContext,
+      idempotencyKey: idempotencyKey || undefined,
+      ip,
+      userAgent,
     });
+
+    if (result?.donation?.status === 'ON_HOLD_REVIEW' || result?.donation?.status === 'KYC_REQUIRED') {
+      return sendPendingReview(res, "Donation pending review", { donation: result.donation });
+    }
 
     return res.status(200).json({ success: true, data: result });
   } catch (e) {
+    if ((e as any)?.code === 'POLICY_DENIED' && (e as any)?.reasonCode) {
+      return sendPolicyDenied(res, (e as any).reasonCode, (e as any).message, (e as any).details);
+    }
     const status = (e as any)?.statusCode || 500;
     console.error('fundraising.donate error:', e);
     return res.status(status).json({ success: false, message: e.message || 'Failed' });
@@ -263,6 +315,7 @@ exports.updateMyAccount = async (req, res) => {
 
     const data = await service.updateMyAccount({
       userId,
+      countryCode: req.countryContext?.countryCode,
       accountType: req.body.accountType,
       permanentAddress: req.body.permanentAddress,
       presentAddress: req.body.presentAddress,
@@ -272,6 +325,15 @@ exports.updateMyAccount = async (req, res) => {
       districtId: req.body.districtId,
       upazilaId: req.body.upazilaId,
       areaId: req.body.areaId,
+      // Global location fields
+      countryName: req.body.countryName,
+      stateName: req.body.stateName,
+      cityName: req.body.cityName,
+      addressLine: req.body.addressLine,
+      latitude: req.body.latitude,
+      longitude: req.body.longitude,
+      formattedAddress: req.body.formattedAddress,
+
       dateOfBirth: req.body.dateOfBirth,
       nationalIdNumber: req.body.nationalIdNumber,
       birthRegNumber: req.body.birthRegNumber,
@@ -298,6 +360,7 @@ exports.addVerificationDocument = async (req, res) => {
 
     const created = await service.addVerificationDocument({
       userId,
+      countryCode: req.countryContext?.countryCode,
       title: req.body.title,
       mediaId: req.body.mediaId,
     });
@@ -339,6 +402,40 @@ exports.submitAccount = async (req, res) => {
 };
 
 // Admin
+// Phase 2.6: Admin donation review (hold / KYC list, approve/reject)
+exports.adminListDonationsHold = async (req, res) => {
+  try {
+    const data = await service.adminListDonationsHold({
+      status: req.query.status,
+      limit: req.query.limit,
+      cursor: req.query.cursor,
+    });
+    return res.status(200).json({ success: true, data });
+  } catch (e) {
+    const status = (e as any)?.statusCode || 500;
+    console.error('fundraising.adminListDonationsHold error:', e);
+    return res.status(status).json({ success: false, message: e.message || 'Failed' });
+  }
+};
+
+exports.adminUpdateDonationStatus = async (req, res) => {
+  try {
+    const adminUserId = req.user?.id;
+    if (!adminUserId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+    const data = await service.adminUpdateDonationStatus({
+      adminUserId,
+      donationId: req.params.id,
+      status: req.body.status,
+      note: req.body.note,
+    });
+    return res.status(200).json({ success: true, data });
+  } catch (e) {
+    const status = (e as any)?.statusCode || 500;
+    console.error('fundraising.adminUpdateDonationStatus error:', e);
+    return res.status(status).json({ success: false, message: e.message || 'Failed' });
+  }
+};
+
 exports.adminListAccounts = async (req, res) => {
   try {
     const data = await service.adminListAccounts({ status: req.query.status });
@@ -391,7 +488,7 @@ exports.listMyCampaigns = async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
-    const data = await service.listMyCampaigns({ userId });
+    const data = await service.listMyCampaigns({ userId, countryCode: req.countryContext?.countryCode });
     return res.status(200).json({ success: true, data });
   } catch (e) {
     const status = (e as any)?.statusCode || 500;

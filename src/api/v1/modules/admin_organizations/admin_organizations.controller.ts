@@ -15,6 +15,16 @@ function parsePartnerStatus(v: any): PartnerStatus | null {
     : null;
 }
 
+async function resolveRequestCountryId(req: Request): Promise<number | null> {
+  const ctx = (req as any).countryContext || {};
+  if (ctx.countryId) return ctx.countryId;
+  const code = String(ctx.countryCode || req.headers["x-country-code"] || "BD")
+    .toUpperCase()
+    .trim();
+  const country = await prisma.country.findUnique({ where: { code }, select: { id: true } });
+  return country?.id ?? null;
+}
+
 // GET /api/v1/admin/organizations
 export const list = async (req: Request, res: Response) => {
   try {
@@ -75,12 +85,18 @@ export const create = async (req: Request, res: Response) => {
 
     const status = parsePartnerStatus(req.body?.status);
 
+    const countryId = await resolveRequestCountryId(req);
+    if (!countryId) {
+      return res.status(400).json({ success: false, message: "Country not resolved for organization" });
+    }
+
     const row = await prisma.organization.create({
       data: {
         ownerUserId, // ✅ ONLY THIS (no ownerUser)
         name,
         supportPhone: req.body?.supportPhone ?? null,
         addressJson: req.body?.addressJson ?? null,
+        countryId,
         ...(status ? { status } : {}),
       },
     });

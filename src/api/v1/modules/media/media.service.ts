@@ -48,10 +48,13 @@ function mediaTypeFromMime(mime, originalname) {
   return 'FILE';
 }
 
-function buildKey({ ownerUserId, folder, mimeType, originalname }) {
+function buildKey({ ownerUserId, folder, mimeType, originalname, countryCode }) {
   const rand = crypto.randomBytes(10).toString("hex");
   const ext = extFromMime(mimeType) || extFromName(originalname);
-  return `${folder}/${ownerUserId}/${Date.now()}_${rand}${ext}`;
+  const prefix = appConfig.storage.useCountryPrefix && countryCode
+    ? `${String(countryCode).toUpperCase().slice(0, 2)}/`
+    : "";
+  return `${prefix}${folder}/${ownerUserId}/${Date.now()}_${rand}${ext}`;
 }
 
 function buildPublicUrl(key) {
@@ -85,27 +88,52 @@ async function deleteFromStorage(key) {
   await s3Client.send(cmd);
 }
 
-exports.uploadAndCreateMedia = async ({ ownerUserId, file, folder = "media", type }) => {
+/**
+ * Standard upload helper used across the app.
+ * - Stores file in S3/MinIO
+ * - Creates Media row
+ * - Computes a content hash so we can later reuse/deduplicate files
+ */
+exports.uploadAndCreateMedia = async ({ ownerUserId, file, folder = "media", type, countryCode }) => {
   if (!file?.buffer) {
     const err = new Error("File buffer missing");
     (err as any).statusCode = 400;
     throw err;
   }
 
-  const key = buildKey({ ownerUserId, folder, mimeType: file.mimetype, originalname: file.originalname });
+  const buffer = file.buffer;
+  const mimeType = file.mimetype;
+  const originalname = file.originalname || "upload";
+
+  // Compute hash for possible reuse/deduplication
+  const hash = crypto.createHash("sha256").update(buffer).digest("hex");
+
+  // If a media with the same hash already exists, just reuse it
+  const existing = await prisma.media.findFirst({
+    where: { hash },
+  });
+  if (existing) {
+    return existing;
+  }
+
+  const key = buildKey({ ownerUserId, folder, mimeType, originalname, countryCode });
   const url = await uploadToStorage({
-    buffer: file.buffer,
-    mimeType: file.mimetype,
+    buffer,
+    mimeType,
     key,
-    originalname: file.originalname,
+    originalname,
   });
 
   const media = await prisma.media.create({
     data: {
       url,
       key,
-      type: type || mediaTypeFromMime(file.mimetype, file.originalname),
+      type: type || mediaTypeFromMime(mimeType, originalname),
       ownerUserId: Number(ownerUserId),
+      mimeType,
+      sizeBytes: buffer.length,
+      hash,
+      altText: originalname,
     },
   });
 

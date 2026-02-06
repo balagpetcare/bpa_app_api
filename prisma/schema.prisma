@@ -377,6 +377,8 @@ model User {
   verificationCaseEventsAdmin VerificationCaseEvent[] @relation("VerificationCaseEventAdmin")
 
   notifications              Notification[]
+  notificationReads          NotificationRead[]
+  notificationPrefs          UserNotificationPrefs?
   verificationLockedAttempts VerificationLockedUpdateAttempt[]
 
   // === BPA PATCH: memberships + product approval ===
@@ -387,14 +389,156 @@ model User {
   productCRReviewed  ProductChangeRequest[] @relation("ProductCRReviewedBy")
 
   // === BPA PATCH: staff invites (token-based) ===
-  staffInvitesSent     StaffInvite[] @relation("StaffInviteInvitedBy")
-  staffInvitesAccepted StaffInvite[] @relation("StaffInviteAcceptedBy")
+  staffInvitesSent      StaffInvite[]  @relation("StaffInviteInvitedBy")
+  staffInvitesAccepted  StaffInvite[]  @relation("StaffInviteAcceptedBy")
+  accessInvitesSent     AccessInvite[] @relation("AccessInviteInvitedBy")
+  accessInvitesAccepted AccessInvite[] @relation("AccessInviteAcceptedBy")
 
   // ✅ invitedBy opposite relations
   orgMembersInvited    OrgMember[]    @relation("OrgMemberInvitedBy")
   branchMembersInvited BranchMember[] @relation("BranchMemberInvitedBy")
 
+  // === MVP: Inventory & Orders ===
+  stockTransactionsCreated StockTransaction[] @relation("StockTransactionCreatedBy")
+  ordersCreated            Order[]            @relation("OrderCreatedBy")
+  ordersAsCustomer         Order[]            @relation("OrderCustomer")
+  servicesCreated          Service[]          @relation("ServiceCreatedBy")
+
+  // === Products Module: Stock Ledger & Transfers ===
+  stockLedgersCreated   StockLedger[]   @relation("StockLedgerCreatedBy")
+  stockTransfersCreated StockTransfer[] @relation("StockTransferCreatedBy")
+  returnRequestsCreated ReturnRequest[] @relation("ReturnRequestedBy")
+  stockLotsCreated      StockLot[]      @relation("StockLotCreatedBy")
+  stockAdjustmentRequestsRequested StockAdjustmentRequest[] @relation("StockAdjustmentRequestedBy")
+  stockAdjustmentRequestsReviewed  StockAdjustmentRequest[] @relation("StockAdjustmentReviewedBy")
+  stockDiscrepanciesResolved       StockDiscrepancy[]       @relation("StockDiscrepancyResolvedBy")
+  stockRequestsRequested          StockRequest[]           @relation("StockRequestRequestedBy")
+  stockRequestsDeclined          StockRequest[]           @relation("StockRequestDeclinedBy")
+
+  // === Product Authenticity (MVP) ===
+  productVersionsCreated ProductVersion[] @relation("ProductVersionCreatedBy")
+  batchesCreated         Batch[]          @relation("BatchCreatedBy")
+  serialRangesIssued     SerialRange[]    @relation("SerialRangeIssuedBy")
+
+  // === Producer Auth (separate schema) ===
+  producerOrgsOwned      ProducerOrg[]         @relation("ProducerOrgOwner")
+  producerStaffRoles     ProducerOrgStaff[]    @relation("ProducerStaffUser")
+  producerStaffInvited   ProducerOrgStaff[]    @relation("ProducerStaffInviter")
+  authProductsCreated    AuthProduct[]         @relation("AuthProductCreatedBy")
+  authBatchesCreated     AuthBatch[]           @relation("AuthBatchCreatedBy")
+  authCodesGenerated     AuthCode[]            @relation("AuthCodeGeneratedBy")
+  authVerifyLogs         AuthVerificationLog[]
+  returnRequestsApproved ReturnRequest[]       @relation("ReturnApprovedBy")
+
+  // === Multi-Branch Staff Permission System ===
+  branchAccessPermissions         BranchAccessPermission[] @relation("BranchAccessPermissionUser")
+  branchAccessPermissionsApproved BranchAccessPermission[] @relation("BranchAccessPermissionApprovedBy")
+  branchAccessPermissionsRevoked  BranchAccessPermission[] @relation("BranchAccessPermissionRevokedBy")
+  branchAccessPermissionsRequested BranchAccessPermission[] @relation("BranchAccessPermissionRequestedBy")
+
+  // Phase 4: Global + Country RBAC
+  globalRoles  UserGlobalRole[]
+  countryRoles UserCountryRole[]
+  stateRoles   UserStateRole[]
+
+  // Location: user's saved place (lat/lng-first; optional)
+  currentPlaceId Int?
+  currentPlace   Place?  @relation(fields: [currentPlaceId], references: [id], onDelete: SetNull)
+
+  // Location profile and events
+  locationProfile  UserLocationProfile?
+  locationEvents   UserLocationEvent[]
+
   @@map("users")
+}
+
+// Place: lat/lng-first location (optional address snapshot). No removal of existing addressJson/hierarchy.
+model Place {
+  id        Int      @id @default(autoincrement())
+  latitude  Float
+  longitude Float
+  countryCode    String?
+  stateName      String?
+  cityName       String?
+  formattedAddress String?   @db.VarChar(1024)
+  rawAddressJson  Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  usersWithCurrentPlace User[]
+
+  @@index([latitude, longitude])
+  @@map("places")
+}
+
+model LocationPlace {
+  id              Int      @id @default(autoincrement())
+  countryCode     String
+  admin1         String?
+  admin2         String?
+  city           String?
+  postalCode     String?
+  formattedAddress String? @db.VarChar(1024)
+  lat            Float?
+  lng            Float?
+  geoHash        String?
+  source         LocationSource?
+  sourcePlaceId  String?
+  bdDivision     String?
+  bdDistrict     String?
+  bdUpazila      String?
+  bdWard         String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  userLocationProfilesAsHome        UserLocationProfile[] @relation("HomePlace")
+  userLocationProfilesAsCurrent     UserLocationProfile[] @relation("CurrentPlace")
+  userLocationProfilesAsManual      UserLocationProfile[] @relation("ManualOverridePlace")
+  userLocationEvents                UserLocationEvent[]
+
+  @@index([countryCode, admin1, city])
+  @@index([geoHash])
+  @@map("location_places")
+}
+
+model UserLocationProfile {
+  userId               Int      @unique
+  user                 User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  homePlaceId          Int?
+  homePlace            LocationPlace? @relation("HomePlace", fields: [homePlaceId], references: [id], onDelete: SetNull)
+  currentPlaceId       Int?
+  currentPlace         LocationPlace? @relation("CurrentPlace", fields: [currentPlaceId], references: [id], onDelete: SetNull)
+  manualOverridePlaceId Int?
+  manualOverridePlace  LocationPlace? @relation("ManualOverridePlace", fields: [manualOverridePlaceId], references: [id], onDelete: SetNull)
+  lastLat              Float?
+  lastLng              Float?
+  precisionLevel       LocationPrecisionLevel
+  consentLevel         LocationConsentLevel
+  lastUpdatedAt        DateTime @default(now())
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@map("user_location_profiles")
+}
+
+model UserLocationEvent {
+  id            Int               @id @default(autoincrement())
+  userId        Int
+  user          User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  timestamp     DateTime
+  lat           Float
+  lng           Float
+  placeId       Int?
+  place         LocationPlace?    @relation(fields: [placeId], references: [id], onDelete: SetNull)
+  accuracyMeters Float?
+  source        LocationSource
+  eventType     LocationEventType
+  sessionId     String?
+  deviceId      String?
+  createdAt     DateTime          @default(now())
+
+  @@index([userId, timestamp(sort: Desc)])
+  @@map("user_location_events")
 }
 
 // Owner profile (separate from UserProfile). This keeps onboarding / KYC fields
@@ -467,6 +611,13 @@ model OwnerKyc {
   rejectionReason    String?
   riskScore          Int?               @default(0)
 
+  // Owner KYC Upgrade: expiry + declarations + optional business intent
+  expiresAt          DateTime?
+  declarationsJson   Json?             // { termsAcceptedAt, dataProcessingConsentAt, infoTrueConfirmedAt, legalBusinessCategoryAt }
+  businessIntentJson Json?             // optional pre-fill for first org: { preferredName, orgTypeCode, registrationType }
+  // Progressive KYC: 0=pending, 1=verified basic (trade license), 2=verified+payout (bank etc.)
+  kycLevel           Int?              @default(0)
+
   isLocked   Boolean   @default(false)
   lockReason String?
   deletedAt  DateTime?
@@ -480,6 +631,7 @@ model OwnerKyc {
 
   @@index([verificationStatus])
   @@index([reviewedByAdminId])
+  @@index([expiresAt])
   @@map("owner_kyc")
 }
 
@@ -624,10 +776,14 @@ model BranchProfileDetails {
   managerPhone     String?
   managerNidNumber String?
 
-  addressJson   Json?
-  latitude      Float?
-  longitude     Float?
-  googleMapLink String?
+  addressJson     Json?
+  latitude        Float?
+  longitude       Float?
+  googleMapLink   String?
+  // Phase 3: coverage area (GeoJSON polygon); optional max area validation
+  coveragePolygon Json? // Phase 3: GeoJSON polygon
+  // Service area: radius in km (used first; polygon optional later)
+  coverageRadiusKm Float?
 
   openingHoursJson  Json?
   weeklyOffDaysJson Json?
@@ -802,7 +958,45 @@ enum NotificationType {
   VERIFICATION_CASE_REJECTED
   VERIFICATION_DOCUMENT_APPROVED
   VERIFICATION_DOCUMENT_REJECTED
+  OWNER_KYC_SUBMITTED
   SYSTEM
+  STAFF_INVITE
+  STAFF_BRANCH_ACCESS_REQUEST
+  STAFF_BRANCH_ACCESS_APPROVED
+  STAFF_BRANCH_ACCESS_REVOKED
+  STAFF_BRANCH_ACCESS_EXPIRED
+}
+
+enum NotificationPriority {
+  P0
+  P1
+  P2
+}
+
+enum NotificationStatus {
+  ACTIVE
+  EXPIRED
+  CANCELLED
+}
+
+enum NotificationRecipientScopeType {
+  USER
+  ORG
+  BRANCH
+  ROLE
+}
+
+enum NotificationDeliveryChannel {
+  IN_APP
+  EMAIL
+  SMS
+}
+
+enum NotificationDeliveryStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  FAILED
 }
 
 model Notification {
@@ -817,11 +1011,70 @@ model Notification {
 
   readAt DateTime?
 
+  priority   NotificationPriority   @default(P2)
+  status     NotificationStatus     @default(ACTIVE)
+  actionUrl  String?                @db.VarChar(1024)
+  dedupeKey  String?                @db.VarChar(255)
+  expiresAt  DateTime?
+  recipientScopeType NotificationRecipientScopeType?
+  recipientScopeId   String?        @db.VarChar(255)
+
   createdAt DateTime @default(now())
 
+  reads     NotificationRead[]
+  deliveries NotificationDelivery[]
+
   @@index([userId, readAt])
+  @@index([userId, createdAt])
   @@index([type])
+  @@index([dedupeKey])
   @@map("notifications")
+}
+
+model NotificationRead {
+  id             Int      @id @default(autoincrement())
+  notificationId Int
+  notification   Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  userId         Int
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  readAt         DateTime @default(now())
+
+  @@unique([notificationId, userId])
+  @@index([userId, readAt])
+  @@map("notification_reads")
+}
+
+model NotificationDelivery {
+  id                Int      @id @default(autoincrement())
+  notificationId    Int
+  notification      Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  channel           NotificationDeliveryChannel
+  toAddress         String?  @db.VarChar(512)
+  providerMessageId String?  @db.VarChar(255)
+  status            NotificationDeliveryStatus @default(QUEUED)
+  error             String? @db.Text
+  attemptCount      Int      @default(0)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([notificationId])
+  @@index([channel, status])
+  @@map("notification_deliveries")
+}
+
+model UserNotificationPrefs {
+  id              Int     @id @default(autoincrement())
+  userId          Int     @unique
+  user            User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  allowEmail      Boolean @default(true)
+  allowSms        Boolean @default(false)
+  quietHoursStart Int?    // minutes from midnight (0-1439)
+  quietHoursEnd   Int?    // minutes from midnight (0-1439)
+  enabledTypes    Json?   // optional filter by type
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@map("user_notification_prefs")
 }
 
 // ------------------------------
@@ -955,6 +1208,11 @@ model Media {
   url       String
   key       String?
   type      String
+  // Optional metadata for better reuse/deduplication
+  mimeType  String?
+  sizeBytes Int?
+  hash      String?  @unique
+  altText   String?
   createdAt DateTime @default(now())
 
   ownerUserId Int
@@ -987,6 +1245,18 @@ model Media {
 
   // V3 VERIFICATION
   verificationDocuments VerificationDocument[]
+
+  // === Products Module: Product Media ===
+  productMedia ProductMedia[]
+
+  // === Master Product Catalog: Media Relations ===
+  // Primary display media for master catalog products
+  masterProductPrimaryFor MasterProductCatalog[] @relation("MasterProductPrimaryMedia")
+  // Additional gallery media entries
+  masterProductMedia      MasterProductMedia[]
+
+  // Phase 4: Ads
+  ads Ad[]
 
   @@index([ownerUserId])
   @@map("media")
@@ -1026,7 +1296,6 @@ model Pet {
   vaccinations     Vaccination[]
   dewormingRecords DewormingRecord[]
   medicalHistories MedicalHistory[]
-
 
   // UI: family avatars on pet profile screen
   familyMembers PetFamilyMember[]
@@ -1152,6 +1421,9 @@ enum TransactionStatus {
   PENDING
   SUCCESS
   FAILED
+  // Global-Ready Phase 2: donation compliance
+  KYC_REQUIRED
+  ON_HOLD_REVIEW
 }
 
 enum PaymentMethod {
@@ -1161,6 +1433,8 @@ enum PaymentMethod {
   ROCKET
   BANK
   CARD
+  MOBILE
+  ONLINE
 }
 
 enum WalletSourceType {
@@ -1372,10 +1646,12 @@ enum FundraisingCampaignStatus {
 }
 
 model FundraisingAccount {
-  id     Int                      @id @default(autoincrement())
-  userId Int                      @unique
-  user   User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  status FundraisingAccountStatus @default(PENDING)
+  id          Int                      @id @default(autoincrement())
+  userId      Int                      @unique
+  user        User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status      FundraisingAccountStatus @default(PENDING)
+  // Phase 3: country binding for fundraising accounts
+  countryCode String?                  @db.VarChar(2)
 
   accountType FundraisingAccountType?
 
@@ -1414,6 +1690,16 @@ model FundraisingAccount {
   areaId Int?
   bdArea BdArea? @relation(fields: [areaId], references: [id], onDelete: SetNull)
 
+  // Global / Map-based location (Phase 5)
+  // countryCode is defined above
+  countryName      String?
+  stateName        String?
+  cityName         String?
+  addressLine      String? // Detailed address line
+  latitude         Float?
+  longitude        Float?
+  formattedAddress String? // Full address string from map provider
+
   dateOfBirth                DateTime?
   nationalIdNumber           String?
   birthRegNumber             String?
@@ -1422,6 +1708,7 @@ model FundraisingAccount {
   FundraisingWithdrawRequest FundraisingWithdrawRequest[]
 
   @@index([divisionId])
+  @@index([countryCode])
   @@index([districtId])
   @@index([upazilaId])
   @@index([areaId])
@@ -1462,11 +1749,13 @@ model FundraisingVerificationDocument {
 }
 
 model FundraisingCampaign {
-  id        Int                @id @default(autoincrement())
-  postId    Int                @unique
-  post      Post               @relation(fields: [postId], references: [id], onDelete: Cascade)
-  accountId Int
-  account   FundraisingAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  id          Int                @id @default(autoincrement())
+  postId      Int                @unique
+  post        Post               @relation(fields: [postId], references: [id], onDelete: Cascade)
+  accountId   Int
+  account     FundraisingAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  // Phase 3: country binding for campaigns
+  countryCode String?            @db.VarChar(2)
 
   title        String
   targetAmount Int
@@ -1486,6 +1775,7 @@ model FundraisingCampaign {
   FundraisingWithdrawRequest FundraisingWithdrawRequest[]
 
   @@index([accountId, createdAt])
+  @@index([countryCode])
   @@map("fundraising_campaigns")
 }
 
@@ -1511,10 +1801,15 @@ model Donation {
   amount Int
   status TransactionStatus @default(SUCCESS)
 
+  // Global-Ready Phase 2: policy version at donate time; idempotency
+  policyVersion  String? @db.VarChar(64)
+  idempotencyKey String? @unique @db.VarChar(128)
+
   createdAt DateTime @default(now())
 
   @@index([campaignId, createdAt])
   @@index([donorId])
+  @@index([status])
   @@map("donations")
 }
 
@@ -1664,6 +1959,10 @@ model BdDistrict {
   // ✅ Opposite relation for BdArea.district ("BdDistrictAreas")
   areas BdArea[] @relation("BdDistrictAreas")
 
+  // Coordinates (optional, center point for map)
+  latitude  Decimal? @db.Decimal(10, 8)
+  longitude Decimal? @db.Decimal(11, 8)
+
   fundraisingAccounts FundraisingAccount[]
   createdAt           DateTime             @default(now())
   updatedAt           DateTime             @updatedAt
@@ -1682,6 +1981,10 @@ model BdUpazila {
   district   BdDistrict @relation(fields: [districtId], references: [id], onDelete: Cascade)
 
   areas BdArea[]
+
+  // Coordinates (optional, center point for map)
+  latitude  Decimal? @db.Decimal(10, 8)
+  longitude Decimal? @db.Decimal(11, 8)
 
   fundraisingAccounts FundraisingAccount[]
   createdAt           DateTime             @default(now())
@@ -1709,6 +2012,10 @@ model BdArea {
   parentId Int?
   parent   BdArea?  @relation("BdAreaTree", fields: [parentId], references: [id], onDelete: Cascade)
   children BdArea[] @relation("BdAreaTree")
+
+  // Coordinates (optional, for map integration)
+  latitude  Decimal? @db.Decimal(10, 8)
+  longitude Decimal? @db.Decimal(11, 8)
 
   fundraisingAccounts FundraisingAccount[]
   createdAt           DateTime             @default(now())
@@ -1752,6 +2059,10 @@ model Area {
   nameBn         String?
   searchKeywords String?
 
+  // Coordinates (optional, for map integration)
+  latitude  Decimal? @db.Decimal(10, 8)
+  longitude Decimal? @db.Decimal(11, 8)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -1765,6 +2076,9 @@ enum AuditEntityType {
   ORGANIZATION
   BRANCH
   OWNER_KYC
+  // Global-Ready Phase 2: donation/transaction audit
+  DONATION
+  TRANSACTION
 }
 
 enum AuditActorRole {
@@ -1772,6 +2086,7 @@ enum AuditActorRole {
   ADMIN
   SUPER_ADMIN
   STAFF
+  USER
 }
 
 model AuditLog {
@@ -1832,6 +2147,7 @@ enum VerificationStatus {
   SUBMITTED
   VERIFIED
   REJECTED
+  EXPIRED
 }
 
 // Phase-1 KYC / Verification enums (add-only)
@@ -1839,6 +2155,7 @@ enum VerificationEntityType {
   OWNER
   ORGANIZATION
   BRANCH
+  PRODUCER_ORG
 }
 
 enum VerificationAction {
@@ -1935,15 +2252,22 @@ model Organization {
   id          Int           @id @default(autoincrement())
   ownerUserId Int
   status      PartnerStatus @default(PENDING_REVIEW)
+  // Global-Ready Phase 1: country binding for org scope
+  countryId   Int?
 
   name         String
   supportPhone String?
   addressJson  Json?
 
+  // Owner KYC Upgrade: soft-delete + grace before hard-delete (user kept; business data removed)
+  deletedAt           DateTime?
+  deletionScheduledAt  DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   owner    User     @relation(fields: [ownerUserId], references: [id], onDelete: Restrict)
+  country  Country? @relation(fields: [countryId], references: [id], onDelete: Restrict)
   branches Branch[]
 
   // PHASE-1 KYC / Verification
@@ -1958,8 +2282,27 @@ model Organization {
   staffInvites  StaffInvite[]
   // ✅ BranchMember.org opposite
   branchMembers BranchMember[]
+  // ✅ Service.org opposite
+  services      Service[]
+
+  // === Products Module: Vendors & Commission Rules ===
+  vendors         Vendor[]
+  commissionRules CommissionRule[]
+
+  // === Product Authenticity (MVP) ===
+  factories Factory[]
+  contracts Contract[]
+
+  // === Inventory: Stock Lots & Adjustment Requests ===
+  stockLots             StockLot[]
+  stockAdjustmentRequests StockAdjustmentRequest[]
+
+  // === Stock Request ===
+  stockRequests StockRequest[]
 
   @@index([ownerUserId])
+  @@index([countryId])
+  @@index([deletedAt, deletionScheduledAt])
   @@map("organizations")
 }
 
@@ -1995,6 +2338,20 @@ model Branch {
 
   // === BPA PATCH: staff invites ===
   staffInvites StaffInvite[]
+
+  // === MVP: Inventory & Orders ===
+  inventory Inventory[]
+  orders    Order[]
+  services  Service[]
+
+  // === Products Module: Inventory Locations ===
+  inventoryLocations InventoryLocation[]
+
+  // === Stock Request (branch requests stock from owner) ===
+  stockRequests StockRequest[]
+
+  // === Multi-Branch Staff Permission System ===
+  accessPermissions BranchAccessPermission[]
 
   @@index([orgId])
   @@map("branches")
@@ -2139,9 +2496,10 @@ model OrgMember {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
-  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  invitedBy User?        @relation("OrgMemberInvitedBy", fields: [invitedByUserId], references: [id], onDelete: SetNull)
+  org       Organization    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  invitedBy User?           @relation("OrgMemberInvitedBy", fields: [invitedByUserId], references: [id], onDelete: SetNull)
+  roles     OrgMemberRole[]
 
   @@unique([orgId, userId])
   @@index([orgId, role])
@@ -2162,15 +2520,170 @@ model BranchMember {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
-  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  branch    Branch       @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  invitedBy User?        @relation("BranchMemberInvitedBy", fields: [invitedByUserId], references: [id], onDelete: SetNull)
+  org       Organization       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  branch    Branch             @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  user      User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  invitedBy User?              @relation("BranchMemberInvitedBy", fields: [invitedByUserId], references: [id], onDelete: SetNull)
+  roles     BranchMemberRole[]
 
   @@unique([branchId, userId])
   @@index([orgId, branchId, role])
   @@index([userId])
   @@map("branch_members")
+}
+
+// ============================
+// MULTI-BRANCH STAFF PERMISSION SYSTEM
+// ============================
+
+enum BranchAccessPermissionStatus {
+  PENDING
+  APPROVED
+  REVOKED
+  EXPIRED
+  SUSPENDED
+}
+
+model BranchAccessPermission {
+  id       Int                          @id @default(autoincrement())
+  branchId Int
+  userId   Int
+  status   BranchAccessPermissionStatus @default(PENDING)
+  role     MemberRole?
+
+  // Approval tracking
+  approvedByUserId Int?
+  approvedAt       DateTime?
+  revokedByUserId  Int?
+  revokedAt        DateTime?
+  expiresAt        DateTime? // Optional time-based expiration
+
+  // Request metadata
+  requestedAt       DateTime  @default(now())
+  requestedByUserId Int?
+  note              String?   @db.Text
+  lastLoginAt       DateTime? // Track when staff last accessed this branch
+
+  // Relations
+  branch     Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  user       User   @relation("BranchAccessPermissionUser", fields: [userId], references: [id], onDelete: Cascade)
+  approvedBy User?  @relation("BranchAccessPermissionApprovedBy", fields: [approvedByUserId], references: [id], onDelete: SetNull)
+  revokedBy  User?  @relation("BranchAccessPermissionRevokedBy", fields: [revokedByUserId], references: [id], onDelete: SetNull)
+  requestedByUser User? @relation("BranchAccessPermissionRequestedBy", fields: [requestedByUserId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([branchId, userId])
+  @@index([userId, status])
+  @@index([branchId, status])
+  @@index([status, expiresAt])
+  @@map("branch_access_permissions")
+}
+
+// ============================
+// PRODUCTS DOMAIN ENUMS
+// ============================
+
+enum InventoryLocationType {
+  CLINIC
+  SHOP
+  ONLINE_HUB
+}
+
+enum LocationChannel {
+  POS_ONLY
+  ONLINE_ONLY
+  BOTH
+}
+
+enum StockLedgerType {
+  OPENING
+  SALE_POS
+  RESERVE_ONLINE
+  RELEASE_RESERVE
+  SALE_ONLINE
+  TRANSFER_OUT
+  TRANSFER_IN
+  ADJUSTMENT
+  DAMAGE
+  EXPIRED
+  LOSS
+  RETURN_IN
+  RETURN_OUT
+}
+
+enum ProductApprovalStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  PUBLISHED
+}
+
+enum ReturnCondition {
+  RESELLABLE
+  DAMAGED
+  EXPIRED
+}
+
+enum VendorListingStatus {
+  DRAFT
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum StockTransferStatus {
+  DRAFT
+  SENT
+  IN_TRANSIT
+  RECEIVED
+  PARTIAL
+  PARTIAL_RECEIVED
+  COMPLETED
+  DISPUTED
+  CANCELLED
+}
+
+enum StockRequestStatus {
+  DRAFT
+  SUBMITTED
+  OWNER_REVIEW
+  FULFILLED_PARTIAL
+  FULFILLED_FULL
+  DISPATCHED
+  RECEIVED_PARTIAL
+  RECEIVED_FULL
+  CLOSED
+  CANCELLED
+}
+
+enum ReturnRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  RECEIVED
+}
+
+enum StockDiscrepancyStatus {
+  PENDING
+  RESOLVED
+}
+
+enum StockAdjustmentStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum CommissionRuleType {
+  PERCENT
+  FIXED
+}
+
+enum PayoutAccountType {
+  BANK
+  MFS
 }
 
 model Product {
@@ -2180,33 +2693,84 @@ model Product {
   slug   String
   status ProductStatus @default(ACTIVE)
 
+  // Extended fields for products module
+  categoryId     Int?
+  brandId        Int?
+  approvalStatus ProductApprovalStatus @default(DRAFT)
+  description    String?               @db.Text
+  metaJson       Json?
+
+  // Master catalog reference
+  masterCatalogId Int?
+
   createdByUserId Int
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
-  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  createdBy User         @relation("ProductCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  org           Organization          @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdBy     User                  @relation("ProductCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  category      Category?             @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  brand         Brand?                @relation(fields: [brandId], references: [id], onDelete: SetNull)
+  masterCatalog MasterProductCatalog? @relation("MasterProductCloned", fields: [masterCatalogId], references: [id], onDelete: SetNull)
 
-  variants ProductVariant[]
+  variants          ProductVariant[]
+  inventory         Inventory[]
+  orderItems        OrderItem[]
+  media             ProductMedia[]
+  vendorListings    VendorProductListing[]
+  stockRequestItems StockRequestItem[]
+
+  // === Product Authenticity (MVP) ===
+  versions   ProductVersion[]
+  quotaPlans QuotaPlan[]
 
   @@unique([orgId, slug])
   @@index([orgId, status])
+  @@index([categoryId, status])
+  @@index([brandId, status])
+  @@index([approvalStatus])
+  @@index([masterCatalogId])
   @@map("products")
 }
 
 model ProductVariant {
-  id         Int      @id @default(autoincrement())
+  id         Int     @id @default(autoincrement())
   productId  Int
-  sku        String   @unique
+  sku        String  @unique
   title      String
   attributes Json?
-  isActive   Boolean  @default(true)
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  isActive   Boolean @default(true)
+
+  // Extended fields for products module
+  flavorId Int?
+  unitId   Int?
+  barcode  String? @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  flavor  Flavor? @relation(fields: [flavorId], references: [id], onDelete: SetNull)
+  unit    Unit?   @relation(fields: [unitId], references: [id], onDelete: SetNull)
+
+  inventory       Inventory[]
+  orderItems      OrderItem[]
+  locationConfigs LocationVariantConfig[]
+  stockBalances   StockBalance[]
+  locationPrices  LocationPrice[]
+  stockLedgers    StockLedger[]
+  transferItems   StockTransferItem[]
+  returnItems     ReturnItem[]
+  vendorListings  VendorProductListing[]
+  stockLots       StockLot[]
+  stockDiscrepancies StockDiscrepancy[]
+  stockAdjustmentRequests StockAdjustmentRequest[]
+  stockRequestItems StockRequestItem[]
 
   @@index([productId, isActive])
+  @@index([flavorId])
+  @@index([unitId])
+  @@index([barcode])
   @@map("product_variants")
 }
 
@@ -2247,6 +2811,18 @@ enum StaffInviteStatus {
   EXPIRED
 }
 
+enum AccessInviteStatus {
+  PENDING
+  ACCEPTED
+  REVOKED
+  EXPIRED
+}
+
+enum AccessInviteScope {
+  COUNTRY
+  STATE
+}
+
 model StaffInvite {
   id       Int               @id @default(autoincrement())
   orgId    Int
@@ -2277,4 +2853,1622 @@ model StaffInvite {
   @@index([email])
   @@index([phone])
   @@map("staff_invites")
+}
+
+// Country/State admin/staff invite (non-branch scope)
+model AccessInvite {
+  id        Int                @id @default(autoincrement())
+  scopeType AccessInviteScope
+  countryId Int?
+  stateId   Int?
+  roleId    Int
+  status    AccessInviteStatus @default(PENDING)
+
+  email       String
+  displayName String?
+
+  tokenHash String   @unique
+  expiresAt DateTime
+
+  invitedByUserId Int
+  invitedBy       User @relation("AccessInviteInvitedBy", fields: [invitedByUserId], references: [id], onDelete: Restrict)
+
+  acceptedByUserId Int?
+  acceptedBy       User? @relation("AccessInviteAcceptedBy", fields: [acceptedByUserId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  country Country? @relation(fields: [countryId], references: [id], onDelete: Cascade)
+  state   State?   @relation(fields: [stateId], references: [id], onDelete: Cascade)
+  role    Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@index([scopeType, status])
+  @@index([countryId])
+  @@index([stateId])
+  @@index([email])
+  @@map("access_invites")
+}
+
+enum RoleScope {
+  GLOBAL
+  COUNTRY
+  STATE
+  ORG
+  BRANCH
+}
+
+model Role {
+  id        Int       @id @default(autoincrement())
+  key       String    @unique
+  label     String
+  scope     RoleScope
+  isSystem  Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  rolePermissions        RolePermission[]
+  orgMemberRoles         OrgMemberRole[]
+  branchMemberRoles      BranchMemberRole[]
+  globalRoleAssignments  UserGlobalRole[]
+  countryRoleAssignments UserCountryRole[]
+  stateRoleAssignments   UserStateRole[]
+  accessInvites          AccessInvite[]
+  producerStaffRoles     ProducerOrgStaff[] @relation("ProducerStaffRole")
+
+  @@index([scope])
+  @@map("roles")
+}
+
+model Permission {
+  id          Int      @id @default(autoincrement())
+  key         String   @unique
+  label       String
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  rolePermissions RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       Int
+  permissionId Int
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@index([permissionId])
+  @@map("role_permissions")
+}
+
+model OrgMemberRole {
+  orgMemberId Int
+  roleId      Int
+
+  orgMember OrgMember @relation(fields: [orgMemberId], references: [id], onDelete: Cascade)
+  role      Role      @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([orgMemberId, roleId])
+  @@index([roleId])
+  @@map("org_member_roles")
+}
+
+model BranchMemberRole {
+  branchMemberId Int
+  roleId         Int
+
+  branchMember BranchMember @relation(fields: [branchMemberId], references: [id], onDelete: Cascade)
+  role         Role         @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([branchMemberId, roleId])
+  @@index([roleId])
+  @@map("branch_member_roles")
+}
+
+// Phase 4: Global + Country role assignments
+model UserGlobalRole {
+  userId    Int
+  roleId    Int
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@index([roleId])
+  @@map("user_global_roles")
+}
+
+model UserCountryRole {
+  userId    Int
+  countryId Int
+  roleId    Int
+  createdAt DateTime @default(now())
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  country Country @relation(fields: [countryId], references: [id], onDelete: Cascade)
+  role    Role    @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, countryId, roleId])
+  @@index([countryId])
+  @@index([roleId])
+  @@map("user_country_roles")
+}
+
+model UserStateRole {
+  userId    Int
+  stateId   Int
+  roleId    Int
+  createdAt DateTime @default(now())
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  state State @relation(fields: [stateId], references: [id], onDelete: Cascade)
+  role  Role  @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, stateId, roleId])
+  @@index([stateId])
+  @@index([roleId])
+  @@map("user_state_roles")
+}
+
+// ============================
+// INVENTORY & ORDER MODELS (MVP)
+// ============================
+
+model Inventory {
+  id         Int       @id @default(autoincrement())
+  branchId   Int
+  productId  Int
+  variantId  Int?
+  quantity   Int       @default(0)
+  minStock   Int       @default(10)
+  expiryDate DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  branch  Branch          @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  product Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  variant ProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+
+  transactions StockTransaction[]
+
+  @@index([branchId])
+  @@index([productId])
+  @@index([variantId])
+  @@map("inventory")
+}
+
+model StockTransaction {
+  id              Int      @id @default(autoincrement())
+  inventoryId     Int
+  type            String // 'IN', 'OUT', 'ADJUST', 'TRANSFER'
+  quantity        Int
+  reason          String?
+  createdByUserId Int?
+  createdAt       DateTime @default(now())
+
+  inventory Inventory @relation(fields: [inventoryId], references: [id], onDelete: Cascade)
+  createdBy User?     @relation("StockTransactionCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@index([inventoryId])
+  @@index([createdAt])
+  @@map("stock_transactions")
+}
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  PROCESSING
+  SHIPPED
+  DELIVERED
+  CANCELLED
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REFUNDED
+}
+
+model Order {
+  id              Int            @id @default(autoincrement())
+  orderNumber     String         @unique
+  branchId        Int
+  customerId      Int?
+  status          OrderStatus    @default(PENDING)
+  totalAmount     Decimal        @default(0)
+  paymentMethod   PaymentMethod?
+  paymentStatus   PaymentStatus  @default(PENDING)
+  notes           String?        @db.Text
+  createdByUserId Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  branch    Branch      @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  customer  User?       @relation("OrderCustomer", fields: [customerId], references: [id], onDelete: SetNull)
+  createdBy User?       @relation("OrderCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  items     OrderItem[]
+
+  @@index([branchId])
+  @@index([customerId])
+  @@index([status])
+  @@index([orderNumber])
+  @@map("orders")
+}
+
+model OrderItem {
+  id        Int      @id @default(autoincrement())
+  orderId   Int
+  productId Int
+  variantId Int?
+  quantity  Int
+  price     Decimal
+  total     Decimal
+  createdAt DateTime @default(now())
+
+  order   Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
+  variant ProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+
+  @@index([orderId])
+  @@index([productId])
+  @@map("order_items")
+}
+
+// ============================
+// SERVICE MANAGEMENT (CLINIC)
+// ============================
+
+enum ServiceStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum ServiceCategory {
+  CONSULTATION
+  VACCINATION
+  SURGERY
+  GROOMING
+  BOARDING
+  DIAGNOSTICS
+  EMERGENCY
+  OTHER
+}
+
+model Service {
+  id          Int             @id @default(autoincrement())
+  orgId       Int
+  branchId    Int
+  name        String
+  description String?         @db.Text
+  category    ServiceCategory
+  status      ServiceStatus   @default(ACTIVE)
+  price       Decimal
+  duration    Int? // Duration in minutes
+  isRecurring Boolean         @default(false)
+
+  createdByUserId Int
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  branch    Branch       @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  createdBy User         @relation("ServiceCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+
+  @@index([orgId, branchId])
+  @@index([branchId, status])
+  @@index([category])
+  @@map("services")
+}
+
+// ============================
+// PRODUCTS DOMAIN MODELS
+// ============================
+
+model Category {
+  id        Int      @id @default(autoincrement())
+  parentId  Int?
+  name      String
+  slug      String
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  parent         Category?              @relation("CategoryTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children       Category[]             @relation("CategoryTree")
+  products       Product[]
+  masterProducts MasterProductCatalog[]
+
+  @@unique([parentId, slug])
+  @@index([parentId])
+  @@index([slug])
+  @@map("categories")
+}
+
+model Brand {
+  id        Int      @id @default(autoincrement())
+  companyId Int?
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company        Company?               @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  products       Product[]
+  masterProducts MasterProductCatalog[]
+
+  @@index([slug])
+  @@index([companyId])
+  @@map("brands")
+}
+
+// Global manufacturer/importer (e.g., Royal Canin)
+model Company {
+  id          Int      @id @default(autoincrement())
+  name        String   @unique
+  country     String?
+  website     String?
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  brands         Brand[]
+  masterProducts MasterProductCatalog[]
+
+  @@map("companies")
+}
+
+// === Global-Ready Phase 1: Country + Policy (BPA) ===
+// Reference: docs/GLOBAL_READY_FULL_PLANNING.md
+model Country {
+  id              Int      @id @default(autoincrement())
+  code            String   @unique // ISO 3166-1 alpha-2: BD, IN, US
+  name            String
+  currencyCode    String?  @default("USD")
+  timezoneDefault String?  @default("UTC")
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  policies         CountryPolicy[]
+  ads              Ad[]
+  userCountryRoles UserCountryRole[]
+  organizations    Organization[]
+  states           State[]
+  accessInvites    AccessInvite[]
+
+  @@map("countries")
+}
+
+// Phase 5: State/Province layer (override system)
+model State {
+  id        Int      @id @default(autoincrement())
+  countryId Int
+  code      String
+  name      String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  country        Country         @relation(fields: [countryId], references: [id], onDelete: Cascade)
+  policies       StatePolicy[]
+  userStateRoles UserStateRole[]
+  accessInvites  AccessInvite[]
+
+  @@unique([countryId, code])
+  @@index([countryId])
+  @@map("states")
+}
+
+model CountryPolicy {
+  id            Int       @id @default(autoincrement())
+  countryId     Int
+  name          String // e.g. "Bangladesh Default Policy"
+  status        String // DRAFT | ACTIVE | ARCHIVED
+  effectiveFrom DateTime  @default(now())
+  effectiveTo   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  country        Country               @relation(fields: [countryId], references: [id], onDelete: Cascade)
+  features       PolicyFeature[]
+  donationRules  PolicyDonationRule[]
+  paymentMethods PolicyPaymentMethod[]
+  adsRules       PolicyAdsRule[]
+  rules          PolicyRule[]
+
+  @@index([countryId, status])
+  @@map("country_policies")
+}
+
+model PolicyFeature {
+  id              Int      @id @default(autoincrement())
+  countryPolicyId Int
+  featureCode     String // DONATION, PRODUCTS, ADS, etc.
+  enabled         Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  countryPolicy CountryPolicy @relation(fields: [countryPolicyId], references: [id], onDelete: Cascade)
+
+  @@unique([countryPolicyId, featureCode])
+  @@index([countryPolicyId])
+  @@map("policy_features")
+}
+
+model PolicyDonationRule {
+  id              Int      @id @default(autoincrement())
+  countryPolicyId Int
+  ruleType        String // INBOUND, OUTBOUND
+  maxAmountSingle Decimal? @db.Decimal(18, 2)
+  maxAmountDaily  Decimal? @db.Decimal(18, 2)
+  enabled         Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  countryPolicy CountryPolicy @relation(fields: [countryPolicyId], references: [id], onDelete: Cascade)
+
+  @@index([countryPolicyId])
+  @@map("policy_donation_rules")
+}
+
+// Phase 3: Policy-driven payment methods per country
+model PolicyPaymentMethod {
+  id              Int      @id @default(autoincrement())
+  countryPolicyId Int
+  providerCode    String // e.g. BKASH, NAGAD, STRIPE
+  enabled         Boolean  @default(false)
+  configJson      Json? // provider-specific config (keys, webhook URL, etc.)
+  sortOrder       Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  countryPolicy CountryPolicy @relation(fields: [countryPolicyId], references: [id], onDelete: Cascade)
+
+  @@unique([countryPolicyId, providerCode])
+  @@index([countryPolicyId])
+  @@map("policy_payment_methods")
+}
+
+// Phase 4: Ads policy rules (e.g. max daily spend, require KYC per country)
+model PolicyAdsRule {
+  id              Int      @id @default(autoincrement())
+  countryPolicyId Int
+  ruleType        String // MAX_DAILY_SPEND, REQUIRE_KYC, etc.
+  valueJson       Json? // e.g. {"maxAmount": 10000}
+  enabled         Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  countryPolicy CountryPolicy @relation(fields: [countryPolicyId], references: [id], onDelete: Cascade)
+
+  @@index([countryPolicyId])
+  @@map("policy_ads_rules")
+}
+
+// Phase 4: Generic policy rules (key/value)
+model PolicyRule {
+  id              Int      @id @default(autoincrement())
+  countryPolicyId Int
+  ruleKey         String
+  valueJson       Json?
+  enabled         Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  countryPolicy CountryPolicy @relation(fields: [countryPolicyId], references: [id], onDelete: Cascade)
+
+  @@unique([countryPolicyId, ruleKey])
+  @@index([countryPolicyId])
+  @@map("policy_rules")
+}
+
+// Phase 5: State policy override
+model StatePolicy {
+  id            Int       @id @default(autoincrement())
+  stateId       Int
+  name          String
+  status        String // DRAFT | ACTIVE | ARCHIVED
+  effectiveFrom DateTime  @default(now())
+  effectiveTo   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  state    State                @relation(fields: [stateId], references: [id], onDelete: Cascade)
+  features StatePolicyFeature[]
+  rules    StatePolicyRule[]
+
+  @@index([stateId, status])
+  @@map("state_policies")
+}
+
+model StatePolicyFeature {
+  id            Int      @id @default(autoincrement())
+  statePolicyId Int
+  featureCode   String
+  enabled       Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  statePolicy StatePolicy @relation(fields: [statePolicyId], references: [id], onDelete: Cascade)
+
+  @@unique([statePolicyId, featureCode])
+  @@index([statePolicyId])
+  @@map("state_policy_features")
+}
+
+model StatePolicyRule {
+  id            Int      @id @default(autoincrement())
+  statePolicyId Int
+  ruleKey       String
+  valueJson     Json?
+  enabled       Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  statePolicy StatePolicy @relation(fields: [statePolicyId], references: [id], onDelete: Cascade)
+
+  @@unique([statePolicyId, ruleKey])
+  @@index([statePolicyId])
+  @@map("state_policy_rules")
+}
+
+// Phase 4: Ads model (country targeting)
+model Ad {
+  id                 Int       @id @default(autoincrement())
+  countryId          Int
+  title              String
+  body               String?   @db.Text
+  mediaId            Int?
+  linkUrl            String?   @db.VarChar(512)
+  status             String    @default("DRAFT") // DRAFT | ACTIVE | PAUSED
+  startAt            DateTime?
+  endAt              DateTime?
+  targetCountryCodes String?   @db.VarChar(255) // comma-separated e.g. BD,IN or null = primary country only
+  sortOrder          Int       @default(0)
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  country Country @relation(fields: [countryId], references: [id], onDelete: Cascade)
+  media   Media?  @relation(fields: [mediaId], references: [id], onDelete: SetNull)
+
+  @@index([countryId, status])
+  @@index([status, startAt, endAt])
+  @@map("ads")
+}
+
+model Flavor {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  variants ProductVariant[]
+
+  @@map("flavors")
+}
+
+model Unit {
+  id        Int      @id @default(autoincrement())
+  code      String   @unique
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  variants ProductVariant[]
+
+  @@index([code])
+  @@map("units")
+}
+
+model ProductMedia {
+  id        Int      @id @default(autoincrement())
+  productId Int
+  mediaId   Int
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  media   Media   @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+
+  @@index([productId, sortOrder])
+  @@map("product_media")
+}
+
+// ============================
+// MASTER PRODUCT CATALOG
+// ============================
+// Global catalog of pet food products that shop owners can browse and clone
+model MasterProductCatalog {
+  id   Int    @id @default(autoincrement())
+  name String
+  slug String @unique
+
+  // Core relations
+  companyId  Int?
+  company    Company?  @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  brandId    Int?
+  brand      Brand?    @relation(fields: [brandId], references: [id], onDelete: SetNull)
+  categoryId Int?
+  category   Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
+  // Identifiers
+  barcode String? @unique // Acts as global SKU / barcode for the product
+
+  // Product titles & descriptions
+  shortName        String?
+  shortDescription String?
+  description      String? @db.Text
+
+  // Rich structured description fields
+  bulletPoints        Json? // JSON array of key bullet points
+  usageInstructions   String? @db.Text
+  storageInstructions String? @db.Text
+  safetyWarning       String? @db.Text
+  countryOfOrigin     String?
+
+  // SEO (optional)
+  metaTitle       String?
+  metaDescription String?
+
+  // Variants information (stored as JSON array)
+  // Shape: [{ title, unit, flavor, packSize, packUnit, barcode, mrp, attributes }]
+  variantsJson Json?
+
+  // Normalized variants (per size/flavour/pack) for richer querying
+  variants MasterProductVariant[]
+
+  // Suggested pricing (optional)
+  suggestedPrice Decimal? @db.Decimal(10, 2)
+  currency       String   @default("BDT")
+
+  // Media (reusable, points to global Media table)
+  primaryMediaId Int?
+  primaryMedia   Media? @relation("MasterProductPrimaryMedia", fields: [primaryMediaId], references: [id], onDelete: SetNull)
+
+  // Legacy / fallback image URL (e.g. direct manufacturer URL)
+  imageUrl String?
+
+  // Additional structured fields (e.g. nutrition, composition)
+  metaJson Json? // Additional metadata (ingredients, nutritional info, etc.)
+
+  // Status
+  isActive   Boolean @default(true)
+  isVerified Boolean @default(false) // Admin verified products
+
+  // Source tracking
+  sourceType String? // "SEED", "CSV", "API", "MANUAL"
+  sourceRef  String? // Reference to source
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  clonedProducts Product[]            @relation("MasterProductCloned")
+  galleryMedia   MasterProductMedia[]
+
+  @@index([companyId])
+  @@index([brandId])
+  @@index([categoryId])
+  @@index([isActive, isVerified])
+  @@index([slug])
+  @@index([barcode])
+  @@map("master_product_catalog")
+}
+
+// Normalized variants for MasterProductCatalog.
+// This complements variantsJson and will gradually become the primary source.
+model MasterProductVariant {
+  id       Int                  @id @default(autoincrement())
+  masterId Int
+  master   MasterProductCatalog @relation(fields: [masterId], references: [id], onDelete: Cascade)
+
+  // Identifiers
+  variantSku  String? // CSV: variant_sku
+  variantName String // e.g. "2kg bag"
+
+  // Pack / size
+  packSize Float?
+  packUnit String?
+
+  // Attributes
+  flavour  String?
+  ageGroup String?
+  petType  String?
+
+  // Pricing hints from catalog (not shop-specific)
+  mrp      Decimal? @db.Decimal(10, 2)
+  minPrice Decimal? @db.Decimal(10, 2)
+  maxPrice Decimal? @db.Decimal(10, 2)
+
+  // Extra description for this specific variant
+  variantDescription String? @db.Text
+
+  // UI / default flags
+  isDefault Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([masterId, variantSku])
+  @@index([masterId])
+  @@map("master_product_variants")
+}
+
+model MasterProductMedia {
+  id        Int      @id @default(autoincrement())
+  masterId  Int
+  mediaId   Int
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  master MasterProductCatalog @relation(fields: [masterId], references: [id], onDelete: Cascade)
+  media  Media                @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+
+  @@index([masterId, sortOrder])
+  @@index([mediaId])
+  @@map("master_product_media")
+}
+
+model InventoryLocation {
+  id        Int                   @id @default(autoincrement())
+  branchId  Int
+  type      InventoryLocationType
+  name      String
+  code      String?
+  isActive  Boolean               @default(true)
+  createdAt DateTime              @default(now())
+  updatedAt DateTime              @updatedAt
+
+  branch         Branch                  @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  variantConfigs LocationVariantConfig[]
+  stockBalances  StockBalance[]
+  stockLedgers   StockLedger[]
+  locationPrices LocationPrice[]
+  transfersFrom  StockTransfer[]         @relation("TransferFrom")
+  transfersTo    StockTransfer[]         @relation("TransferTo")
+  returnItems    ReturnItem[]
+  stockLotBalances StockLotBalance[]
+  stockAdjustmentRequests StockAdjustmentRequest[]
+
+  @@index([type])
+  @@index([branchId])
+  @@index([isActive])
+  @@map("inventory_locations")
+}
+
+model LocationVariantConfig {
+  locationId Int
+  variantId  Int
+  channel    LocationChannel
+  isEnabled  Boolean         @default(true)
+  createdAt  DateTime        @default(now())
+  updatedAt  DateTime        @updatedAt
+
+  location InventoryLocation @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  variant  ProductVariant    @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  @@id([locationId, variantId])
+  @@index([variantId])
+  @@map("location_variant_configs")
+}
+
+model LocationPrice {
+  locationId    Int
+  variantId     Int
+  price         Decimal   @db.Decimal(10, 2)
+  effectiveFrom DateTime  @default(now())
+  effectiveTo   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  location InventoryLocation @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  variant  ProductVariant    @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  @@id([locationId, variantId])
+  @@index([variantId])
+  @@index([effectiveFrom, effectiveTo])
+  @@map("location_prices")
+}
+
+model StockBalance {
+  locationId  Int
+  variantId   Int
+  onHandQty   Int      @default(0)
+  reservedQty Int      @default(0)
+  updatedAt   DateTime @updatedAt
+
+  location InventoryLocation @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  variant  ProductVariant    @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  @@id([locationId, variantId])
+  @@index([variantId])
+  @@map("stock_balances")
+}
+
+model StockLedger {
+  id              Int             @id @default(autoincrement())
+  locationId      Int
+  variantId       Int
+  lotId           Int? // Batch/lot reference for batch-wise stock
+  type            StockLedgerType
+  quantityDelta   Int // Positive for IN, negative for OUT
+  refType         String? // ORDER, TRANSFER, RETURN, etc.
+  refId           String?
+  createdByUserId Int?
+  createdAt       DateTime        @default(now())
+
+  location  InventoryLocation @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  variant   ProductVariant    @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  lot       StockLot?         @relation(fields: [lotId], references: [id], onDelete: SetNull)
+  createdBy User?             @relation("StockLedgerCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@index([locationId, variantId, createdAt])
+  @@index([lotId])
+  @@index([refType, refId])
+  @@index([type, createdAt])
+  @@map("stock_ledgers")
+}
+
+model StockTransfer {
+  id              Int                 @id @default(autoincrement())
+  fromLocationId  Int
+  toLocationId    Int
+  status          StockTransferStatus @default(DRAFT)
+  stockRequestId  Int?                @unique // Optional link to Stock Request (one transfer per request)
+  createdByUserId Int?
+  sentAt          DateTime?
+  receivedAt      DateTime?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  fromLocation InventoryLocation   @relation("TransferFrom", fields: [fromLocationId], references: [id], onDelete: Restrict)
+  toLocation   InventoryLocation   @relation("TransferTo", fields: [toLocationId], references: [id], onDelete: Restrict)
+  stockRequest StockRequest?       @relation(fields: [stockRequestId], references: [id], onDelete: SetNull)
+  createdBy    User?               @relation("StockTransferCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  items        StockTransferItem[]
+  discrepancies StockDiscrepancy[]
+
+  @@index([fromLocationId])
+  @@index([toLocationId])
+  @@index([status])
+  @@index([stockRequestId])
+  @@map("stock_transfers")
+}
+
+model StockTransferItem {
+  id               Int      @id @default(autoincrement())
+  transferId       Int
+  variantId        Int
+  lotId            Int? // Batch/lot for this line
+  quantitySent     Int
+  quantityReceived Int      @default(0)
+  quantityDamaged  Int      @default(0)
+  quantityExpired  Int      @default(0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  transfer StockTransfer  @relation(fields: [transferId], references: [id], onDelete: Cascade)
+  variant  ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
+  lot      StockLot?      @relation(fields: [lotId], references: [id], onDelete: SetNull)
+
+  @@index([transferId])
+  @@index([variantId])
+  @@index([lotId])
+  @@map("stock_transfer_items")
+}
+
+// === Stock Request (branch requests stock; owner fulfills → dispatch) ===
+model StockRequest {
+  id              Int                 @id @default(autoincrement())
+  orgId           Int
+  branchId        Int
+  requesterUserId Int
+  status          StockRequestStatus  @default(DRAFT)
+  submittedAt     DateTime?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  // Owner decline (auditable)
+  declinedAt       DateTime?
+  declineReason    String?             @db.Text
+  declineSource    String?             @db.VarChar(100)
+  declinedByUserId Int?
+
+  org      Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  branch   Branch         @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  requester User          @relation("StockRequestRequestedBy", fields: [requesterUserId], references: [id], onDelete: Restrict)
+  declinedBy User?        @relation("StockRequestDeclinedBy", fields: [declinedByUserId], references: [id], onDelete: SetNull)
+  items    StockRequestItem[]
+  transfer StockTransfer?
+
+  @@index([orgId])
+  @@index([branchId])
+  @@index([status])
+  @@index([requesterUserId])
+  @@map("stock_requests")
+}
+
+model StockRequestItem {
+  id             Int    @id @default(autoincrement())
+  stockRequestId Int
+  productId      Int
+  variantId      Int
+  requestedQty   Int
+  note           String? @db.VarChar(500)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  stockRequest StockRequest   @relation(fields: [stockRequestId], references: [id], onDelete: Cascade)
+  product     Product        @relation(fields: [productId], references: [id], onDelete: Restrict)
+  variant     ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
+
+  @@index([stockRequestId])
+  @@index([productId])
+  @@index([variantId])
+  @@map("stock_request_items")
+}
+
+// === Batch-wise inventory (StockLot) - separate from authenticity Batch ===
+model StockLot {
+  id               Int      @id @default(autoincrement())
+  orgId            Int
+  variantId        Int
+  lotCode          String
+  mfgDate          DateTime
+  expDate          DateTime
+  createdByUserId  Int?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  org     Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  variant ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  createdBy User?       @relation("StockLotCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  stockLedgers    StockLedger[]
+  stockLotBalances StockLotBalance[]
+  transferItems   StockTransferItem[]
+  stockDiscrepancies StockDiscrepancy[]
+  stockAdjustmentRequests StockAdjustmentRequest[]
+
+  @@unique([orgId, variantId, lotCode])
+  @@index([orgId])
+  @@index([variantId])
+  @@index([expDate])
+  @@map("stock_lots")
+}
+
+model StockLotBalance {
+  locationId   Int
+  lotId        Int
+  onHandQty    Int      @default(0)
+  reservedQty  Int      @default(0)
+  updatedAt    DateTime @updatedAt
+
+  location InventoryLocation @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  lot      StockLot          @relation(fields: [lotId], references: [id], onDelete: Cascade)
+
+  @@id([locationId, lotId])
+  @@index([lotId])
+  @@map("stock_lot_balances")
+}
+
+model StockDiscrepancy {
+  id              Int                    @id @default(autoincrement())
+  transferId      Int
+  transferItemId  Int?
+  variantId       Int
+  lotId           Int?
+  expectedQty     Int
+  receivedQty     Int
+  damagedQty      Int      @default(0)
+  missingQty      Int      @default(0)
+  notes           String?  @db.Text
+  evidenceMediaIds Json?
+  status          StockDiscrepancyStatus @default(PENDING)
+  resolvedByUserId Int?
+  resolvedAt      DateTime?
+  resolutionNote  String?  @db.Text
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  transfer      StockTransfer @relation(fields: [transferId], references: [id], onDelete: Cascade)
+  variant       ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
+  lot           StockLot?      @relation(fields: [lotId], references: [id], onDelete: SetNull)
+  resolvedBy    User?          @relation("StockDiscrepancyResolvedBy", fields: [resolvedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([transferId])
+  @@index([status])
+  @@map("stock_discrepancies")
+}
+
+model StockAdjustmentRequest {
+  id               Int                   @id @default(autoincrement())
+  orgId            Int
+  locationId       Int
+  variantId        Int
+  lotId            Int?
+  quantityDelta    Int // positive = add, negative = deduct
+  reason           String?               @db.Text
+  payload          Json?
+  status           StockAdjustmentStatus @default(PENDING)
+  requestedByUserId Int
+  reviewedByUserId Int?
+  reviewedAt       DateTime?
+  reviewNote       String?               @db.Text
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+
+  org         Organization       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  location    InventoryLocation  @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  variant     ProductVariant     @relation(fields: [variantId], references: [id], onDelete: Restrict)
+  lot         StockLot?          @relation(fields: [lotId], references: [id], onDelete: SetNull)
+  requestedBy User               @relation("StockAdjustmentRequestedBy", fields: [requestedByUserId], references: [id], onDelete: Restrict)
+  reviewedBy  User?              @relation("StockAdjustmentReviewedBy", fields: [reviewedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, status])
+  @@index([locationId])
+  @@map("stock_adjustment_requests")
+}
+
+model ReturnRequest {
+  id                Int                 @id @default(autoincrement())
+  orderId           Int? // Can reference Order or other sale ref
+  status            ReturnRequestStatus @default(PENDING)
+  requestedByUserId Int?
+  approvedByUserId  Int?
+  receivedAt        DateTime?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  requestedBy User?        @relation("ReturnRequestedBy", fields: [requestedByUserId], references: [id], onDelete: SetNull)
+  approvedBy  User?        @relation("ReturnApprovedBy", fields: [approvedByUserId], references: [id], onDelete: SetNull)
+  items       ReturnItem[]
+
+  @@index([orderId])
+  @@index([status])
+  @@map("return_requests")
+}
+
+model ReturnItem {
+  id              Int             @id @default(autoincrement())
+  returnRequestId Int
+  variantId       Int
+  quantity        Int
+  condition       ReturnCondition
+  locationId      Int? // For restock location
+  createdAt       DateTime        @default(now())
+
+  returnRequest ReturnRequest      @relation(fields: [returnRequestId], references: [id], onDelete: Cascade)
+  variant       ProductVariant     @relation(fields: [variantId], references: [id], onDelete: Restrict)
+  location      InventoryLocation? @relation(fields: [locationId], references: [id], onDelete: SetNull)
+
+  @@index([returnRequestId])
+  @@index([variantId])
+  @@map("return_items")
+}
+
+model Vendor {
+  id          Int      @id @default(autoincrement())
+  orgId       Int
+  name        String
+  contactJson Json?
+  status      String   @default("ACTIVE")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  org            Organization           @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  listings       VendorProductListing[]
+  payoutAccounts PayoutAccount[]
+
+  @@index([orgId])
+  @@map("vendors")
+}
+
+model VendorProductListing {
+  id               Int                 @id @default(autoincrement())
+  vendorId         Int
+  productId        Int
+  variantId        Int?
+  status           VendorListingStatus @default(DRAFT)
+  commissionRuleId Int?
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+
+  vendor         Vendor          @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  product        Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
+  variant        ProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  commissionRule CommissionRule? @relation(fields: [commissionRuleId], references: [id], onDelete: SetNull)
+
+  @@index([vendorId])
+  @@index([productId])
+  @@index([status])
+  @@map("vendor_product_listings")
+}
+
+model CommissionRule {
+  id        Int                @id @default(autoincrement())
+  name      String
+  type      CommissionRuleType
+  value     Decimal            @db.Decimal(10, 2)
+  orgId     Int?
+  isDefault Boolean            @default(false)
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+
+  org      Organization?          @relation(fields: [orgId], references: [id], onDelete: SetNull)
+  listings VendorProductListing[]
+
+  @@index([orgId])
+  @@index([isDefault])
+  @@map("commission_rules")
+}
+
+model PayoutAccount {
+  id          Int               @id @default(autoincrement())
+  vendorId    Int
+  type        PayoutAccountType
+  detailsJson Json
+  isDefault   Boolean           @default(false)
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  vendor Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@index([vendorId])
+  @@index([isDefault])
+  @@map("payout_accounts")
+}
+
+// ============================
+// Producer/Auth Authentication System (Separate schema)
+// ============================
+
+enum ProducerOrgStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+  SUSPENDED
+}
+
+enum AuthProductStatus {
+  DRAFT
+  ACTIVE
+  INACTIVE
+}
+
+enum AuthBatchStatus {
+  DRAFT
+  APPROVED
+  GENERATED
+}
+
+enum AuthCodeStatus {
+  UNUSED
+  VERIFIED
+  SOLD
+  BLOCKED
+  EXPIRED
+}
+
+enum AuthVerifyResult {
+  GENUINE
+  ALREADY_VERIFIED
+  INVALID
+  BLOCKED
+}
+
+model ProducerOrg {
+  id          Int               @id @default(autoincrement())
+  ownerUserId Int
+  name        String
+  countryCode String?
+  docsJson    Json?
+  status      ProducerOrgStatus @default(PENDING)
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  owner    User               @relation("ProducerOrgOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  products AuthProduct[]
+  staff    ProducerOrgStaff[]
+
+  @@index([ownerUserId])
+  @@map("producer_orgs")
+}
+
+model ProducerOrgStaff {
+  id            Int      @id @default(autoincrement())
+  producerOrgId Int
+  userId        Int
+  roleId        Int
+  invitedBy     Int?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  producerOrg ProducerOrg @relation(fields: [producerOrgId], references: [id], onDelete: Cascade)
+  user        User        @relation("ProducerStaffUser", fields: [userId], references: [id], onDelete: Cascade)
+  role        Role        @relation("ProducerStaffRole", fields: [roleId], references: [id])
+  inviter     User?       @relation("ProducerStaffInviter", fields: [invitedBy], references: [id], onDelete: SetNull)
+
+  @@unique([producerOrgId, userId])
+  @@index([userId])
+  @@index([roleId])
+  @@map("producer_org_staff")
+}
+
+model AuthProduct {
+  id              Int               @id @default(autoincrement())
+  producerOrgId   Int
+  brandName       String
+  productName     String
+  sku             String
+  packSize        String?
+  description     String?
+  status          AuthProductStatus @default(DRAFT)
+  createdByUserId Int?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  producerOrg ProducerOrg @relation(fields: [producerOrgId], references: [id], onDelete: Cascade)
+  createdBy   User?       @relation("AuthProductCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  batches     AuthBatch[]
+
+  @@unique([producerOrgId, sku])
+  @@index([producerOrgId])
+  @@map("auth_products")
+}
+
+model AuthBatch {
+  id              Int             @id @default(autoincrement())
+  authProductId   Int
+  batchNo         String
+  mfgDate         DateTime?
+  expDate         DateTime?
+  qtyPlanned      Int
+  qtyGenerated    Int             @default(0)
+  status          AuthBatchStatus @default(DRAFT)
+  createdByUserId Int?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  authProduct AuthProduct @relation(fields: [authProductId], references: [id], onDelete: Cascade)
+  createdBy   User?       @relation("AuthBatchCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  codes       AuthCode[]
+
+  @@index([authProductId])
+  @@index([status])
+  @@map("auth_batches")
+}
+
+model AuthCode {
+  id                   Int            @id @default(autoincrement())
+  batchId              Int
+  codeHash             String         @unique
+  codeLength           Int            @default(12)
+  customPrefix         String?
+  customSuffix         String?
+  codeCipher           String
+  codeIv               String
+  codeTag              String
+  status               AuthCodeStatus @default(UNUSED)
+  printedAt            DateTime?
+  exportedAt           DateTime?
+  verifyCount          Int            @default(0)
+  firstVerifiedAt      DateTime?
+  firstVerifiedIp      String?
+  firstVerifiedCountry String?
+  generatedByUserId    Int?
+  createdAt            DateTime       @default(now())
+
+  batch       AuthBatch             @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  generatedBy User?                 @relation("AuthCodeGeneratedBy", fields: [generatedByUserId], references: [id], onDelete: SetNull)
+  logs        AuthVerificationLog[]
+
+  @@index([batchId])
+  @@index([status])
+  @@map("auth_codes")
+}
+
+model AuthVerificationLog {
+  id               Int              @id @default(autoincrement())
+  codeId           Int?
+  publicCodeMasked String
+  deviceId         String?
+  ip               String?
+  country          String?
+  userId           Int?
+  result           AuthVerifyResult
+  createdAt        DateTime         @default(now())
+
+  code AuthCode? @relation(fields: [codeId], references: [id], onDelete: SetNull)
+  user User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([codeId])
+  @@map("auth_verification_logs")
+}
+
+// ============================
+// Product Authenticity + Serial Issuance (MVP)
+// ============================
+
+enum ProductVersionStatus {
+  DRAFT
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum BatchStatus {
+  PENDING
+  APPROVED
+  ISSUED
+  CLOSED
+}
+
+enum SerialStatus {
+  ISSUED
+  ACTIVATED
+  SOLD
+  VOID
+  RECALLED
+}
+
+enum ScanAction {
+  PRODUCED
+  SHIPPED
+  RECEIVED
+  SOLD
+  VERIFY
+}
+
+enum ScanActorRole {
+  FACTORY
+  DISTRIBUTOR
+  RETAILER
+  CUSTOMER
+  ADMIN
+}
+
+enum LocationPrecisionLevel {
+  COARSE
+  MEDIUM
+  PRECISE
+}
+
+enum LocationConsentLevel {
+  NONE
+  COARSE
+  PRECISE_WHEN_USING
+  ALWAYS
+}
+
+enum LocationSource {
+  GPS
+  IP
+  MANUAL
+  WIFI
+  CELL
+}
+
+enum LocationEventType {
+  PING
+  SIGNIFICANT_MOVE
+  MANUAL_SET
+  HOME_SET
+}
+
+model Factory {
+  id          Int      @id @default(autoincrement())
+  orgId       Int
+  name        String
+  countryCode String?
+  addressJson Json?
+  isVerified  Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  org     Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  lines   ProductionLine[]
+  batches Batch[]
+
+  @@index([orgId])
+  @@map("factories")
+}
+
+model ProductionLine {
+  id        Int      @id @default(autoincrement())
+  factoryId Int
+  lineCode  String
+  deviceId  String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  factory Factory @relation(fields: [factoryId], references: [id], onDelete: Cascade)
+  batches Batch[]
+
+  @@unique([factoryId, lineCode])
+  @@index([factoryId])
+  @@map("production_lines")
+}
+
+model ProductVersion {
+  id              Int                  @id @default(autoincrement())
+  productId       Int
+  version         Int
+  status          ProductVersionStatus @default(DRAFT)
+  description     String?
+  specJson        Json?
+  createdByUserId Int?
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+
+  product     Product             @relation(fields: [productId], references: [id], onDelete: Cascade)
+  packaging   PackagingTemplate?
+  fingerprint ProductFingerprint?
+  batches     Batch[]
+  createdBy   User?               @relation("ProductVersionCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([productId, version])
+  @@index([productId, status])
+  @@map("product_versions")
+}
+
+model PackagingTemplate {
+  id               Int      @id @default(autoincrement())
+  productVersionId Int      @unique
+  templateJson     Json
+  status           String   @default("DRAFT")
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  productVersion ProductVersion @relation(fields: [productVersionId], references: [id], onDelete: Cascade)
+
+  @@map("packaging_templates")
+}
+
+model ProductFingerprint {
+  id               Int      @id @default(autoincrement())
+  productVersionId Int      @unique
+  textHash         String?
+  imageHash        String?
+  specHash         String?
+  similarityScore  Decimal? @db.Decimal(5, 2)
+  createdAt        DateTime @default(now())
+
+  productVersion ProductVersion @relation(fields: [productVersionId], references: [id], onDelete: Cascade)
+
+  @@map("product_fingerprints")
+}
+
+model Contract {
+  id               Int       @id @default(autoincrement())
+  orgId            Int
+  startDate        DateTime?
+  endDate          DateTime?
+  allowedCountries Json?
+  channels         Json?
+  status           String    @default("ACTIVE")
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  quotaPlans QuotaPlan[]
+
+  @@index([orgId])
+  @@map("contracts")
+}
+
+model QuotaPlan {
+  id         Int      @id @default(autoincrement())
+  contractId Int
+  productId  Int
+  perMonth   Int?
+  perBatch   Int?
+  createdAt  DateTime @default(now())
+
+  contract Contract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+  product  Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([contractId])
+  @@index([productId])
+  @@map("quota_plans")
+}
+
+model QuotaUsage {
+  id           Int      @id @default(autoincrement())
+  batchId      Int      @unique
+  issuedQty    Int      @default(0)
+  remainingQty Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  batch Batch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  @@map("quota_usages")
+}
+
+model Batch {
+  id               Int         @id @default(autoincrement())
+  productVersionId Int
+  factoryId        Int
+  lineId           Int?
+  status           BatchStatus @default(PENDING)
+  requestedQty     Int
+  approvedQty      Int?
+  mfgDate          DateTime?
+  expDate          DateTime?
+  createdByUserId  Int?
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+
+  productVersion ProductVersion  @relation(fields: [productVersionId], references: [id], onDelete: Cascade)
+  factory        Factory         @relation(fields: [factoryId], references: [id], onDelete: Restrict)
+  line           ProductionLine? @relation(fields: [lineId], references: [id], onDelete: SetNull)
+  createdBy      User?           @relation("BatchCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  serialRanges   SerialRange[]
+  serials        Serial[]
+  quotaUsage     QuotaUsage?
+
+  @@index([productVersionId])
+  @@index([factoryId])
+  @@index([status])
+  @@map("batches")
+}
+
+model SerialRange {
+  id             Int      @id @default(autoincrement())
+  batchId        Int
+  qty            Int
+  issuedAt       DateTime @default(now())
+  issuedByUserId Int?
+  status         String   @default("ISSUED")
+
+  batch    Batch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  issuedBy User? @relation("SerialRangeIssuedBy", fields: [issuedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([batchId])
+  @@map("serial_ranges")
+}
+
+model Serial {
+  id               Int          @id @default(autoincrement())
+  batchId          Int
+  serialCode       String       @unique
+  signature        String
+  status           SerialStatus @default(ISSUED)
+  firstScanAt      DateTime?
+  firstScanCountry String?
+  firstScanDevice  String?
+  createdAt        DateTime     @default(now())
+
+  batch      Batch       @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  scanEvents ScanEvent[]
+
+  @@index([batchId])
+  @@map("serials")
+}
+
+model ScanEvent {
+  id          Int           @id @default(autoincrement())
+  serialId    Int
+  actorRole   ScanActorRole
+  action      ScanAction
+  countryCode String?
+  deviceId    String?
+  metaJson    Json?
+  createdAt   DateTime      @default(now())
+
+  serial Serial @relation(fields: [serialId], references: [id], onDelete: Cascade)
+
+  @@index([serialId, createdAt])
+  @@map("scan_events")
 }

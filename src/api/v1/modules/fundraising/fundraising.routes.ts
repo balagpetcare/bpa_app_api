@@ -3,6 +3,9 @@ const router = require('express').Router();
 const auth = require('../../../../middleware/auth.middleware');
 const admin = require('../../../../middleware/adminMiddleware');
 const admin2fa = require('../../../../middleware/admin2fa.middleware');
+const { requireFeature } = require('../../middlewares/requireFeature');
+const { policyGuard } = require('../../middlewares/policyGuard');
+const { donationLimiter } = require('../../../../middleware/rateLimiters');
 const ctrl = require('./fundraising.controller');
 
 // ------------------------------
@@ -11,14 +14,21 @@ const ctrl = require('./fundraising.controller');
 router.get('/feed', auth, ctrl.getFeed);
 router.get('/campaigns/:id', auth, ctrl.getCampaign);
 router.get('/campaigns/:id/single', auth, ctrl.getCampaignSingle);
-router.post('/campaigns', auth, ctrl.createCampaign);
-router.patch('/campaigns/:id', auth, ctrl.updateCampaign);
-router.delete('/campaigns/:id', auth, ctrl.deleteCampaign);
+router.post('/campaigns', auth, requireFeature('FUNDRAISING'), ctrl.createCampaign);
+router.patch('/campaigns/:id', auth, requireFeature('FUNDRAISING'), ctrl.updateCampaign);
+router.delete('/campaigns/:id', auth, requireFeature('FUNDRAISING'), ctrl.deleteCampaign);
 
 // ------------------------------
 // Donations & Updates
 // ------------------------------
-router.post('/campaigns/:id/donate', auth, ctrl.donate);
+router.post(
+  '/campaigns/:id/donate',
+  donationLimiter,
+  auth,
+  requireFeature('DONATION'),
+  policyGuard('donation.max_per_tx', { valueGetter: (req) => req.body?.amount }),
+  ctrl.donate
+);
 
 router.get('/campaigns/:id/donations', auth, ctrl.listDonations);
 
@@ -43,6 +53,10 @@ router.post('/account/submit', auth, ctrl.submitAccount);
 // ------------------------------
 // Admin review
 // ------------------------------
+// Phase 2.6: Donation hold/KYC list + approve/reject
+router.get('/admin/donations/hold', auth, admin, ctrl.adminListDonationsHold);
+router.patch('/admin/donations/:id/status', auth, admin, admin2fa, ctrl.adminUpdateDonationStatus);
+
 router.get('/admin/accounts', auth, admin, ctrl.adminListAccounts);
 router.patch('/admin/accounts/:id/status', auth, admin, admin2fa, ctrl.adminUpdateAccountStatus);
 

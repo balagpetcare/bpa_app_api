@@ -1,5 +1,6 @@
 const jwt = require("jsonwebtoken");
 const appConfig = require("../config/appConfig");
+const { resolvePermissionsForUser } = require("../api/v1/utils/permissions");
 
 module.exports = function authenticateToken(req, res, next) {
   try {
@@ -25,6 +26,30 @@ module.exports = function authenticateToken(req, res, next) {
       (payload && payload.sub ? Number(payload.sub) : null);
 
     req.user = { ...(payload || {}), id: Number(id || payload.id || payload.userId) };
+
+    // Extract userType from JWT if present (STAFF, OWNER, ADMIN, USER)
+    if (payload && payload.userType) {
+      req.user.userType = payload.userType;
+    }
+
+    // Attach permissions (from token payload if present, otherwise resolve from DB)
+    const permsFromToken = (payload && (payload.perms || payload.permissions)) || null;
+    if (Array.isArray(permsFromToken)) {
+      req.user.permissions = permsFromToken;
+    } else {
+      // best-effort resolve (does not throw)
+      resolvePermissionsForUser(req.user.id)
+        .then((perms) => {
+          req.user.permissions = perms;
+          next();
+        })
+        .catch(() => {
+          req.user.permissions = [];
+          next();
+        });
+      return;
+    }
+
 
     next();
   } catch (e) {

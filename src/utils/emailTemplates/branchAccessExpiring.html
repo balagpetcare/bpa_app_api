@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Branch Access Expiring Soon</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      line-height: 1.6;
+      color: #333;
+      max-width: 600px;
+      margin: 0 auto;
+      padding: 20px;
+      background-color: #f5f5f5;
+    }
+    .container {
+      background-color: #ffffff;
+      border-radius: 8px;
+      padding: 30px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .header {
+      border-bottom: 2px solid #FF9800;
+      padding-bottom: 20px;
+      margin-bottom: 20px;
+    }
+    .header h1 {
+      color: #FF9800;
+      margin: 0;
+      font-size: 24px;
+    }
+    .content {
+      margin: 20px 0;
+    }
+    .warning-box {
+      background-color: #fff3e0;
+      border-left: 4px solid #FF9800;
+      padding: 15px;
+      margin: 20px 0;
+    }
+    .button {
+      display: inline-block;
+      padding: 12px 24px;
+      background-color: #FF9800;
+      color: #ffffff;
+      text-decoration: none;
+      border-radius: 4px;
+      margin-top: 20px;
+    }
+    .footer {
+      margin-top: 30px;
+      padding-top: 20px;
+      border-top: 1px solid #e0e0e0;
+      font-size: 12px;
+      color: #666;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>⚠ Access Expiring Soon</h1>
+    </div>
+    <div class="content">
+      <p>Hello {{staffName}},</p>
+      
+      <div class="warning-box">
+        <strong>Reminder:</strong> Your access to <strong>{{branchName}}</strong> ({{orgName}}) will expire on <strong>{{expiresAt}}</strong>.
+      </div>
+      
+      <p>If you need to continue working at this branch, please contact your branch manager to request an extension before the expiration date.</p>
+      
+      <p>After the expiration date, you will no longer be able to access this branch until your access is renewed.</p>
+      
+      <a href="#" class="button">Contact Manager</a>
+    </div>
+    <div class="footer">
+      <p>This is an automated notification from BPA (Bangladesh Pet Association).</p>
+    </div>
+  </div>
+</body>
+</html>

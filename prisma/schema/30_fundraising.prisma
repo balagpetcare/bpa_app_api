@@ -96,6 +96,16 @@ model FundraisingAccount {
   areaId Int?
   bdArea BdArea? @relation(fields: [areaId], references: [id], onDelete: SetNull)
 
+  // Global / Map-based location (Phase 5)
+  countryCode      String? // ISO 3166-1 alpha-2
+  countryName      String?
+  stateName        String?
+  cityName         String?
+  addressLine      String? // Detailed address line
+  latitude         Float?
+  longitude        Float?
+  formattedAddress String? // Full address string from map provider
+
   dateOfBirth                DateTime?
   nationalIdNumber           String?
   birthRegNumber             String?

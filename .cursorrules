@@ -1,0 +1,7 @@
+Always follow BPA_STANDARD.md and PROJECT_CONTEXT.md (see docs/).
+Never change fixed ports (API 3000, Next.js 3100–3105).
+Do not redesign UI; follow WowDash patterns.
+Never overwrite existing code without merging; avoid deletions.
+Prefer update-only patches and include exact apply steps.
+Confirm affected files (touch points) before implementing changes.
+Put all new .md files in docs/ (root only: README.md).

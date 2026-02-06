@@ -1,5 +1,5 @@
 
-const prisma = require("@prisma/client");
+const prisma = require("../../../infrastructure/db/prismaClient");
 /**
  * Membership helpers for BPA (OrgMember / BranchMember)
  * - DOES NOT replace existing req.user.role (OWNER/ADMIN/etc)

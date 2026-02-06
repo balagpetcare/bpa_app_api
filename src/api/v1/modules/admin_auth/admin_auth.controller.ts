@@ -112,6 +112,7 @@ exports.login = async (req, res) => {
         sameSite: "lax",
         secure: isProd,
         path: "/",
+        domain: process.env.COOKIE_DOMAIN || "localhost",
       });
       return res.status(403).json({ success: false, message: "Forbidden" });
     }
@@ -125,6 +126,7 @@ exports.login = async (req, res) => {
       secure: String(process.env.NODE_ENV || "development") === "production",
       maxAge: 30 * 24 * 60 * 60 * 1000,
       path: "/",
+      domain: process.env.COOKIE_DOMAIN || "localhost",
     });
 
     return res.status(200).json({
@@ -196,6 +198,7 @@ exports.logout = async (req, res) => {
       sameSite: "lax",
       secure: isProd,
       path: "/",
+      domain: process.env.COOKIE_DOMAIN || "localhost",
     });
     return res.status(200).json({ success: true, message: "Logged out" });
   } catch {
