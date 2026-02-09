@@ -8,8 +8,10 @@ const basicUpdateSchema = z.object({
   supportPhone: z.string().min(6).max(30).optional().nullable(),
   supportEmail: z.string().email().optional().nullable(),
   addressJson: z.any().optional().nullable(),
+  location: z.record(z.any()).optional().nullable(),
 });
 
+// Legal profile: no banking/payout fields. Banking is collected only on /owner/organizations/[id]/payouts.
 const legalProfileSchema = z.object({
   organizationName: z.string().min(2).max(150).optional(),
   registrationType: z.enum(["PROPRIETORSHIP","PARTNERSHIP","LIMITED_COMPANY","NGO"]).optional(),
@@ -23,14 +25,6 @@ const legalProfileSchema = z.object({
   officialEmail: z.string().email().optional().nullable(),
   website: z.string().max(200).optional().nullable(),
   facebookPage: z.string().max(200).optional().nullable(),
-  bankAccountName: z.string().max(150).optional().nullable(),
-  bankAccountNumber: z.string().max(80).optional().nullable(),
-  bankName: z.string().max(150).optional().nullable(),
-  bankBranchName: z.string().max(150).optional().nullable(),
-  routingNumber: z.string().max(30).optional().nullable(),
-  payoutBkash: z.string().max(30).optional().nullable(),
-  payoutNagad: z.string().max(30).optional().nullable(),
-  payoutRocket: z.string().max(30).optional().nullable(),
 });
 
 function httpError(statusCode, message) {
@@ -105,6 +99,17 @@ async function updateMyOrganizationBasic(req, res, next) {
 
     const data = basicUpdateSchema.parse(req.body || {});
 
+    const { validateAndNormalizeLocation } = require('../utils/locationValidation');
+    let locationUpdate = undefined;
+    if (data.location != null && typeof data.location === 'object' && Object.keys(data.location).length > 0) {
+      try {
+        const normalized = validateAndNormalizeLocation(data.location);
+        locationUpdate = normalized ? { location: normalized } : undefined;
+      } catch (locErr) {
+        throw httpError(400, locErr.message);
+      }
+    }
+
     // Update organization
     const updated = await prisma.organization.update({
       where: { id: orgId },
@@ -112,6 +117,7 @@ async function updateMyOrganizationBasic(req, res, next) {
         ...(data.name !== undefined ? { name: data.name } : {}),
         ...(data.supportPhone !== undefined ? { supportPhone: data.supportPhone } : {}),
         ...(data.addressJson !== undefined ? { addressJson: data.addressJson } : {}),
+        ...(locationUpdate || {}),
       },
       include: {
         legalProfile: { include: { documents: { include: { media: true } }, directors: true } },

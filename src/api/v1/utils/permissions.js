@@ -1,4 +1,13 @@
 const prisma = require("../../../infrastructure/db/prismaClient");
+const { isAdminAllowed } = require("../services/authUnified.service");
+
+const ADMIN_PERMISSIONS = [
+  "reports.read", "dashboard.view", "dashboard.read", "finance.read",
+  "branch.read", "branch.write", "staff.read", "staff.write",
+  "wallet.read", "wallet.withdraw_request.read", "wallet.withdraw.approve",
+  "fundraising.read", "fundraising.verify", "users.read", "settings.write",
+  "TEAM_MANAGE",
+];
 
 /**
  * Canonical permission keys (UI / menu expects these).
@@ -30,6 +39,7 @@ function addCanonicalAliases(permSet) {
  * This is used as a safe fallback until all org/branch members are assigned DB-backed roles.
  * Keys here use backend convention (branches.read); canonical aliases (branch.read) are added when resolving.
  */
+/** @legacy Use context-based auth where possible. These feed compatibility layer. */
 const LEGACY_ROLE_PERMS = {
   OWNER: [
     "org.read","org.write",
@@ -38,7 +48,7 @@ const LEGACY_ROLE_PERMS = {
     "orders.read","orders.write",
     "inventory.read","inventory.write",
     "customers.read","customers.write",
-    "reports.read",
+    "reports.read","dashboard.view","finance.read",
     "settings.read","settings.write",
     "clinic.appointments.read","clinic.appointments.manage",
     "clinic.patients.read","clinic.patients.manage",
@@ -52,7 +62,7 @@ const LEGACY_ROLE_PERMS = {
     "orders.read","orders.write",
     "inventory.read","inventory.write",
     "customers.read","customers.write",
-    "reports.read",
+    "reports.read","dashboard.view","finance.read",
     "settings.read","settings.write"
   ],
   BRANCH_MANAGER: [
@@ -61,7 +71,7 @@ const LEGACY_ROLE_PERMS = {
     "orders.read","orders.write",
     "inventory.read","inventory.write",
     "customers.read","customers.write",
-    "reports.read"
+    "reports.read","dashboard.view"
   ],
   BRANCH_STAFF: [
     "branches.read",
@@ -245,6 +255,25 @@ async function resolvePermissionsForUser(userId) {
     // If user is an owner, add OWNER permissions (implicit staff access to all org branches)
     if (isOwner) {
       for (const p of (LEGACY_ROLE_PERMS.OWNER || [])) out.add(p);
+    }
+
+    // Team management: only users who own at least one OwnerTeam get TEAM_MANAGE (not delegates)
+    try {
+      const ownedTeamsCount = await prisma.ownerTeam.count({
+        where: { ownerUserId: Number(userId) },
+      });
+      if (ownedTeamsCount > 0) out.add("TEAM_MANAGE");
+    } catch (_e) {
+      // ignore if schema not migrated
+    }
+
+    // SuperAdminWhitelist admins get full admin permissions (reports, dashboard, etc.)
+    try {
+      if (await isAdminAllowed(Number(userId))) {
+        for (const p of ADMIN_PERMISSIONS) out.add(p);
+      }
+    } catch (_e) {
+      // Ignore if check fails
     }
 
     const withAliases = addCanonicalAliases(out);

@@ -441,6 +441,29 @@ model User {
   countryRoles UserCountryRole[]
   stateRoles   UserStateRole[]
 
+  // === Owner Delegation & Team Management ===
+  ownerTeamsOwned          OwnerTeam[]
+  ownerTeamMemberships     OwnerTeamMember[]
+  ownerDelegationsGranted  OwnerDelegation[]  @relation("OwnerDelegationOwner")
+  ownerDelegationsReceived OwnerDelegation[]  @relation("OwnerDelegationDelegate")
+  ownerOverviewLogs        OwnerOverviewLog[] @relation("OwnerOverviewLogOwner")
+  ownerOverviewLogsAsActor OwnerOverviewLog[] @relation("OwnerOverviewLogActor")
+  userContexts             UserContext[]
+  userContextsAsOwner      UserContext[]     @relation("UserContextOwner")
+  teamInvitationsSent      TeamInvitation[]   @relation("TeamInvitationInvitedBy")
+  teamInvitationsAccepted  TeamInvitation[]  @relation("TeamInvitationAcceptedBy")
+  teamInvitationsAsOwner   TeamInvitation[]  @relation("TeamInvitationOwner")
+
+  // === Workspace System ===
+  workspaceTasksAssignedTo    WorkspaceTask[] @relation("WorkspaceTaskAssignedTo")
+  workspaceTasksCreatedBy     WorkspaceTask[] @relation("WorkspaceTaskCreatedBy")
+  workspaceTasksAssignedBy    WorkspaceTask[] @relation("WorkspaceTaskAssignedBy")
+  workspaceTasksLastUpdatedBy WorkspaceTask[] @relation("WorkspaceTaskLastUpdatedBy")
+  workspaceTaskComments      WorkspaceTaskComment[]
+  workspaceAlertsAcknowledged WorkspaceAlert[]
+  workspaceApprovalRequestsRequested WorkspaceApprovalRequest[] @relation("WorkspaceApprovalRequester")
+  workspaceApprovalRequestsDecidedBy WorkspaceApprovalRequest[] @relation("WorkspaceApprovalDecidedBy")
+
   // Location: user's saved place (lat/lng-first; optional)
   currentPlaceId Int?
   currentPlace   Place?  @relation(fields: [currentPlaceId], references: [id], onDelete: SetNull)
@@ -555,10 +578,14 @@ model OwnerProfile {
   supportEmail String?
 
   // Optional location pointers for quick filtering/search (full address stays in OwnerKyc.presentAddressJson)
+  // DEPRECATED: Prefer addressJson for unified location (country/state/city/postal/addressLine/lat/lng)
   divisionId Int?
   districtId Int?
   upazilaId  Int?
   areaId     Int?
+
+  // Unified address (country/state/city/postal/addressLine/formattedAddress/lat/lng)
+  addressJson Json?
 
   nid         String?
   dateOfBirth DateTime?
@@ -2079,6 +2106,12 @@ enum AuditEntityType {
   // Global-Ready Phase 2: donation/transaction audit
   DONATION
   TRANSACTION
+  // Owner control over branch managers (audit actions by owner on manager userId)
+  USER
+  // Workspace system (task, alert, approval audit)
+  WORKSPACE_TASK
+  WORKSPACE_ALERT
+  WORKSPACE_APPROVAL
 }
 
 enum AuditActorRole {
@@ -2111,6 +2144,161 @@ model AuditLog {
 }
 
 // ===============================
+// Workspace System (task, alerts, approvals)
+// ===============================
+
+enum WorkspaceTaskStatus {
+  TODO
+  IN_PROGRESS
+  BLOCKED
+  DONE
+}
+
+enum WorkspaceTaskType {
+  INVENTORY
+  STAFF
+  ORDER
+  COMPLIANCE
+  SYSTEM
+}
+
+enum WorkspaceTaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum WorkspaceAlertType {
+  LOW_STOCK
+  HIGH_CANCEL_RATE
+  STAFF_INACTIVITY
+  LOGIN_OUTSIDE_SHIFT
+  PERMISSION_VIOLATION
+  OVERDUE_TASK
+  OTHER
+}
+
+enum WorkspaceApprovalType {
+  STAFF_INVITE
+  ROLE_CHANGE
+  BRANCH_TRANSFER
+  REFUND_OVERRIDE
+  DISCOUNT_EXCEPTION
+  OTHER
+}
+
+enum WorkspaceApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model WorkspaceTask {
+  id          Int                  @id @default(autoincrement())
+  orgId       Int
+  branchId    Int?                 // null = global/org-level
+  title       String               @db.VarChar(512)
+  description String?              @db.Text
+  status      WorkspaceTaskStatus  @default(TODO)
+  type        WorkspaceTaskType
+  priority    WorkspaceTaskPriority @default(MEDIUM)
+  assignedToUserId Int?
+  createdByUserId  Int
+  assignedByUserId Int?
+  lastUpdatedByUserId Int?
+  deadline    DateTime?
+  linkedEntityJson Json?           // { orderId?, staffId?, productId?, etc. }
+  resolutionNotes String?          @db.Text
+  deletedAt   DateTime?           // soft delete only
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+
+  org         Organization         @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  branch      Branch?              @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  assignedTo  User?                @relation("WorkspaceTaskAssignedTo", fields: [assignedToUserId], references: [id], onDelete: SetNull)
+  createdBy   User                 @relation("WorkspaceTaskCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  assignedBy  User?                @relation("WorkspaceTaskAssignedBy", fields: [assignedByUserId], references: [id], onDelete: SetNull)
+  lastUpdatedBy User?              @relation("WorkspaceTaskLastUpdatedBy", fields: [lastUpdatedByUserId], references: [id], onDelete: SetNull)
+  comments    WorkspaceTaskComment[]
+
+  @@index([orgId])
+  @@index([branchId])
+  @@index([assignedToUserId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([deletedAt])
+  @@map("workspace_tasks")
+}
+
+model WorkspaceTaskComment {
+  id        Int      @id @default(autoincrement())
+  taskId    Int
+  actorId   Int
+  actorRole String  @db.VarChar(32)  // OWNER, STAFF, etc.
+  body      String   @db.Text
+  isPrivate Boolean  @default(false) // owner -> manager only
+  deletedAt DateTime?
+  createdAt DateTime @default(now())
+
+  task  WorkspaceTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  actor User          @relation(fields: [actorId], references: [id], onDelete: Restrict)
+
+  @@index([taskId])
+  @@index([actorId])
+  @@map("workspace_task_comments")
+}
+
+model WorkspaceAlert {
+  id           Int               @id @default(autoincrement())
+  orgId        Int
+  branchId     Int?
+  type         WorkspaceAlertType
+  title        String            @db.VarChar(512)
+  detailJson   Json?             // entity ref, counts, etc.
+  acknowledgedAt DateTime?
+  acknowledgedByUserId Int?
+  convertedToTaskId Int?         // set when converted to task
+  createdAt    DateTime         @default(now())
+
+  org              Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  branch           Branch?       @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  acknowledgedBy   User?         @relation(fields: [acknowledgedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([orgId])
+  @@index([branchId])
+  @@index([type])
+  @@index([acknowledgedAt])
+  @@map("workspace_alerts")
+}
+
+model WorkspaceApprovalRequest {
+  id          Int                     @id @default(autoincrement())
+  orgId       Int
+  branchId    Int?
+  type        WorkspaceApprovalType
+  status      WorkspaceApprovalStatus @default(PENDING)
+  payloadJson Json                    // type-specific payload
+  requesterUserId Int
+  decidedByUserId Int?
+  decidedAt   DateTime?
+  rejectReason String?                @db.Text
+  createdAt   DateTime                @default(now())
+  updatedAt   DateTime                @updatedAt
+
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  branch    Branch?      @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  requester User         @relation("WorkspaceApprovalRequester", fields: [requesterUserId], references: [id], onDelete: Restrict)
+  decidedBy User?        @relation("WorkspaceApprovalDecidedBy", fields: [decidedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([orgId])
+  @@index([branchId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("workspace_approval_requests")
+}
+
+// ===============================
 // Partner Onboarding (V21)
 // ===============================
 
@@ -2120,6 +2308,14 @@ enum PartnerStatus {
   APPROVED
   REJECTED
   SUSPENDED
+}
+
+// Organization payout configuration status (banking collected on separate payouts page)
+enum OrganizationPayoutStatus {
+  NOT_CONFIGURED
+  PENDING_APPROVAL
+  CONFIGURED
+  REJECTED
 }
 
 enum BranchStatus {
@@ -2255,9 +2451,14 @@ model Organization {
   // Global-Ready Phase 1: country binding for org scope
   countryId   Int?
 
+  // Payout: NOT_CONFIGURED until banking is set up on /owner/organizations/[id]/payouts
+  payoutStatus OrganizationPayoutStatus @default(NOT_CONFIGURED)
+
   name         String
   supportPhone String?
   addressJson  Json?
+  /// Standardized location: { lat, lng, address, city, state, country, postalCode }
+  location     Json     @default("{}")
 
   // Owner KYC Upgrade: soft-delete + grace before hard-delete (user kept; business data removed)
   deletedAt           DateTime?
@@ -2300,6 +2501,14 @@ model Organization {
   // === Stock Request ===
   stockRequests StockRequest[]
 
+  // === Owner Delegation (scope-limited to org) ===
+  ownerDelegations OwnerDelegation[]
+
+  // === Workspace System ===
+  workspaceTasks            WorkspaceTask[]
+  workspaceAlerts           WorkspaceAlert[]
+  workspaceApprovalRequests WorkspaceApprovalRequest[]
+
   @@index([ownerUserId])
   @@index([countryId])
   @@index([deletedAt, deletionScheduledAt])
@@ -2322,6 +2531,8 @@ model Branch {
 
   verificationStatus VerificationStatus @default(UNSUBMITTED)
   addressJson        Json?
+  /// Standardized location: { lat, lng, address, city, state, country, postalCode }
+  location           Json               @default("{}")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -2352,6 +2563,15 @@ model Branch {
 
   // === Multi-Branch Staff Permission System ===
   accessPermissions BranchAccessPermission[]
+
+  // === Owner Delegation (scope-limited to branch) ===
+  ownerDelegations OwnerDelegation[]
+  userContexts     UserContext[]
+
+  // === Workspace System ===
+  workspaceTasks            WorkspaceTask[]
+  workspaceAlerts           WorkspaceAlert[]
+  workspaceApprovalRequests WorkspaceApprovalRequest[]
 
   @@index([orgId])
   @@map("branches")
@@ -2563,6 +2783,12 @@ model BranchAccessPermission {
   requestedByUserId Int?
   note              String?   @db.Text
   lastLoginAt       DateTime? // Track when staff last accessed this branch
+
+  // Owner-only: restrict manager login to time window (e.g. "09:00", "18:00")
+  loginWindowStart  String?
+  loginWindowEnd    String?
+  // Owner-only: custom permission keys override for this user at this branch (JSON array of strings)
+  permissionOverrides Json?
 
   // Relations
   branch     Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
@@ -3230,10 +3456,13 @@ model Company {
 // Reference: docs/GLOBAL_READY_FULL_PLANNING.md
 model Country {
   id              Int      @id @default(autoincrement())
-  code            String   @unique // ISO 3166-1 alpha-2: BD, IN, US
+  code            String   @unique // ISO 3166-1 alpha-2: BD, IN, US, LK, MY, SG
   name            String
   currencyCode    String?  @default("USD")
   timezoneDefault String?  @default("UTC")
+  phoneCode       String?  // E.164 prefix e.g. +880
+  latitude        Decimal? @db.Decimal(10, 8)
+  longitude       Decimal? @db.Decimal(11, 8)
   isActive        Boolean  @default(true)
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
@@ -3254,18 +3483,57 @@ model State {
   countryId Int
   code      String
   name      String
+  latitude  Decimal? @db.Decimal(10, 8)
+  longitude Decimal? @db.Decimal(11, 8)
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  country        Country         @relation(fields: [countryId], references: [id], onDelete: Cascade)
-  policies       StatePolicy[]
-  userStateRoles UserStateRole[]
-  accessInvites  AccessInvite[]
+  country           Country            @relation(fields: [countryId], references: [id], onDelete: Cascade)
+  policies          StatePolicy[]
+  userStateRoles    UserStateRole[]
+  accessInvites     AccessInvite[]
+  locationCities    LocationCity[]
 
   @@unique([countryId, code])
   @@index([countryId])
   @@map("states")
+}
+
+// Global location hierarchy: state -> city (district) -> sub-district (upazila/area)
+// Reference: docs/location/world/GLOBAL_LOCATION_SYSTEM.md
+model LocationCity {
+  id        Int      @id @default(autoincrement())
+  stateId   Int
+  name      String
+  code      String?  // optional admin code
+  latitude  Decimal? @db.Decimal(10, 8)
+  longitude Decimal? @db.Decimal(11, 8)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  state          State                @relation(fields: [stateId], references: [id], onDelete: Cascade)
+  subDistricts   LocationSubDistrict[]
+
+  @@unique([stateId, name])
+  @@index([stateId])
+  @@map("location_cities")
+}
+
+model LocationSubDistrict {
+  id        Int      @id @default(autoincrement())
+  cityId    Int
+  name      String
+  latitude  Decimal? @db.Decimal(10, 8)
+  longitude Decimal? @db.Decimal(11, 8)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  city LocationCity @relation(fields: [cityId], references: [id], onDelete: Cascade)
+
+  @@unique([cityId, name])
+  @@index([cityId])
+  @@map("location_sub_districts")
 }
 
 model CountryPolicy {
@@ -4471,4 +4739,161 @@ model ScanEvent {
 
   @@index([serialId, createdAt])
   @@map("scan_events")
+}
+
+// ============================
+// OWNER DELEGATION & TEAM MANAGEMENT
+// ============================
+// Extends owner capabilities: teams, delegated scopes, overview/audit.
+// No modifications to existing tables. Backward compatible.
+
+model OwnerTeam {
+  id          Int      @id @default(autoincrement())
+  ownerUserId Int
+  name        String   @db.VarChar(255)
+  description String?  @db.Text
+  scopes      Json?    // optional array of scope keys: products, inventory, staff, branches, etc.
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  owner      User              @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  members    OwnerTeamMember[]
+  delegations OwnerDelegation[]
+  teamInvitations TeamInvitation[]
+  userContexts   UserContext[]
+
+  @@unique([ownerUserId, name])
+  @@index([ownerUserId])
+  @@map("owner_teams")
+}
+
+model OwnerTeamMember {
+  id       Int      @id @default(autoincrement())
+  teamId   Int
+  userId   Int
+  roleInTeam String? @db.VarChar(64) // LEAD, MEMBER, etc. (optional)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  team OwnerTeam @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([teamId, userId])
+  @@index([userId])
+  @@index([teamId])
+  @@map("owner_team_members")
+}
+
+/// Reference table for delegation scopes: products, clinics, inventory, staff, branches, finance_read
+model OwnerPermissionScope {
+  id         Int      @id @default(autoincrement())
+  key        String   @unique @db.VarChar(64)
+  label      String   @db.VarChar(255)
+  isReadOnly Boolean  @default(false) // finance_read is read-only
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@map("owner_permission_scopes")
+}
+
+model OwnerDelegation {
+  id              Int      @id @default(autoincrement())
+  ownerUserId     Int
+  delegatedUserId Int
+  scopeKey        String   @db.VarChar(64) // products, clinics, inventory, staff, branches, finance_read
+  orgId           Int?     // null = all orgs under owner
+  branchId        Int?     // null = all branches in org
+  teamId          Int?     // optional: which team this delegation belongs to
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  owner       User        @relation("OwnerDelegationOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  delegatedUser User      @relation("OwnerDelegationDelegate", fields: [delegatedUserId], references: [id], onDelete: Cascade)
+  org         Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  branch      Branch?      @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  team        OwnerTeam?   @relation(fields: [teamId], references: [id], onDelete: SetNull)
+
+  @@unique([ownerUserId, delegatedUserId, scopeKey, orgId, branchId])
+  @@index([ownerUserId])
+  @@index([delegatedUserId])
+  @@index([scopeKey])
+  @@map("owner_delegations")
+}
+
+model OwnerOverviewLog {
+  id          Int      @id @default(autoincrement())
+  ownerUserId Int
+  actorUserId Int?
+  action      String   @db.VarChar(128) // DELEGATION_ASSIGNED, DELEGATION_REVOKED, TEAM_CREATED, etc.
+  meta        Json?
+  createdAt   DateTime @default(now())
+
+  owner User  @relation("OwnerOverviewLogOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  actor User? @relation("OwnerOverviewLogActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([ownerUserId])
+  @@index([actorUserId])
+  @@index([createdAt])
+  @@map("owner_overview_logs")
+}
+
+// Multi-context: user's active contexts (branch, team, owner, roles, scopes)
+model UserContext {
+  id               Int      @id @default(autoincrement())
+  userId           Int
+  ownerUserId      Int?     // null = user is the owner; set when delegate
+  branchId         Int?
+  teamId           Int?
+  roles            Json?    // string[] e.g. ["BRANCH_MANAGER", "STAFF"]
+  scopes           Json?    // string[] e.g. ["products", "inventory"]
+  defaultDashboard String?  @db.VarChar(64) // owner | branch | staff
+  isDefault        Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  user   User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  owner  User?      @relation("UserContextOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  branch Branch?   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  team   OwnerTeam? @relation(fields: [teamId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([ownerUserId])
+  @@index([branchId])
+  @@map("user_contexts")
+}
+
+enum TeamInvitationStatus {
+  PENDING
+  ACCEPTED
+  REVOKED
+  EXPIRED
+}
+
+// Team email invitation: owner invites by email to a team; token one-time use, hashed
+model TeamInvitation {
+  id        Int                  @id @default(autoincrement())
+  ownerUserId Int
+  teamId    Int
+  email     String               @db.VarChar(255)
+  tokenHash String               @unique
+  status    TeamInvitationStatus @default(PENDING)
+  expiresAt DateTime
+  scopes    Json?                // string[] scope keys to assign on accept
+  branchIds Json?                // number[] optional branch IDs to link
+  invitedByUserId Int
+  acceptedByUserId Int?
+  createdAt DateTime             @default(now())
+  updatedAt DateTime             @updatedAt
+
+  owner     User      @relation("TeamInvitationOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  team      OwnerTeam @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  invitedBy User      @relation("TeamInvitationInvitedBy", fields: [invitedByUserId], references: [id], onDelete: Restrict)
+  acceptedBy User?    @relation("TeamInvitationAcceptedBy", fields: [acceptedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([ownerUserId])
+  @@index([teamId])
+  @@index([email])
+  @@index([status])
+  @@map("team_invitations")
 }

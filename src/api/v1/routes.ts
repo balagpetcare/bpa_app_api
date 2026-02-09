@@ -53,8 +53,11 @@ router.use("/media", require("./modules/media/media.routes"));
 // Phase 4: Ads (public serve – no auth; country from X-Country-Code)
 router.use("/ads", require("./modules/ads/ads.routes"));
 
-// Locations (Division/District/Upazila/Area dropdowns + Dhaka tree)
+// Locations (legacy BD hierarchy – UI uses /geo for unified; these kept for backward compat)
 router.use("/locations", require("./modules/locations/locations.routes"));
+
+// Geo (static countries/states + Nominatim proxy - no DB for dropdowns)
+router.use("/geo", require("./modules/geo/geo.routes"));
 
 // Public master data (dropdowns)
 router.use("/meta", require("./modules/meta/meta.routes"));
@@ -78,6 +81,9 @@ router.use("/partner", require("./modules/partner_onboarding/partner_onboarding.
 
 // Owner panel (organizations, branches, staff) — separate namespace
 router.use("/owner", countryScopeGuard, require("./modules/owner/owner.routes"));
+
+// Workspace (tasks, alerts, approvals) — role-aware: Owner / Manager / Staff
+router.use("/workspace", countryScopeGuard, require("./modules/workspace/workspace.routes"));
 
 // Country admin namespace (RBAC-enforced)
 router.use("/country/access-invites", require("./modules/country_access_invites/country_access_invites.routes"));

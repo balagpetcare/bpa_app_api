@@ -1,4 +1,8 @@
 const service = require("./producer.service");
+const jwt = require("jsonwebtoken");
+const appConfig = require("../../../../config/appConfig");
+const { resolvePermissionsForUser } = require("../../utils/permissions");
+const { performUnifiedLogin } = require("../../services/authUnified.service");
 
 exports.register = async (req, res) => {
   try {
@@ -19,11 +23,31 @@ exports.register = async (req, res) => {
   }
 };
 
+/**
+ * Producer login – uses shared authUnified.service with producerOnly gate.
+ * Returns canonical contexts + default_redirect.
+ */
 exports.login = async (req, res) => {
   try {
-    const data = await service.loginProducer(req.body);
+    let result;
+    try {
+      result = await performUnifiedLogin({
+        email: req.body?.email || null,
+        phone: req.body?.phone || null,
+        password: req.body?.password || "",
+        options: { producerOnly: true },
+      });
+    } catch (authErr) {
+      const status = authErr.statusCode || 401;
+      return res.status(status).json({ success: false, message: authErr?.message || "Login failed" });
+    }
+
+    const { user, contexts, default_redirect } = result;
+    const perms = await resolvePermissionsForUser(user.id);
+    const token = jwt.sign({ id: user.id, perms }, appConfig.jwt.secret, { expiresIn: "7d" });
+
     const isProd = String(process.env.NODE_ENV || "development") === "production";
-    res.cookie("access_token", data.token, {
+    res.cookie("access_token", token, {
       httpOnly: true,
       sameSite: "lax",
       secure: isProd,
@@ -31,7 +55,21 @@ exports.login = async (req, res) => {
       path: "/",
       domain: process.env.COOKIE_DOMAIN || "localhost",
     });
-    return res.status(200).json({ success: true, data: { user: data.user } });
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        user: {
+          id: user.id,
+          email: user.auth?.email ?? null,
+          phone: user.auth?.phone ?? null,
+          displayName: user.profile?.displayName || null,
+          username: user.profile?.username || null,
+        },
+      },
+      contexts,
+      default_redirect,
+    });
   } catch (e) {
     const status = e?.statusCode || 500;
     return res.status(status).json({ success: false, message: e?.message || "Login failed" });

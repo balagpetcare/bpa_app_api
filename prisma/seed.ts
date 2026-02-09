@@ -13,6 +13,7 @@ import seedPetCategories from "./seeders/seedPetCategories";
 import seedProductSubcategories from "./seeders/seedProductSubcategories";
 import seedMasterProductCatalog from "./seeders/seedMasterProductCatalog";
 import seedCountries from "./seeders/seedCountries";
+import { runGlobalLocationSeed } from "./seeders/location";
 import seedCountryPolicies from "./seeders/seedCountryPolicies";
 import seedGlobalCountryRoles from "./seeders/seedGlobalCountryRoles";
 import seedOrganizationCountries from "./seeders/seedOrganizationCountries";
@@ -61,6 +62,8 @@ async function main() {
 
   // 14) Global-Ready Phase 1: Countries (BD, IN, US) + BD ACTIVE policy
   await seedCountries(prisma);
+  // 14.0) Global location system: BD, IN, LK, MY, SG (countries, states, cities, sub-districts)
+  await runGlobalLocationSeed(prisma);
   await seedCountryPolicies(prisma);
 
   // 14.1) Phase 1: Backfill org country to BD

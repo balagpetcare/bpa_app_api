@@ -174,11 +174,14 @@ export async function notifyManagerOfAccessRequest(branchId: number, staffUserId
         const managerEmail = member.user.auth.email;
         if (!managerEmail) return;
 
+        const ownerWebUrl = process.env.OWNER_WEB_URL || process.env.PUBLIC_WEB_URL || "http://localhost:3104";
+        const reviewUrl = `${ownerWebUrl.replace(/\/+$/, "")}/owner/staff-access`;
         const html = loadEmailTemplate("branchAccessRequest", {
           staffName,
           branchName,
           orgName,
           managerName: member.user.profile?.displayName || "Manager",
+          reviewUrl,
         });
 
         if (isSmtpEnabled()) {
@@ -226,18 +229,73 @@ export async function notifyOwnerOfAccessRequest(branchId: number, staffUserId: 
       },
     });
 
+    const owner = await prisma.user.findUnique({
+      where: { id: branch.org.ownerUserId },
+      select: {
+        auth: { select: { email: true } },
+      },
+    });
+
+    const perm = await prisma.branchAccessPermission.findUnique({
+      where: { id: permissionId },
+      select: { role: true },
+    }).catch(() => null);
+    const roleRequested = perm?.role || "";
+
     const staffName = staff?.profile?.displayName || staff?.auth?.email || staff?.auth?.phone || "Staff Member";
+    const requesterEmail = staff?.auth?.email || staff?.auth?.phone || "";
+
+    const meta = {
+      branchId,
+      branchName: branch.name,
+      staffUserId,
+      staffName,
+      requesterEmail,
+      role: roleRequested,
+      permissionId,
+    };
 
     await createNotification({
       userId: branch.org.ownerUserId,
       type: "STAFF_BRANCH_ACCESS_REQUEST",
       title: "Branch access approval needed",
       message: `${staffName} has requested access to ${branch.name}`,
-      meta: { branchId, branchName: branch.name, staffUserId, staffName, permissionId },
+      meta,
       priority: "P1",
       actionUrl: "/owner/access/requests",
       dedupeKey: `access_request_owner:${branchId}:${staffUserId}`,
     }).catch((err) => console.error("[NOTIFICATION] createNotification owner:", err?.message));
+
+    // Send email to Owner
+    const ownerEmail = owner?.auth?.email;
+    if (ownerEmail) {
+      const ownerWebUrl = process.env.OWNER_WEB_URL || process.env.PUBLIC_WEB_URL || "http://localhost:3104";
+      const reviewUrl = `${ownerWebUrl.replace(/\/+$/, "")}/owner/access/requests`;
+
+      const html = loadEmailTemplate("branchAccessRequest", {
+        staffName,
+        branchName: branch.name,
+        orgName: branch.org?.name || "Organization",
+        managerName: "Owner",
+        reviewUrl,
+        requesterEmail,
+        roleRequested: roleRequested || "—",
+      });
+
+      if (isSmtpEnabled()) {
+        try {
+          await sendMail({
+            to: ownerEmail,
+            subject: `Branch Access Request: ${staffName} - ${branch.name}`,
+            html,
+          });
+        } catch (error) {
+          console.error(`[NOTIFICATION] Failed to send email to owner ${ownerEmail}:`, error);
+        }
+      } else {
+        console.warn("[NOTIFICATION] SMTP not configured; owner email not sent. Set SMTP_HOST, SMTP_USER, SMTP_PASS.");
+      }
+    }
 
     return { success: true };
   } catch (error) {

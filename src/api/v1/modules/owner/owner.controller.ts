@@ -320,42 +320,48 @@ exports.upsertOwnerProfile = async (req, res) => {
     const name = req.body?.name ? String(req.body.name).trim() : '';
     if (!name) return res.status(400).json({ success: false, message: 'name is required' });
 
+    // Unified address (country/state/city/postal/addressLine/lat/lng) - no DB hierarchy
+    const addressJson = req.body?.addressJson && typeof req.body.addressJson === 'object' ? req.body.addressJson : null;
+
     const divisionId = asIntId(req.body?.divisionId);
     const districtId = asIntId(req.body?.districtId);
     const upazilaId = asIntId(req.body?.upazilaId);
     const areaId = asIntId(req.body?.areaId);
 
-    const vr = await validateBdLocationRefs(prisma, { divisionId, districtId, upazilaId, areaId });
-    if (!vr.ok) return res.status(400).json({ success: false, message: vr.message });
+    // Only validate BD refs when legacy division/district/upazila/area are provided
+    if (divisionId || districtId || upazilaId || areaId) {
+      const vr = await validateBdLocationRefs(prisma, { divisionId, districtId, upazilaId, areaId });
+      if (!vr.ok) return res.status(400).json({ success: false, message: vr.message });
+    }
 
     const before = await prisma.ownerProfile.findUnique({ where: { userId: ownerUserId } });
+
+    const baseData = {
+      name,
+      nid: req.body?.nid ? String(req.body.nid).trim() : null,
+      supportPhone: req.body?.supportPhone ? String(req.body.supportPhone).trim() : null,
+      supportEmail: req.body?.supportEmail ? String(req.body.supportEmail).trim() : null,
+      dateOfBirth: req.body?.dateOfBirth ? new Date(req.body.dateOfBirth) : null,
+      genderText: req.body?.genderText ? String(req.body.genderText).trim() : null,
+      ...(addressJson !== null && addressJson !== undefined ? { addressJson } : {}),
+    };
 
     const saved = await prisma.ownerProfile.upsert({
       where: { userId: ownerUserId },
       create: {
         userId: ownerUserId,
-        name,
-        nid: req.body?.nid ? String(req.body.nid).trim() : null,
-        supportPhone: req.body?.supportPhone ? String(req.body.supportPhone).trim() : null,
-        supportEmail: req.body?.supportEmail ? String(req.body.supportEmail).trim() : null,
-        divisionId,
-        districtId,
-        upazilaId,
-        areaId,
-        dateOfBirth: req.body?.dateOfBirth ? new Date(req.body.dateOfBirth) : null,
-        genderText: req.body?.genderText ? String(req.body.genderText).trim() : null,
+        ...baseData,
+        divisionId: divisionId || null,
+        districtId: districtId || null,
+        upazilaId: upazilaId || null,
+        areaId: areaId || null,
       },
       update: {
-        name,
-        nid: req.body?.nid ? String(req.body.nid).trim() : null,
-        supportPhone: req.body?.supportPhone ? String(req.body.supportPhone).trim() : null,
-        supportEmail: req.body?.supportEmail ? String(req.body.supportEmail).trim() : null,
-        divisionId,
-        districtId,
-        upazilaId,
-        areaId,
-        dateOfBirth: req.body?.dateOfBirth ? new Date(req.body.dateOfBirth) : null,
-        genderText: req.body?.genderText ? String(req.body.genderText).trim() : null,
+        ...baseData,
+        divisionId: divisionId !== undefined ? divisionId : undefined,
+        districtId: districtId !== undefined ? districtId : undefined,
+        upazilaId: upazilaId !== undefined ? upazilaId : undefined,
+        areaId: areaId !== undefined ? areaId : undefined,
       }
     });
 
@@ -756,6 +762,22 @@ exports.createOrganization = async (req, res) => {
     // This project already uses Organization.status = PartnerStatus
     // We'll store location + extra fields inside addressJson to keep DB stable.
     const addressJson = req.body?.addressJson && typeof req.body.addressJson === 'object' ? req.body.addressJson : {};
+    const { validateAndNormalizeLocation, locationFromAddressJson } = require('./utils/locationValidation');
+    let locationData = null;
+    if (req.body?.location && typeof req.body.location === 'object') {
+      try {
+        locationData = validateAndNormalizeLocation(req.body.location);
+      } catch (locErr) {
+        return res.status(400).json({ success: false, message: locErr.message });
+      }
+    }
+    if (!locationData && addressJson && (addressJson.latitude != null || addressJson.longitude != null)) {
+      try {
+        locationData = locationFromAddressJson(addressJson);
+      } catch {
+        locationData = null;
+      }
+    }
     const ctx = req.countryContext || {};
     let countryId = ctx.countryId || null;
     if (!countryId) {
@@ -791,6 +813,7 @@ exports.createOrganization = async (req, res) => {
           // Cached text for UI
           fullPathText: req.body?.fullPathText ? String(req.body.fullPathText) : addressJson?.fullPathText || null,
         },
+        location: locationData ? locationData : {},
       }
     });
 
@@ -2405,6 +2428,99 @@ exports.getBranchAccessRequestDetail = async (req, res) => {
   }
 };
 
+// ------------------------------
+// Owner Staff Invitations (StaffInvite list / approve / reject)
+// GET /api/v1/owner/invitations?status=PENDING&branchId=...
+// POST /api/v1/owner/invitations/:id/approve
+// POST /api/v1/owner/invitations/:id/reject
+// ------------------------------
+exports.listOwnerInvitations = async (req, res) => {
+  try {
+    const prisma = getPrisma(req);
+    const ownerUserId = asIntId(req.user?.id || req.auth?.userId);
+    if (!ownerUserId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+    const status = req.query.status ? String(req.query.status).toUpperCase() : undefined;
+    if (status && !['PENDING', 'ACCEPTED', 'REVOKED', 'EXPIRED'].includes(status)) {
+      return res.status(400).json({ success: false, message: 'Invalid status filter' });
+    }
+    const branchId = req.query.branchId ? Number(req.query.branchId) : undefined;
+
+    const where = {
+      org: { ownerUserId },
+      ...(status ? { status } : {}),
+      ...(branchId && Number.isFinite(branchId) ? { branchId } : {}),
+    };
+
+    const invitations = await prisma.staffInvite.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      include: {
+        branch: { select: { id: true, name: true } },
+        org: { select: { id: true, name: true } },
+        invitedBy: { select: { id: true, profile: { select: { displayName: true } }, auth: { select: { email: true } } } },
+      },
+    });
+
+    return res.json({ success: true, data: invitations });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e?.message || 'Server error' });
+  }
+};
+
+exports.approveOwnerInvitation = async (req, res) => {
+  try {
+    const prisma = getPrisma(req);
+    const ownerUserId = asIntId(req.user?.id || req.auth?.userId);
+    if (!ownerUserId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+    const id = Number(req.params.id);
+    if (!id || !Number.isFinite(id)) return res.status(400).json({ success: false, message: 'Invalid id' });
+
+    const invite = await prisma.staffInvite.findFirst({
+      where: { id, org: { ownerUserId } },
+      include: { branch: { select: { name: true } } },
+    });
+    if (!invite) return res.status(404).json({ success: false, message: 'Invitation not found' });
+    if (invite.status !== 'PENDING') {
+      return res.status(400).json({ success: false, message: `Invitation is not pending (${invite.status})` });
+    }
+
+    // Approve = leave as PENDING (invitee can still accept). No status change; owner acknowledged.
+    return res.json({ success: true, data: invite, message: 'Invitation acknowledged' });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e?.message || 'Server error' });
+  }
+};
+
+exports.rejectOwnerInvitation = async (req, res) => {
+  try {
+    const prisma = getPrisma(req);
+    const ownerUserId = asIntId(req.user?.id || req.auth?.userId);
+    if (!ownerUserId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+    const id = Number(req.params.id);
+    if (!id || !Number.isFinite(id)) return res.status(400).json({ success: false, message: 'Invalid id' });
+
+    const invite = await prisma.staffInvite.findFirst({
+      where: { id, org: { ownerUserId } },
+    });
+    if (!invite) return res.status(404).json({ success: false, message: 'Invitation not found' });
+    if (invite.status !== 'PENDING') {
+      return res.status(400).json({ success: false, message: `Invitation is not pending (${invite.status})` });
+    }
+
+    await prisma.staffInvite.update({
+      where: { id },
+      data: { status: 'REVOKED' },
+    });
+
+    return res.json({ success: true, data: { id: invite.id, status: 'REVOKED' }, message: 'Invitation rejected' });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e?.message || 'Server error' });
+  }
+};
+
 exports.listOwnerNotifications = async (req, res) => {
   try {
     const ownerUserId = asIntId(req.user?.id || req.auth?.userId);
@@ -2455,83 +2571,20 @@ exports.markOwnerNotificationRead = async (req, res) => {
 /**
  * POST /api/v1/owner/branches/:id/members/invite
  * Body: { phone? , email? , displayName?, role }
- * Creates a token-based invite (no temp password in API response).
+ * Creates a token-based invite (no temp password in API response). Notifies org owner.
  */
 exports.inviteBranchMember = async (req, res) => {
   try {
     const branchId = Number(req.params.id);
-    const { phone, email, displayName, role } = req.body || {};
+    const { createStaffInvite } = require("../../services/staffInvite.service");
 
-    if (!role) return res.status(400).json({ success: false, message: "role is required" });
-
-    const emailNorm = (email || "").trim().toLowerCase() || null;
-    const phoneNorm = (phone || "").trim().replace(/\D/g, "") || null;
-
-    if (!emailNorm && !phoneNorm) {
-      return res.status(400).json({ success: false, message: "phone or email is required" });
-    }
-
-    const branch = await prismaClient.branch.findUnique({
-      where: { id: branchId },
-      select: {
-        id: true,
-        orgId: true,
-        name: true,
-        types: { select: { type: { select: { code: true } } } },
-      },
-    });
-    if (!branch) return res.status(404).json({ success: false, message: "Branch not found" });
-
-    const isDeliveryHub = hasDeliveryHubType(branch);
-    if (!isRoleAllowedForBranch(isDeliveryHub, role)) {
-      return res.status(400).json({ success: false, message: "Invalid role for this branch type" });
-    }
-
-    const crypto = require("crypto");
-    const rawToken = crypto.randomBytes(24).toString("hex");
-    const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
-    const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 3); // 72h
-
-    const invite = await prismaClient.staffInvite.create({
-      data: {
-        orgId: branch.orgId,
-        branchId: branch.id,
-        role: String(role),
-        status: "PENDING",
-        email: emailNorm,
-        phone: phoneNorm,
-        displayName: displayName ? String(displayName) : null,
-        tokenHash,
-        expiresAt,
-        invitedByUserId: req.user.id,
-      },
-    });
-
-    const { sendInvite } = require("../../../../utils/inviteNotifier");
-    const channel = phoneNorm ? "SMS" : "EMAIL";
-    const to = phoneNorm ? phoneNorm : emailNorm;
-
-    // Public web app URL (e.g. mother app). Example: https://app.bpa.com
-    const base = String(process.env.PANEL_PUBLIC_URL || process.env.PUBLIC_WEB_URL || "").replace(/\/$/, "");
-    const link = `${base}/register?invite=${rawToken}`;
-    const msg = `BPA Invite: You are invited as ${role} for branch "${branch.name}". Complete registration: ${link}`;
-
-    // If email channel, use a proper HTML template
-    let emailPayload = undefined;
-    if (channel === "EMAIL") {
-      const { renderInviteEmail } = require("../../../../utils/emailTemplates/inviteEmail");
-      const rendered = renderInviteEmail({
-        toName: displayName || null,
-        role: String(role),
-        branchName: branch?.name || null,
-        orgName: null,
-        inviteLink: link,
-        expiresAt,
-      });
-      emailPayload = { subject: rendered.subject, html: rendered.html, text: rendered.text };
-    }
-
-    await sendInvite({ channel, to, message: msg, email: emailPayload });
+    const { invite, rawToken } = await createStaffInvite(
+      prismaClient,
+      branchId,
+      req.body || {},
+      req.user.id,
+      "OWNER"
+    );
 
     const isProd = String(process.env.NODE_ENV || "").toLowerCase() === "production";
 
@@ -2551,6 +2604,14 @@ exports.inviteBranchMember = async (req, res) => {
     // eslint-disable-next-line no-console
     console.error(e);
     const isProd = String(process.env.NODE_ENV || "").toLowerCase() === "production";
+    if (
+      e?.message === "role is required" ||
+      e?.message === "phone or email is required" ||
+      e?.message === "Invalid role for this branch type"
+    ) {
+      return res.status(400).json({ success: false, message: e.message });
+    }
+    if (e?.message === "Branch not found") return res.status(404).json({ success: false, message: e.message });
     if (String(e?.code) === "P2002") {
       return res.status(409).json({ success: false, message: "Conflict" });
     }
@@ -3102,6 +3163,43 @@ exports.disableStaff = async (req, res) => {
       req,
       action: 'BRANCH_MEMBER_DISABLE',
       entityType: 'BRANCH', // Use BRANCH since BRANCH_MEMBER is not in AuditEntityType enum
+      entityId: id,
+      before: current,
+      after: updated
+    });
+
+    res.json({ success: true, data: updated });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e?.message || 'Server error' });
+  }
+};
+
+exports.enableStaff = async (req, res) => {
+  try {
+    const prisma = getPrisma(req);
+    const ownerUserId = asIntId(req.user?.id || req.auth?.userId);
+    if (!ownerUserId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+    const id = asIntId(req.params.id);
+    if (!id) return res.status(400).json({ success: false, message: 'Invalid id' });
+
+    const current = await prisma.branchMember.findUnique({
+      where: { id },
+      include: { org: { select: { ownerUserId: true } } }
+    });
+    if (!current) return res.status(404).json({ success: false, message: 'Not found' });
+    if (current?.org?.ownerUserId !== ownerUserId) return res.status(403).json({ success: false, message: 'Forbidden' });
+
+    const updated = await prisma.branchMember.update({
+      where: { id },
+      data: { status: 'ACTIVE' }
+    });
+
+    await writeAudit({
+      prisma,
+      req,
+      action: 'BRANCH_MEMBER_ENABLE',
+      entityType: 'BRANCH',
       entityId: id,
       before: current,
       after: updated

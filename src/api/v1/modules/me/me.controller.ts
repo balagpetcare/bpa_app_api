@@ -489,6 +489,33 @@ export async function setLocation(req: Request, res: Response, next: NextFunctio
   }
 }
 
+export async function getContexts(req: Request, res: Response, next: NextFunction) {
+  try {
+    const userId = getAuthUserId(req as any);
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const userContextService = require("../../services/userContext.service");
+    const contexts = await userContextService.listContexts(userId);
+    return res.status(200).json({ success: true, data: contexts });
+  } catch (e) {
+    return next(e);
+  }
+}
+
+export async function setDefaultContext(req: Request, res: Response, next: NextFunction) {
+  try {
+    const userId = getAuthUserId(req as any);
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const contextId = Number((req as any).params?.id);
+    if (!Number.isFinite(contextId)) return res.status(400).json({ success: false, message: "Invalid context id" });
+    const userContextService = require("../../services/userContext.service");
+    const context = await userContextService.setDefaultContext(userId, contextId);
+    return res.status(200).json({ success: true, data: context });
+  } catch (e: any) {
+    if (e?.message === "Context not found") return res.status(404).json({ success: false, message: e.message });
+    return next(e);
+  }
+}
+
 export default getMe;
 
 // CommonJS compatibility for require("./me.controller")
@@ -502,4 +529,6 @@ export default getMe;
   setLocation,
   postLocationEvents,
   postLocationManual,
+  getContexts,
+  setDefaultContext,
 };

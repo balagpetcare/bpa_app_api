@@ -28,6 +28,12 @@ try {
 } catch (e) {
   console.error("[JOB_INIT] expiryEngine failed", e);
 }
+try {
+  const { startOwnersTeamAutomation } = require("./common/jobs/ownersTeamAutomation.job");
+  startOwnersTeamAutomation();
+} catch (e) {
+  console.error("[JOB_INIT] ownersTeamAutomation failed", e);
+}
 
 /**
  * ✅ Request logger (must be registered BEFORE app.listen)

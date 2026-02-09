@@ -33,6 +33,10 @@ const getPermissions =
   typeof ctrl?.getPermissions === "function"
     ? ctrl.getPermissions
     : null;
+const getContexts =
+  typeof ctrl?.getContexts === "function" ? ctrl.getContexts : null;
+const setDefaultContext =
+  typeof ctrl?.setDefaultContext === "function" ? ctrl.setDefaultContext : null;
 
 const getLocation =
   typeof ctrl?.getLocation === "function"
@@ -85,6 +89,13 @@ if (acceptInviteFromNotification) {
 
 if (declineInviteFromNotification) {
   router.post("/notifications/:notificationId/decline-invite", auth, declineInviteFromNotification);
+}
+
+if (getContexts) {
+  router.get("/contexts", auth, getContexts);
+}
+if (setDefaultContext) {
+  router.patch("/contexts/:id/default", auth, setDefaultContext);
 }
 
 module.exports = router;

@@ -1,6 +1,7 @@
 const { requireBranchMemberRoles, isOrgOwner } = require("../../middlewares/membership");
 const { resolveBranchAccessProfile } = require("../../services/branchAccessPermission.service");
 const { createNotification } = require("../../services/notification.service");
+const { createStaffInvite, getInviteableRolesForInviter } = require("../../services/staffInvite.service");
 
 function getPrisma(req) {
   if (!req.prisma) throw new Error('Prisma instance not found on req.prisma');
@@ -18,6 +19,111 @@ function asIntId(v) {
   if (Number.isNaN(n)) return null;
   return n;
 }
+
+/**
+ * GET /api/v1/branches/:branchId/members/invite-allowed-roles
+ * Returns roles the current user can invite for this branch (for role dropdown).
+ * Branch manager gets only [BRANCH_STAFF, SELLER] (or DELIVERY_STAFF for delivery hubs); owner gets all allowed for branch type.
+ */
+exports.getBranchInviteAllowedRoles = async (req, res) => {
+  try {
+    const prisma = getPrisma(req);
+    const branchId = Number(req.params.branchId);
+    const userId = asIntId(req.user?.id);
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+
+    const branch = await prisma.branch.findUnique({
+      where: { id: branchId },
+      select: { id: true, orgId: true, types: { select: { type: { select: { code: true } } } } },
+    });
+    if (!branch) return res.status(404).json({ success: false, message: "Branch not found" });
+
+    const ownerByOrg = await isOrgOwner(branch.orgId, userId);
+    const member = await prisma.branchMember.findFirst({
+      where: { branchId, userId, status: "ACTIVE" },
+      select: { role: true },
+    });
+    const isDeliveryHub = branchHasType(branch, "DELIVERY_HUB") || branchHasType(branch, "DELIVERY") || branchHasType(branch, "HUB");
+    const managerRole = isDeliveryHub ? "DELIVERY_MANAGER" : "BRANCH_MANAGER";
+    const canInvite = ownerByOrg || (member && member.role === managerRole);
+    if (!canInvite) {
+      return res.status(403).json({ success: false, message: "Forbidden: only owner or branch manager can invite" });
+    }
+
+    const inviterRole = ownerByOrg ? "OWNER" : (member?.role ?? managerRole);
+    const allowedRoles = getInviteableRolesForInviter(inviterRole, branch);
+
+    return res.json({ success: true, data: { allowedRoles } });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e?.message || "Server error" });
+  }
+};
+
+/**
+ * POST /api/v1/branches/:branchId/members/invite
+ * Invite staff to branch (owner or branch manager). Creates StaffInvite, sends email/SMS, notifies org owner.
+ * Body: { email?, phone?, displayName?, role, permissions?, name?, message? }
+ */
+exports.inviteBranchMember = async (req, res) => {
+  try {
+    const prisma = getPrisma(req);
+    const branchId = Number(req.params.branchId);
+    const userId = asIntId(req.user?.id);
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+
+    const branch = await prisma.branch.findUnique({
+      where: { id: branchId },
+      select: { id: true, orgId: true, types: { select: { type: { select: { code: true } } } } },
+    });
+    if (!branch) return res.status(404).json({ success: false, message: "Branch not found" });
+
+    const ownerByOrg = await isOrgOwner(branch.orgId, userId);
+    const member = await prisma.branchMember.findFirst({
+      where: { branchId, userId, status: "ACTIVE" },
+      select: { role: true },
+    });
+    const isDeliveryHub = branchHasType(branch, "DELIVERY_HUB") || branchHasType(branch, "DELIVERY") || branchHasType(branch, "HUB");
+    const managerRole = isDeliveryHub ? "DELIVERY_MANAGER" : "BRANCH_MANAGER";
+    const canInvite = ownerByOrg || (member && member.role === managerRole);
+    if (!canInvite) {
+      return res.status(403).json({ success: false, message: "Forbidden: only owner or branch manager can invite" });
+    }
+
+    const inviterRole = ownerByOrg ? "OWNER" : (member?.role ?? managerRole);
+    const { invite, rawToken } = await createStaffInvite(prisma, branchId, req.body || {}, userId, inviterRole);
+    const isProd = String(process.env.NODE_ENV || "").toLowerCase() === "production";
+
+    return res.status(201).json({
+      success: true,
+      ok: true,
+      invitationId: invite.id,
+      status: invite.status,
+      data: {
+        inviteId: invite.id,
+        orgId: invite.orgId,
+        branchId: invite.branchId,
+        role: invite.role,
+        status: invite.status,
+        expiresAt: invite.expiresAt,
+        ...(isProd ? {} : { devInviteToken: rawToken }),
+      },
+    });
+  } catch (e) {
+    if (e?.message === "role is required" || e?.message === "phone or email is required" || e?.message === "Invalid role for this branch type") {
+      return res.status(400).json({ success: false, message: e.message });
+    }
+    if (e?.message?.includes("Branch manager cannot invite")) {
+      return res.status(403).json({ success: false, message: e.message });
+    }
+    if (e?.message === "Only owner or branch manager can invite staff") {
+      return res.status(403).json({ success: false, message: e.message });
+    }
+    if (e?.message === "Branch not found") return res.status(404).json({ success: false, message: e.message });
+    const isProd = String(process.env.NODE_ENV || "").toLowerCase() === "production";
+    if (String(e?.code) === "P2002") return res.status(409).json({ success: false, message: "Conflict" });
+    return res.status(500).json({ success: false, message: isProd ? "Server error" : (e?.message || "Server error") });
+  }
+};
 
 /**
  * POST /api/v1/branches/:branchId/product-change-requests

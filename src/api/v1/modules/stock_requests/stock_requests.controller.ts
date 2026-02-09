@@ -1,7 +1,8 @@
+export {};
 const service = require("./stock_requests.service");
 const { getManagedBranchesForUser } = require("../../services/branchManager.service");
 const { createNotification } = require("../../services/notification.service");
-const prisma = require("../../../../infrastructure/db/prismaClient").default;
+const db = require("../../../../infrastructure/db/prismaClient").default;
 
 function getUserId(req: any): number | null {
   const id = req?.user?.id ?? req?.user?.userId;
@@ -25,7 +26,7 @@ async function create(req: any, res: any) {
         message: "branchId and items (array) are required",
       });
     }
-    const branch = await prisma.branch.findUnique({
+    const branch = await db.branch.findUnique({
       where: { id: Number(branchId) },
       select: { id: true, orgId: true },
     });
@@ -34,7 +35,7 @@ async function create(req: any, res: any) {
     }
     const managed = await getManagedBranchesForUser(userId);
     const canAccess = managed.some((b: any) => b.branchId === branch.id);
-    const ownedOrg = await prisma.organization.findFirst({
+    const ownedOrg = await db.organization.findFirst({
       where: { ownerUserId: userId },
       select: { id: true },
     });
@@ -80,7 +81,7 @@ async function list(req: any, res: any) {
     let branchIds: number[] | undefined;
     let filterOrgId: number | undefined;
     if (orgId) {
-      const org = await prisma.organization.findFirst({
+      const org = await db.organization.findFirst({
         where: { id: orgId, ownerUserId: userId },
         select: { id: true },
       });
@@ -129,7 +130,7 @@ async function getById(req: any, res: any) {
     }
     const managed = await getManagedBranchesForUser(userId);
     const branchIds = managed.map((b: any) => b.branchId);
-    const ownedOrgs = await prisma.organization.findMany({
+    const ownedOrgs = await db.organization.findMany({
       where: { ownerUserId: userId },
       select: { id: true },
     });
@@ -160,14 +161,14 @@ async function updateItems(req: any, res: any) {
     if (!items?.length) {
       return res.status(400).json({ success: false, message: "items array is required" });
     }
-    const existing = await prisma.stockRequest.findUnique({
+    const existing = await db.stockRequest.findUnique({
       where: { id },
       select: { branchId: true, orgId: true },
     });
     if (!existing) return res.status(404).json({ success: false, message: "Stock request not found" });
     const managed = await getManagedBranchesForUser(userId);
     const canAccess = managed.some((b: any) => b.branchId === existing.branchId);
-    const ownedOrg = await prisma.organization.findFirst({
+    const ownedOrg = await db.organization.findFirst({
       where: { ownerUserId: userId },
       select: { id: true },
     });
@@ -199,7 +200,7 @@ async function submit(req: any, res: any) {
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ success: false, message: "Invalid id" });
-    const existing = await prisma.stockRequest.findUnique({
+    const existing = await db.stockRequest.findUnique({
       where: { id },
       select: { branchId: true, orgId: true },
     });
@@ -209,7 +210,7 @@ async function submit(req: any, res: any) {
     if (!canAccess) return res.status(403).json({ success: false, message: "Not authorized" });
     const request = await service.submitRequest(id);
     try {
-      const org = await prisma.organization.findUnique({
+      const org = await db.organization.findUnique({
         where: { id: existing.orgId },
         select: { ownerUserId: true },
       });
@@ -242,13 +243,13 @@ async function cancel(req: any, res: any) {
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ success: false, message: "Invalid id" });
-    const existing = await prisma.stockRequest.findUnique({
+    const existing = await db.stockRequest.findUnique({
       where: { id },
       select: { branchId: true, orgId: true },
     });
     if (!existing) return res.status(404).json({ success: false, message: "Stock request not found" });
     const managed = await getManagedBranchesForUser(userId);
-    const ownedOrg = await prisma.organization.findFirst({
+    const ownedOrg = await db.organization.findFirst({
       where: { ownerUserId: userId },
       select: { id: true },
     });
@@ -280,12 +281,12 @@ async function dispatch(req: any, res: any) {
         message: "fromLocationId, toLocationId, and items (array) are required",
       });
     }
-    const existing = await prisma.stockRequest.findUnique({
+    const existing = await db.stockRequest.findUnique({
       where: { id },
       select: { orgId: true },
     });
     if (!existing) return res.status(404).json({ success: false, message: "Stock request not found" });
-    const ownedOrg = await prisma.organization.findFirst({
+    const ownedOrg = await db.organization.findFirst({
       where: { ownerUserId: userId },
       select: { id: true },
     });
@@ -319,12 +320,12 @@ async function decline(req: any, res: any) {
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ success: false, message: "Invalid id" });
     const { reason, source } = req.body || {};
-    const existing = await prisma.stockRequest.findUnique({
+    const existing = await db.stockRequest.findUnique({
       where: { id },
       select: { orgId: true },
     });
     if (!existing) return res.status(404).json({ success: false, message: "Stock request not found" });
-    const ownedOrg = await prisma.organization.findFirst({
+    const ownedOrg = await db.organization.findFirst({
       where: { ownerUserId: userId },
       select: { id: true },
     });

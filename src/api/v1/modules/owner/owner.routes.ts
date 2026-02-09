@@ -1,6 +1,11 @@
 const router = require('express').Router();
 const auth = require('../../../../middlewares/auth');
 const roleGuard = require('../../../../middlewares/roleGuard');
+const { requireOwnerPermission } = require('../../../../middlewares/requireOwnerScope');
+const { requireOwnerContext } = require('../../../../middlewares/requireOwnerContext');
+const { requireTeamOwner } = require('../../../../middlewares/requireTeamOwner');
+
+const teamDashboardGuard = [requireOwnerContext, requireOwnerPermission('TEAM_MANAGE', null)];
 const ctrl = require('./owner.controller');
 const vctrl = require('./owner.verification.controller');
 const multer = require('multer');
@@ -13,9 +18,11 @@ const upload = multer({
   }
 });
 
-router.use(auth, roleGuard(['OWNER']));
+// All owner routes require auth
+router.use(auth);
 
-// v1.1 Owner account/profile/KYC
+// Onboarding: profile + KYC — allow any authenticated user (USER, OWNER, ADMIN) so users
+// without OwnerProfile yet can complete onboarding and create profile/kyc
 router.get('/me', ctrl.getOwnerMe);
 router.get('/profile', ctrl.getOwnerProfile);
 router.put('/profile', ctrl.upsertOwnerProfile);
@@ -24,6 +31,9 @@ router.put('/kyc', ctrl.upsertOwnerKycDraft);
 router.post('/kyc/documents', upload.single('file'), ctrl.uploadOwnerKycDocument);
 router.delete('/kyc/documents/:id', ctrl.deleteOwnerKycDocument);
 router.post('/kyc/submit', ctrl.submitOwnerKyc);
+
+// Rest of owner panel — require OWNER or ADMIN
+router.use(roleGuard(['OWNER', 'ADMIN']));
 
 // ------------------------------
 // V2: Universal Verification (Owner/Org/Branch) — add-only, non-breaking
@@ -41,10 +51,10 @@ router.post('/verification-case/request-change', vctrl.requestVerificationChange
 router.post('/organizations', ctrl.createOrganization);
 router.get('/organizations', ctrl.listOrganizations);
 router.get('/organizations/:id', ctrl.getOrganization);
-router.patch('/organizations/:id', ctrl.updateOrganization);
+router.patch('/organizations/:id', requireOwnerPermission('org.write', 'organization'), ctrl.updateOrganization);
 // Owner Panel uses PUT for edits; keep PATCH for partial updates.
-router.put('/organizations/:id', ctrl.updateOrganization);
-router.delete('/organizations/:id', ctrl.deleteOrganization);
+router.put('/organizations/:id', requireOwnerPermission('org.write', 'organization'), ctrl.updateOrganization);
+router.delete('/organizations/:id', requireOwnerPermission('org.write', 'organization'), ctrl.deleteOrganization);
 
 // v1.3 Organization Legal Profile (used by Owner Panel wizard)
 router.post('/organizations/:id/legal-profile/save-draft', ctrl.saveOrgLegalDraft);
@@ -70,9 +80,9 @@ router.patch('/branches/:id/members/:memberId', ctrl.updateBranchMember);
 router.post('/organizations/:orgId/branches', ctrl.createBranch);
 router.get('/organizations/:orgId/branches', ctrl.listBranches);
 router.get('/branches/:id', ctrl.getBranch);
-router.patch('/branches/:id', ctrl.updateBranch);
+router.patch('/branches/:id', requireOwnerPermission('branch.write', 'branch'), ctrl.updateBranch);
 // Owner Panel uses PUT for edits; keep PATCH for partial updates.
-router.put('/branches/:id', ctrl.updateBranch);
+router.put('/branches/:id', requireOwnerPermission('branch.write', 'branch'), ctrl.updateBranch);
 
 // Branch product-inventory endpoints
 router.get('/branches/:id/products-with-inventory', ctrl.getBranchProductsWithInventory);
@@ -106,6 +116,7 @@ router.post('/staffs', ctrl.createStaff);
 router.get('/staffs/:id', ctrl.getStaff);
 router.patch('/staffs/:id', ctrl.updateStaff);
 router.patch('/staffs/:id/disable', ctrl.disableStaff);
+router.patch('/staffs/:id/enable', ctrl.enableStaff);
 router.delete('/staffs/:id', ctrl.deleteStaff);
 
 // Product Change Requests (Owner Panel approvals)
@@ -142,11 +153,39 @@ router.post('/branch-access/:id/remove', ctrl.removeBranchAccessOwner);
 router.post('/branch-access/:id/role', ctrl.updateBranchAccessRoleOwner);
 router.get('/branch-access/:id', ctrl.getBranchAccessRequestDetail);
 
+// Staff invitations (Owner list / approve / reject)
+router.get('/invitations', ctrl.listOwnerInvitations);
+router.post('/invitations/:id/approve', ctrl.approveOwnerInvitation);
+router.post('/invitations/:id/reject', ctrl.rejectOwnerInvitation);
+
 router.get('/staff-access/staff', ctrl.listOwnerStaffAccess);
 router.get('/staff-access/staff/:userId/branch-access', ctrl.getOwnerStaffBranchAccess);
 
 router.get('/notifications', ctrl.listOwnerNotifications);
 router.post('/notifications/:id/read', ctrl.markOwnerNotificationRead);
+
+// Branch Managers control (Owner-only: monitor, control, audit)
+const bmCtrl = require('./ownerBranchManagers.controller');
+router.get('/branch-managers', bmCtrl.list);
+router.get('/branch-managers/:id', bmCtrl.getOne);
+router.patch('/branch-managers/:id/status', bmCtrl.updateStatus);
+router.patch('/branch-managers/:id/permissions', bmCtrl.updatePermissions);
+router.post('/branch-managers/:id/force-logout', bmCtrl.forceLogout);
+router.get('/branch-managers/:id/audit-logs', bmCtrl.getAuditLogs);
+router.get('/branch-managers/:id/performance', bmCtrl.getPerformance);
+
+// Staff Control Dashboard (Owner-only: monitor, control, audit staff; :id = userId)
+const staffCtrl = require('./ownerStaffControl.controller');
+router.get('/staff', staffCtrl.list);
+router.get('/staff/:id', staffCtrl.getOne);
+router.patch('/staff/:id/status', staffCtrl.updateStatus);
+router.patch('/staff/:id/role', staffCtrl.updateRole);
+router.patch('/staff/:id/permissions', staffCtrl.updatePermissions);
+router.patch('/staff/:id/shift-rules', staffCtrl.updateShiftRules);
+router.post('/staff/:id/force-logout', staffCtrl.forceLogout);
+router.post('/staff/:id/transfer-branch', staffCtrl.transferBranch);
+router.get('/staff/:id/audit-logs', staffCtrl.getAuditLogs);
+router.get('/staff/:id/activity-summary', staffCtrl.getActivitySummary);
 
 // Dashboard endpoints
 router.get('/dashboard/metrics', ctrl.getDashboardMetrics);
@@ -160,6 +199,32 @@ router.get('/dashboard/alerts', ctrl.getDashboardAlerts);
 router.get('/products/summary', ctrl.getProductsSummary);
 router.get('/products/branch-availability', ctrl.getProductBranchAvailability);
 router.post('/products/:id/add-to-branches', ctrl.addProductToBranches);
+
+// Owner Delegation & Team Management
+// Team dashboard routes: require owner context + TEAM_MANAGE (team owners only; no redirect to KYC)
+const delegationCtrl = require('./ownerDelegation.controller');
+router.get('/team/overview', ...teamDashboardGuard, delegationCtrl.getTeamOverview);
+router.get('/team/members', ...teamDashboardGuard, delegationCtrl.listTeamMembers);
+router.get('/team/invitations', ...teamDashboardGuard, delegationCtrl.listTeamDashboardInvitations);
+router.post('/team/invitations/:id/resend', ...teamDashboardGuard, delegationCtrl.resendTeamInvitationHandler);
+router.post('/team/invitations/:id/cancel', ...teamDashboardGuard, delegationCtrl.cancelTeamInvitationHandler);
+router.get('/teams', ...teamDashboardGuard, delegationCtrl.listTeams);
+router.post('/teams', ...teamDashboardGuard, delegationCtrl.createTeam);
+router.post('/teams/:teamId/invite', ...teamDashboardGuard, delegationCtrl.inviteToTeam);
+router.get('/teams/:teamId/invitations', ...teamDashboardGuard, delegationCtrl.listInvitations);
+router.post('/teams/:teamId/members', ...teamDashboardGuard, delegationCtrl.addMember);
+router.delete('/teams/:teamId/members/:userId', ...teamDashboardGuard, delegationCtrl.removeMember);
+router.get('/delegations/scopes', delegationCtrl.listScopes);
+router.post('/delegations', delegationCtrl.assign);
+router.post('/delegations/revoke', delegationCtrl.revoke);
+router.post('/delegations/revoke-all', delegationCtrl.revokeAll);
+router.post('/delegations/set-team', delegationCtrl.setTeam);
+router.get('/overview', delegationCtrl.getOverview);
+router.get('/overview/logs', delegationCtrl.getOverviewLogs);
+
+const onboardingCtrl = require('./onboarding.controller');
+router.get('/onboarding/status', onboardingCtrl.getOnboardingStatus);
+router.post('/onboarding/start', onboardingCtrl.startOnboarding);
 
 module.exports = router;
 
