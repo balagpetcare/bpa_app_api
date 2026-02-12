@@ -8,7 +8,7 @@
  * @legacy Preserves backward compatibility; adds canonical fields alongside legacy.
  */
 
-const prisma = require("../../../infrastructure/db/prismaClient");
+const db = require("../../../infrastructure/db/prismaClient");
 const bcrypt = require("bcrypt");
 
 /** Canonical AuthContext shape */
@@ -48,7 +48,7 @@ async function verifyCredentials(params: {
     throw Object.assign(new Error("password is required"), { statusCode: 400 });
   }
 
-  const authRow = await prisma.userAuth.findFirst({
+  const authRow = await db.userAuth.findFirst({
     where: {
       OR: [
         emailNorm ? { email: { equals: emailNorm, mode: "insensitive" } } : undefined,
@@ -81,7 +81,7 @@ async function verifyCredentials(params: {
  * Check if user is allowed admin access (SuperAdminWhitelist or env fallback).
  */
 async function isAdminAllowed(userId: number): Promise<boolean> {
-  const auth = await prisma.userAuth.findUnique({
+  const auth = await db.userAuth.findUnique({
     where: { userId: Number(userId) },
     select: { phone: true, email: true },
   });
@@ -90,7 +90,7 @@ async function isAdminAllowed(userId: number): Promise<boolean> {
   const phoneLast11 = phoneDigits.length > 11 ? phoneDigits.slice(-11) : phoneDigits;
   const emailNorm = String(auth?.email || "").trim().toLowerCase();
 
-  const hit = await prisma.superAdminWhitelist.findFirst({
+  const hit = await db.superAdminWhitelist.findFirst({
     where: {
       isActive: true,
       OR: [
@@ -139,15 +139,15 @@ async function resolveAuthContexts(userId: number): Promise<AuthContext[]> {
   }
 
   // 2) Owner (OwnerProfile + owned orgs + approved KYC)
-  const ownerProfile = await prisma.ownerProfile.findUnique({
+  const ownerProfile = await db.ownerProfile.findUnique({
     where: { userId },
     select: { id: true },
   });
-  const ownedOrgs = await prisma.organization.findMany({
+  const ownedOrgs = await db.organization.findMany({
     where: { ownerUserId: userId },
     select: { id: true },
   });
-  const ownerKyc = await prisma.ownerKyc.findUnique({
+  const ownerKyc = await db.ownerKyc.findUnique({
     where: { userId },
     select: { verificationStatus: true },
   });
@@ -159,7 +159,7 @@ async function resolveAuthContexts(userId: number): Promise<AuthContext[]> {
   }
 
   // 3) Org members (non-owner)
-  const orgMembers = await prisma.orgMember.findMany({
+  const orgMembers = await db.orgMember.findMany({
     where: { userId, status: "ACTIVE" },
     select: { orgId: true },
   });
@@ -170,12 +170,12 @@ async function resolveAuthContexts(userId: number): Promise<AuthContext[]> {
   }
 
   // 4) Branch members + access permission status
-  const branchMembers = await prisma.branchMember.findMany({
+  const branchMembers = await db.branchMember.findMany({
     where: { userId, status: "ACTIVE" },
     select: { branchId: true },
   });
   for (const bm of branchMembers) {
-    const perm = await prisma.branchAccessPermission.findUnique({
+    const perm = await db.branchAccessPermission.findUnique({
       where: {
         branchId_userId: { branchId: bm.branchId, userId },
       },
@@ -195,7 +195,7 @@ async function resolveAuthContexts(userId: number): Promise<AuthContext[]> {
   }
 
   // 5) Country/State roles (map to ADMIN-like for country scope)
-  const countryRoles = await prisma.userCountryRole.findMany({
+  const countryRoles = await db.userCountryRole.findMany({
     where: { userId },
     select: { countryId: true },
   });
@@ -204,7 +204,7 @@ async function resolveAuthContexts(userId: number): Promise<AuthContext[]> {
   }
 
   // 6) Owner Team (delegate via UserContext - ownerUserId set, teamId set; not actual owner)
-  const userContexts = await prisma.userContext.findMany({
+  const userContexts = await db.userContext.findMany({
     where: { userId },
     select: { ownerUserId: true, teamId: true },
   });
@@ -214,13 +214,24 @@ async function resolveAuthContexts(userId: number): Promise<AuthContext[]> {
   }
 
   // 7) Producer (ProducerOrg owner or staff)
-  const producerOrg = await prisma.producerOrg.findFirst({
+  // Owner: use VerificationCase (PRODUCER_ORG) for redirect; fallback to ProducerOrg.status
+  const producerOrg = await db.producerOrg.findFirst({
     where: { ownerUserId: userId },
     select: { id: true, status: true },
   });
   if (producerOrg) {
+    const latestCase = await db.verificationCase.findFirst({
+      where: { entityType: "PRODUCER_ORG", entityId: producerOrg.id },
+      orderBy: { createdAt: "desc" },
+      select: { status: true },
+    });
+    const caseStatus = latestCase?.status;
     const status =
-      producerOrg.status === "VERIFIED"
+      caseStatus === "APPROVED"
+        ? "APPROVED"
+        : caseStatus === "DRAFT" || caseStatus === "SUBMITTED" || caseStatus === "REJECTED" || !caseStatus
+        ? "PENDING"
+        : producerOrg.status === "VERIFIED"
         ? "APPROVED"
         : producerOrg.status === "PENDING"
         ? "PENDING"
@@ -228,13 +239,13 @@ async function resolveAuthContexts(userId: number): Promise<AuthContext[]> {
     contexts.push({ role: "PRODUCER", scopeType: "OWNER", scopeId: producerOrg.id, status });
   }
 
-  const producerStaff = await prisma.producerOrgStaff.findMany({
+  const producerStaff = await db.producerOrgStaff.findMany({
     where: { userId },
     select: { producerOrgId: true },
   });
   for (const ps of producerStaff) {
     if (!producerOrg || producerOrg.id !== ps.producerOrgId) {
-      const org = await prisma.producerOrg.findUnique({
+      const org = await db.producerOrg.findUnique({
         where: { id: ps.producerOrgId },
         select: { status: true },
       });
@@ -273,7 +284,7 @@ async function attachAuthContexts(req: any, userId: number): Promise<void> {
  * Get Owner KYC status for redirect logic.
  */
 async function getOwnerKycStatus(userId: number): Promise<string | null> {
-  const kyc = await prisma.ownerKyc.findUnique({
+  const kyc = await db.ownerKyc.findUnique({
     where: { userId },
     select: { verificationStatus: true },
   });
@@ -347,8 +358,8 @@ async function decideRedirect(
     return "/country/dashboard";
   }
 
-  // Customer fallback
-  return "/mother";
+  // Customer fallback: send to choose-activity instead of /mother
+  return "/choose-activity";
 }
 
 /**

@@ -77,16 +77,21 @@ async function hasPermissionWithScope(
 }
 
 /**
- * Get permissions for owner panel when user is a delegate (has OwnerDelegation records).
- * Returns union of scope permissions across all delegations, intersected with base role perms.
- * Used by auth/me so delegated users get scope-filtered menu.
+ * Get permissions for owner panel when user is a delegate (OwnerDelegation) or team member (OwnerTeamMember).
+ * Returns union of scope permissions across all delegations and team scopes, intersected with base role perms.
+ * Used by auth/me so delegated/team users get scope-filtered menu.
  */
 async function getPermissionsForOwnerPanel(userId: number): Promise<string[]> {
-  const delegations = await db.ownerDelegation.findMany({
-    where: { delegatedUserId: userId },
-    select: { scopeKey: true },
-  });
-  if (delegations.length === 0) return [];
+  const [delegations, teamMembers] = await Promise.all([
+    db.ownerDelegation.findMany({
+      where: { delegatedUserId: userId },
+      select: { scopeKey: true },
+    }),
+    db.ownerTeamMember.findMany({
+      where: { userId },
+      select: { team: { select: { scopes: true } } },
+    }),
+  ]);
 
   const scopePerms = new Set<string>();
   for (const d of delegations) {
@@ -94,8 +99,21 @@ async function getPermissionsForOwnerPanel(userId: number): Promise<string[]> {
       scopePerms.add(p);
     }
   }
-  const basePerms = await resolvePermissionsForUser(userId);
-  return basePerms.filter((p) => scopePerms.has(p));
+  for (const tm of teamMembers) {
+    const scopes = tm.team?.scopes;
+    const keys = Array.isArray(scopes) ? scopes : (typeof scopes === "object" && scopes !== null ? Object.keys(scopes) : []);
+    for (const key of keys) {
+      for (const p of SCOPE_TO_PERMISSIONS[String(key)] ?? []) {
+        scopePerms.add(p);
+      }
+    }
+  }
+  if (scopePerms.size === 0) return [];
+
+  // Grant scope permissions so team/delegate can act within their scope (e.g. product.edit).
+  // Optionally intersect with base role for extra restriction; here we grant scope perms
+  // so staff with "products" scope get product.update without needing it in base role.
+  return Array.from(scopePerms);
 }
 
 /**

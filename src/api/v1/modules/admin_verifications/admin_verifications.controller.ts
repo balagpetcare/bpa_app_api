@@ -423,6 +423,33 @@ exports.approveProducerOrg = async (req, res) => {
     const current = await prisma.producerOrg.findUnique({ where: { id } });
     if (!current) return res.status(404).json({ success: false, message: "Not found" });
 
+    // Sync VerificationCase (PRODUCER_ORG) to APPROVED when present
+    const latestCase = await prisma.verificationCase.findFirst({
+      where: { entityType: "PRODUCER_ORG", entityId: id },
+      orderBy: { createdAt: "desc" },
+    });
+    if (latestCase && latestCase.status === "SUBMITTED") {
+      await prisma.verificationCase.update({
+        where: { id: latestCase.id },
+        data: {
+          status: "APPROVED",
+          reviewedAt: new Date(),
+          reviewedByAdminId: adminUserId,
+          reviewSummary: req.body?.note || null,
+        },
+      });
+      await prisma.verificationCaseEvent.create({
+        data: {
+          caseId: latestCase.id,
+          action: "APPROVE",
+          from: latestCase.status,
+          to: "APPROVED",
+          actorAdminId: adminUserId,
+          note: req.body?.note,
+        },
+      });
+    }
+
     const updated = await prisma.producerOrg.update({
       where: { id },
       data: { status: "VERIFIED" },
@@ -454,6 +481,35 @@ exports.rejectProducerOrg = async (req, res) => {
     const current = await prisma.producerOrg.findUnique({ where: { id } });
     if (!current) return res.status(404).json({ success: false, message: "Not found" });
 
+    const reviewNote = note || reason;
+
+    // Sync VerificationCase (PRODUCER_ORG) to REJECTED when present
+    const latestCase = await prisma.verificationCase.findFirst({
+      where: { entityType: "PRODUCER_ORG", entityId: id },
+      orderBy: { createdAt: "desc" },
+    });
+    if (latestCase && (latestCase.status === "SUBMITTED" || latestCase.status === "DRAFT")) {
+      await prisma.verificationCase.update({
+        where: { id: latestCase.id },
+        data: {
+          status: "REJECTED",
+          reviewedAt: new Date(),
+          reviewedByAdminId: adminUserId,
+          reviewSummary: reviewNote,
+        },
+      });
+      await prisma.verificationCaseEvent.create({
+        data: {
+          caseId: latestCase.id,
+          action: "REJECT",
+          from: latestCase.status,
+          to: "REJECTED",
+          actorAdminId: adminUserId,
+          note: reviewNote,
+        },
+      });
+    }
+
     const updated = await prisma.producerOrg.update({
       where: { id },
       data: { status: "REJECTED" },
@@ -466,7 +522,7 @@ exports.rejectProducerOrg = async (req, res) => {
       fromStatus: producerStatusToVerificationStatus(current.status),
       toStatus: "REJECTED",
       adminUserId,
-      note: note || reason,
+      note: reviewNote,
     });
     return res.json({ success: true, data: updated });
   } catch (e) {
@@ -482,6 +538,33 @@ exports.requestChangesProducerOrg = async (req, res) => {
     const adminUserId = Number(req.user?.id || req.admin?.id || 0) || null;
     const current = await prisma.producerOrg.findUnique({ where: { id } });
     if (!current) return res.status(404).json({ success: false, message: "Not found" });
+
+    // Sync VerificationCase to REJECTED so producer can create new DRAFT and resubmit
+    const latestCase = await prisma.verificationCase.findFirst({
+      where: { entityType: "PRODUCER_ORG", entityId: id },
+      orderBy: { createdAt: "desc" },
+    });
+    if (latestCase && (latestCase.status === "SUBMITTED" || latestCase.status === "DRAFT")) {
+      await prisma.verificationCase.update({
+        where: { id: latestCase.id },
+        data: {
+          status: "REJECTED",
+          reviewedAt: new Date(),
+          reviewedByAdminId: adminUserId,
+          reviewSummary: note || "Changes requested",
+        },
+      });
+      await prisma.verificationCaseEvent.create({
+        data: {
+          caseId: latestCase.id,
+          action: "REJECT",
+          from: latestCase.status,
+          to: "REJECTED",
+          actorAdminId: adminUserId,
+          note: note || "Changes requested",
+        },
+      });
+    }
 
     const updated = await prisma.producerOrg.update({
       where: { id },

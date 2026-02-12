@@ -18,6 +18,8 @@ async function getOnlineProducts(options: {
   const where: any = {
     approvalStatus: "PUBLISHED",
     status: "ACTIVE",
+    // Universal Import: only show products with no publishStatus (legacy) or publishStatus=PUBLISHED
+    OR: [{ publishStatus: null }, { publishStatus: "PUBLISHED" }],
   };
 
   if (options.categoryId) where.categoryId = options.categoryId;

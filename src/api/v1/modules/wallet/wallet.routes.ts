@@ -4,6 +4,7 @@ const auth = require('../../../../middleware/auth.middleware');
 const admin = require('../../../../middleware/adminMiddleware');
 const admin2fa = require('../../../../middleware/admin2fa.middleware');
 const { withdrawLimiter } = require('../../../../middleware/rateLimiters');
+const requireOwnerKycVerified = require('../../../../middlewares/requireOwnerKycVerified');
 
 const ctrl = require('./wallet.controller');
 
@@ -16,7 +17,7 @@ router.get('/transactions', auth, ctrl.transactions);
 // --------------------
 // User Withdraw (V2/V3)
 // --------------------
-router.post('/withdraw/requests', auth, withdrawLimiter, ctrl.createWithdrawRequest);
+router.post('/withdraw/requests', auth, requireOwnerKycVerified, withdrawLimiter, ctrl.createWithdrawRequest);
 router.get('/withdraw/requests', auth, ctrl.listMyWithdrawRequests);
 router.get('/withdraw/requests/:id', auth, ctrl.getMyWithdrawRequest);
 router.patch('/withdraw/requests/:id/cancel', auth, withdrawLimiter, ctrl.cancelWithdrawRequest);

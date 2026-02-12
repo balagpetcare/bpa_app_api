@@ -4,7 +4,7 @@
  * Does not run for non-owners (pass-through).
  */
 
-const prisma = require("../infrastructure/db/prismaClient").default;
+const prisma = require("../infrastructure/db/prismaClient");
 
 export async function requireOwnerKycVerified(req: any, res: any, next: any) {
   try {

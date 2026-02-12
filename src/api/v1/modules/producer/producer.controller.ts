@@ -87,12 +87,37 @@ exports.me = async (req, res) => {
   }
 };
 
+/** Legacy KYC submit (docsJson only). @deprecated Use VerificationCase flow: POST /kyc/documents + POST /kyc/submit */
 exports.submitKyc = async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
     const data = await service.submitKyc({ userId, name: req.body.name, countryCode: req.body.countryCode, docsJson: req.body.docsJson });
     return res.status(200).json({ success: true, data });
+  } catch (e) {
+    const status = e?.statusCode || 500;
+    return res.status(status).json({ success: false, message: e?.message || "KYC submit failed" });
+  }
+};
+
+/** POST /kyc/submit: legacy (body with docsJson) → legacy submit + deprecation; else → new VerificationCase submit */
+exports.submitKycLegacyOrNew = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const hasLegacyBody = req.body?.docsJson !== undefined || req.body?.name !== undefined || req.body?.countryCode !== undefined;
+    if (hasLegacyBody) {
+      const data = await service.submitKyc({ userId, name: req.body.name, countryCode: req.body.countryCode, docsJson: req.body.docsJson });
+      return res.status(200).json({
+        success: true,
+        data,
+        deprecated: true,
+        message: "docsJson-based KYC is deprecated. Please use /kyc/documents to upload files and submit for verification.",
+      });
+    }
+    const kycService = require("./producerKyc.service");
+    const { verificationCase } = await kycService.submitProducerKyc(userId);
+    return res.json({ success: true, data: verificationCase, message: "KYC submitted for review" });
   } catch (e) {
     const status = e?.statusCode || 500;
     return res.status(status).json({ success: false, message: e?.message || "KYC submit failed" });
@@ -291,6 +316,7 @@ module.exports = {
   login: exports.login,
   me: exports.me,
   submitKyc: exports.submitKyc,
+  submitKycLegacyOrNew: exports.submitKycLegacyOrNew,
   kycStatus: exports.kycStatus,
   listProducts: exports.listProducts,
   createProduct: exports.createProduct,

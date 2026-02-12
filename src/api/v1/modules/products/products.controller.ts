@@ -2,7 +2,7 @@ const service = require("./products.service");
 const prisma = require("../../../../infrastructure/db/prismaClient");
 
 /**
- * Resolve orgId for user: OrgMember (ACTIVE) or Organization.ownerUserId (owner).
+ * Resolve orgId for user: OrgMember (ACTIVE), Organization.ownerUserId (owner), or OwnerTeamMember (team member).
  */
 async function getOrgIdForUser(userId) {
   const member = await prisma.orgMember.findFirst({
@@ -14,7 +14,19 @@ async function getOrgIdForUser(userId) {
     where: { ownerUserId: userId },
     select: { id: true },
   });
-  return owned?.id ?? null;
+  if (owned?.id) return owned.id;
+  const teamMember = await prisma.ownerTeamMember.findFirst({
+    where: { userId },
+    select: { team: { select: { ownerUserId: true } } },
+  });
+  if (teamMember?.team?.ownerUserId) {
+    const org = await prisma.organization.findFirst({
+      where: { ownerUserId: teamMember.team.ownerUserId },
+      select: { id: true },
+    });
+    if (org?.id) return org.id;
+  }
+  return null;
 }
 
 /**

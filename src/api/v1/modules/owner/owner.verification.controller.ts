@@ -273,6 +273,16 @@ exports.uploadVerificationDocument = async (req, res) => {
       return res.status(400).json({ success: false, message: "No file uploaded. Use multipart/form-data field name 'file'." });
     }
 
+    const maxBytes = Number(process.env.MAX_UPLOAD_BYTES || 15 * 1024 * 1024);
+    if (file.size && file.size > maxBytes) {
+      return res.status(400).json({ success: false, message: `File size exceeds maximum (${maxBytes} bytes).` });
+    }
+    const allowedMimes = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
+    const mime = (file.mimetype || '').toLowerCase().trim();
+    if (!allowedMimes.includes(mime)) {
+      return res.status(400).json({ success: false, message: `Invalid file type. Allowed: ${allowedMimes.join(', ')}` });
+    }
+
     const processed = await processUploadFile(file);
     const media = await mediaService.uploadAndCreateMedia({
       ownerUserId,

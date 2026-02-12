@@ -3,7 +3,9 @@ const path = require("path");
 const service = require("./master-catalog.service");
 const prisma = require("../../../../infrastructure/db/prismaClient");
 
-/** Resolve orgId for user: OrgMember (ACTIVE) or Organization.ownerUserId (owner). */
+/**
+ * Resolve orgId for user: OrgMember (ACTIVE), Organization.ownerUserId (owner), or OwnerTeamMember (team member of owner's orgs).
+ */
 async function getOrgIdForUser(userId) {
   const member = await prisma.orgMember.findFirst({
     where: { userId, status: "ACTIVE" },
@@ -14,7 +16,20 @@ async function getOrgIdForUser(userId) {
     where: { ownerUserId: userId },
     select: { id: true },
   });
-  return owned?.id ?? null;
+  if (owned?.id) return owned.id;
+  // Owner Team member: user is in a team whose owner owns org(s) -> use first such org
+  const teamMember = await prisma.ownerTeamMember.findFirst({
+    where: { userId },
+    select: { team: { select: { ownerUserId: true } } },
+  });
+  if (teamMember?.team?.ownerUserId) {
+    const org = await prisma.organization.findFirst({
+      where: { ownerUserId: teamMember.team.ownerUserId },
+      select: { id: true },
+    });
+    if (org?.id) return org.id;
+  }
+  return null;
 }
 
 /**
@@ -226,9 +241,30 @@ exports.importMasterCatalogCsv = async (req, res) => {
   }
 };
 
+/** Check if user has access to org: OrgMember (ACTIVE), owner, or OwnerTeamMember of owner. */
+async function userHasAccessToOrg(userId, orgId) {
+  const org = await prisma.organization.findFirst({
+    where: { id: orgId },
+    select: { ownerUserId: true },
+  });
+  if (!org) return false;
+  if (org.ownerUserId === userId) return true;
+  const member = await prisma.orgMember.findFirst({
+    where: { userId, orgId, status: "ACTIVE" },
+    select: { id: true },
+  });
+  if (member) return true;
+  const teamMember = await prisma.ownerTeamMember.findFirst({
+    where: { userId, team: { ownerUserId: org.ownerUserId } },
+    select: { id: true },
+  });
+  return !!teamMember;
+}
+
 /**
  * POST /api/v1/products/master-catalog/:id/clone
- * Clone master product to organization
+ * Clone master product to organization.
+ * Auth order: requireAuth → org context (header/body or getOrgIdForUser) → requireOrgMemberOrOwner → permission (route).
  */
 exports.cloneMasterProduct = async (req, res) => {
   try {
@@ -242,37 +278,40 @@ exports.cloneMasterProduct = async (req, res) => {
       return res.status(400).json({ success: false, message: "Invalid master product ID" });
     }
 
-    const { orgId, branchId, customVariants, customPrices, customName, customDescription } =
-      req.body;
+    const orgIdFromHeader = req.headers["x-org-id"];
+    const parsedHeaderOrgId =
+      orgIdFromHeader != null && orgIdFromHeader !== ""
+        ? parseInt(String(orgIdFromHeader), 10)
+        : NaN;
+    const { orgId: bodyOrgId, branchId, customVariants, customPrices, customName, customDescription } =
+      req.body || {};
+    const orgIdFromBody = bodyOrgId != null ? parseInt(String(bodyOrgId), 10) : NaN;
+
+    const requestedOrgId = Number.isFinite(parsedHeaderOrgId)
+      ? parsedHeaderOrgId
+      : Number.isFinite(orgIdFromBody)
+        ? orgIdFromBody
+        : null;
 
     const userOrgId = await getOrgIdForUser(userId);
-    if (!userOrgId) {
-      return res.status(403).json({
+    const resolvedOrgId = requestedOrgId ?? userOrgId;
+
+    if (!resolvedOrgId) {
+      return res.status(400).json({
         success: false,
-        message: "You must be a member or owner of an organization to clone products",
+        message: "Organization context missing",
       });
     }
 
-    const targetOrgId = orgId ? parseInt(orgId) : userOrgId;
-
-    // Verify user has access to the target organization (member or owner)
-    if (targetOrgId !== userOrgId) {
-      const hasAccess =
-        (await prisma.orgMember.findFirst({
-          where: { userId, orgId: targetOrgId, status: "ACTIVE" },
-          select: { id: true },
-        })) ||
-        (await prisma.organization.findFirst({
-          where: { id: targetOrgId, ownerUserId: userId },
-          select: { id: true },
-        }));
-      if (!hasAccess) {
-        return res.status(403).json({
-          success: false,
-          message: "You do not have access to this organization",
-        });
-      }
+    const hasAccess = await userHasAccessToOrg(userId, resolvedOrgId);
+    if (!hasAccess) {
+      return res.status(403).json({
+        success: false,
+        message: "You do not have access to this organization",
+      });
     }
+
+    const targetOrgId = resolvedOrgId;
 
     const product = await service.cloneMasterProduct(masterId, targetOrgId, userId, {
       branchId: branchId ? parseInt(branchId) : undefined,

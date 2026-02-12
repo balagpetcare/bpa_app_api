@@ -2,6 +2,7 @@ const jwt = require("jsonwebtoken");
 const appConfig = require("../config/appConfig");
 const { resolvePermissionsForUser } = require("../api/v1/utils/permissions");
 const { attachAuthContexts } = require("../api/v1/services/authUnified.service");
+const { getPermissionsForOwnerPanel } = require("../api/v1/services/scopePermission.service");
 
 /**
  * Auth middleware – identity + contexts.
@@ -41,6 +42,15 @@ module.exports = async function authenticateToken(req, res, next) {
     }
 
     await attachAuthContexts(req, userId);
+    if (!req.user.userType && req.user.role) req.user.userType = req.user.role;
+    try {
+      const panelPerms = await getPermissionsForOwnerPanel(userId);
+      if (panelPerms.length > 0) {
+        req.user.permissions = [...new Set([...(req.user.permissions || []), ...panelPerms])];
+      }
+    } catch {
+      // ignore
+    }
     next();
   } catch (e) {
     return res.status(401).json({ success: false, message: "Unauthorized: invalid token" });

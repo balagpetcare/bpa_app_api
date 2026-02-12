@@ -77,7 +77,14 @@ export function requireOwnerPermission(
       const allowed = await hasPermissionWithScope(Number(userId), permissionKey, context);
       if (allowed) return next();
 
-      return res.status(403).json({ success: false, error: "Forbidden: insufficient scope" });
+      const role = (req as any).user?.role;
+      return res.status(403).json({
+        success: false,
+        error: "Forbidden: insufficient scope",
+        code: "ACCESS_DENIED",
+        detail: `Required permission: ${permissionKey}`,
+        debug: { required: permissionKey, role: role || "unknown" },
+      });
     } catch (e) {
       console.error("[requireOwnerPermission]", e);
       return res.status(500).json({ success: false, error: "Server error" });

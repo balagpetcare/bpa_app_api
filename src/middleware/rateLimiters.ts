@@ -54,6 +54,14 @@ const geocodeLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+// Product import upload (per-user to avoid abuse)
+const productImportUploadLimiter = rateLimit({
+  windowMs: numEnv('RL_IMPORT_UPLOAD_WINDOW_MS', 15 * 60 * 1000),
+  limit: numEnv('RL_IMPORT_UPLOAD_MAX', 20),
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 module.exports = {
   generalLimiter,
   authLimiter,
@@ -61,6 +69,7 @@ module.exports = {
   webhookLimiter,
   donationLimiter,
   geocodeLimiter,
+  productImportUploadLimiter,
 };
 
 export {};

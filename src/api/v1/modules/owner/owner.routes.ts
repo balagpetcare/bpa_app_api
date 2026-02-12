@@ -1,6 +1,9 @@
 const router = require('express').Router();
 const auth = require('../../../../middlewares/auth');
 const roleGuard = require('../../../../middlewares/roleGuard');
+const ownerPanelGuard = require('../../../../middlewares/ownerPanelGuard');
+const ensureOwnerKyc = require('../../../../middlewares/ensureOwnerKyc');
+const requireOwnerKycVerified = require('../../../../middlewares/requireOwnerKycVerified');
 const { requireOwnerPermission } = require('../../../../middlewares/requireOwnerScope');
 const { requireOwnerContext } = require('../../../../middlewares/requireOwnerContext');
 const { requireTeamOwner } = require('../../../../middlewares/requireTeamOwner');
@@ -32,8 +35,8 @@ router.post('/kyc/documents', upload.single('file'), ctrl.uploadOwnerKycDocument
 router.delete('/kyc/documents/:id', ctrl.deleteOwnerKycDocument);
 router.post('/kyc/submit', ctrl.submitOwnerKyc);
 
-// Rest of owner panel — require OWNER or ADMIN
-router.use(roleGuard(['OWNER', 'ADMIN']));
+// Rest of owner panel — allow OWNER, ADMIN, STAFF, TEAM (RBAC applied per-route / per-handler)
+router.use(ownerPanelGuard());
 
 // ------------------------------
 // V2: Universal Verification (Owner/Org/Branch) — add-only, non-breaking
@@ -47,8 +50,8 @@ router.post('/verification-case/submit', vctrl.submitVerificationCase);
 // V3: Approved -> Request change -> new DRAFT case (re-verification)
 router.post('/verification-case/request-change', vctrl.requestVerificationChange);
 
-// Organizations
-router.post('/organizations', ctrl.createOrganization);
+// Organizations (KYC required: at least SUBMITTED with one document)
+router.post('/organizations', ensureOwnerKyc, ctrl.createOrganization);
 router.get('/organizations', ctrl.listOrganizations);
 router.get('/organizations/:id', ctrl.getOrganization);
 router.patch('/organizations/:id', requireOwnerPermission('org.write', 'organization'), ctrl.updateOrganization);
@@ -70,14 +73,14 @@ router.post('/organizations/:id/cancel', ctrl.cancelOrganization);
 router.get('/branches', ctrl.listOwnerBranchesAll);
 
 // Branch Members (staff, sellers, delivery hub staff)
-// Branch Member Invites (token-based; no temp password in API response)
-router.post('/branches/:id/members/invite', ctrl.inviteBranchMember);
+// Branch Member Invites (token-based; no temp password in API response) — requires VERIFIED KYC
+router.post('/branches/:id/members/invite', requireOwnerKycVerified, ctrl.inviteBranchMember);
 
 router.get('/branches/:id/members', ctrl.listBranchMembers);
 router.post('/branches/:id/members', ctrl.addBranchMember);
 router.patch('/branches/:id/members/:memberId', ctrl.updateBranchMember);
 
-router.post('/organizations/:orgId/branches', ctrl.createBranch);
+router.post('/organizations/:orgId/branches', ensureOwnerKyc, ctrl.createBranch);
 router.get('/organizations/:orgId/branches', ctrl.listBranches);
 router.get('/branches/:id', ctrl.getBranch);
 router.patch('/branches/:id', requireOwnerPermission('branch.write', 'branch'), ctrl.updateBranch);
@@ -92,7 +95,7 @@ router.post('/branches/:id/products/:productId/inventory', ctrl.upsertBranchProd
 router.post('/branches/:id/profile/save-draft', ctrl.saveBranchProfileDraft);
 router.post('/branches/:id/profile/add-document', ctrl.addBranchProfileDocument);
 router.post('/branches/:id/profile/submit', ctrl.submitBranchProfile);
-router.post('/branches/:id/submit', ctrl.submitBranch);
+router.post('/branches/:id/submit', requireOwnerKycVerified, ctrl.submitBranch);
 router.post('/branches/:id/cancel', ctrl.cancelBranch);
 
 // ------------------------------
@@ -187,6 +190,9 @@ router.post('/staff/:id/transfer-branch', staffCtrl.transferBranch);
 router.get('/staff/:id/audit-logs', staffCtrl.getAuditLogs);
 router.get('/staff/:id/activity-summary', staffCtrl.getActivitySummary);
 
+// Hubs (ONLINE_HUB locations for order fulfilment filter)
+router.get('/hubs', ctrl.getHubs);
+
 // Dashboard endpoints
 router.get('/dashboard/metrics', ctrl.getDashboardMetrics);
 router.get('/dashboard/revenue', ctrl.getDashboardRevenue);
@@ -199,6 +205,23 @@ router.get('/dashboard/alerts', ctrl.getDashboardAlerts);
 router.get('/products/summary', ctrl.getProductsSummary);
 router.get('/products/branch-availability', ctrl.getProductBranchAvailability);
 router.post('/products/:id/add-to-branches', ctrl.addProductToBranches);
+
+// Universal Product Import (Owner panel) – rate limit upload, all enforce org/branch scope
+const productImportUploadLimiter = require('../../../../middleware/rateLimiters').productImportUploadLimiter;
+const productImportCtrl = require('./productImport.controller');
+router.get('/imports/products', productImportCtrl.listImportBatches);
+router.post('/imports/products/upload', productImportUploadLimiter, upload.single('file'), productImportCtrl.uploadProductImport);
+router.get('/imports/products/:batchId', productImportCtrl.getImportBatch);
+router.get('/imports/products/:batchId/insights', productImportCtrl.getImportBatchInsights);
+router.get('/imports/products/:batchId/rows', productImportCtrl.getImportBatchRows);
+router.get('/imports/products/:batchId/unmapped', productImportCtrl.getUnmappedValues);
+router.post('/imports/products/:batchId/revalidate', productImportCtrl.revalidateImportBatch);
+router.post('/imports/products/:batchId/bulk-fix', productImportCtrl.bulkFixImportBatch);
+router.post('/imports/mappings', productImportCtrl.upsertImportMapping);
+router.get('/imports/mappings', productImportCtrl.listImportMappings);
+router.post('/imports/products/:batchId/publish', requireOwnerKycVerified, productImportCtrl.publishImportBatch);
+router.post('/imports/products/unpublish', productImportCtrl.unpublishImportProduct);
+router.post('/imports/products/rows/:rowId/fix', productImportCtrl.fixImportRow);
 
 // Owner Delegation & Team Management
 // Team dashboard routes: require owner context + TEAM_MANAGE (team owners only; no redirect to KYC)
@@ -224,7 +247,7 @@ router.get('/overview/logs', delegationCtrl.getOverviewLogs);
 
 const onboardingCtrl = require('./onboarding.controller');
 router.get('/onboarding/status', onboardingCtrl.getOnboardingStatus);
-router.post('/onboarding/start', onboardingCtrl.startOnboarding);
+router.post('/onboarding/start', ensureOwnerKyc, onboardingCtrl.startOnboarding);
 
 module.exports = router;
 

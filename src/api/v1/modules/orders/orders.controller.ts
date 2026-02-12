@@ -1,5 +1,6 @@
 const service = require("./orders.service");
 const inventoryService = require("../inventory/inventory.service");
+const ledgerService = require("../inventory/ledger.service");
 const prisma = require("../../../../infrastructure/db/prismaClient");
 
 /**
@@ -25,6 +26,8 @@ exports.getOrders = async (req, res) => {
       branchId: branchId,
       customerId: req.query.customerId ? parseInt(req.query.customerId) : undefined,
       status: req.query.status,
+      fulfilmentInventoryLocationId: req.query.fulfilmentInventoryLocationId
+        ? parseInt(req.query.fulfilmentInventoryLocationId) : undefined,
       page: parseInt(req.query.page) || 1,
       limit: parseInt(req.query.limit) || 20,
     });
@@ -85,7 +88,7 @@ exports.getOrder = async (req, res) => {
 
 /**
  * POST /api/v1/orders
- * Create new order
+ * Create new order. ONLINE requires fulfilmentInventoryLocationId (ONLINE_HUB). POS/CLINIC resolve default location.
  */
 exports.createOrder = async (req, res) => {
   try {
@@ -94,7 +97,7 @@ exports.createOrder = async (req, res) => {
       return res.status(401).json({ success: false, message: "Unauthorized" });
     }
 
-    const { branchId, customerId, items, paymentMethod, notes } = req.body;
+    const { branchId, customerId, items, paymentMethod, notes, orderSource, fulfilmentInventoryLocationId } = req.body;
 
     if (!branchId || !items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({
@@ -103,9 +106,11 @@ exports.createOrder = async (req, res) => {
       });
     }
 
+    const branchIdNum = parseInt(branchId);
+
     // Verify user has access to branch
     const branchMember = await prisma.branchMember.findFirst({
-      where: { userId: userId, branchId: branchId, status: "ACTIVE" },
+      where: { userId: userId, branchId: branchIdNum, status: "ACTIVE" },
     });
 
     if (!branchMember) {
@@ -115,35 +120,80 @@ exports.createOrder = async (req, res) => {
       });
     }
 
-    // Verify items and check stock
-    for (const item of items) {
-      if (!item.productId || !item.quantity || !item.price) {
+    let resolvedLocationId = fulfilmentInventoryLocationId != null ? parseInt(fulfilmentInventoryLocationId) : null;
+    const source = (orderSource && ["ONLINE", "POS", "CLINIC", "OTHER"].includes(orderSource)) ? orderSource : null;
+
+    if (source === "ONLINE") {
+      if (resolvedLocationId == null) {
         return res.status(400).json({
           success: false,
-          message: "Each item must have productId, quantity, and price",
+          message: "orderSource ONLINE requires fulfilmentInventoryLocationId (choose-hub hubId)",
         });
       }
-
-      // Check inventory (if variant specified)
-      if (item.variantId) {
-        const inventory = await inventoryService.getInventory({
-          branchId: branchId,
-          productId: item.productId,
-          variantId: item.variantId,
-          limit: 1,
+      const loc = await prisma.inventoryLocation.findFirst({
+        where: { id: resolvedLocationId, type: "ONLINE_HUB", isActive: true },
+        select: { id: true },
+      });
+      if (!loc) {
+        return res.status(400).json({
+          success: false,
+          message: "fulfilmentInventoryLocationId must be an active ONLINE_HUB location",
         });
+      }
+    } else if (source === "POS") {
+      const shopLocId = await service.getDefaultFulfilmentLocationForBranch(branchIdNum, "SHOP");
+      if (shopLocId != null) resolvedLocationId = shopLocId;
+    } else if (source === "CLINIC") {
+      const clinicLocId = await service.getDefaultFulfilmentLocationForBranch(branchIdNum, "CLINIC");
+      if (clinicLocId != null) resolvedLocationId = clinicLocId;
+    }
 
-        if (inventory.items.length === 0 || inventory.items[0].quantity < item.quantity) {
+    if (resolvedLocationId != null) {
+      for (const item of items) {
+        if (!item.productId || !item.quantity || !item.price) {
           return res.status(400).json({
             success: false,
-            message: `Insufficient stock for product variant ${item.variantId}`,
+            message: "Each item must have productId, quantity, and price",
           });
+        }
+        if (item.variantId) {
+          const balance = await ledgerService.getStockBalance(resolvedLocationId, parseInt(item.variantId));
+          const available = balance.onHandQty - balance.reservedQty;
+          if (available < item.quantity) {
+            return res.status(400).json({
+              success: false,
+              message: `Insufficient stock for variant ${item.variantId} at fulfilment location`,
+            });
+          }
+        }
+      }
+    } else {
+      for (const item of items) {
+        if (!item.productId || !item.quantity || !item.price) {
+          return res.status(400).json({
+            success: false,
+            message: "Each item must have productId, quantity, and price",
+          });
+        }
+        if (item.variantId) {
+          const inventory = await inventoryService.getInventory({
+            branchId: branchIdNum,
+            productId: item.productId,
+            variantId: item.variantId,
+            limit: 1,
+          });
+          if (inventory.items.length === 0 || inventory.items[0].quantity < item.quantity) {
+            return res.status(400).json({
+              success: false,
+              message: `Insufficient stock for product variant ${item.variantId}`,
+            });
+          }
         }
       }
     }
 
     const order = await service.createOrder({
-      branchId: parseInt(branchId),
+      branchId: branchIdNum,
       customerId: customerId ? parseInt(customerId) : undefined,
       items: items.map((item) => ({
         productId: parseInt(item.productId),
@@ -154,30 +204,46 @@ exports.createOrder = async (req, res) => {
       paymentMethod: paymentMethod,
       notes: notes,
       createdByUserId: userId,
+      fulfilmentInventoryLocationId: resolvedLocationId,
+      orderSource: source,
     });
 
-    // Deduct stock for each item
-    for (const item of items) {
-      if (item.variantId) {
-        // Find inventory item
-        const inventory = await inventoryService.getInventory({
-          branchId: branchId,
-          productId: item.productId,
-          variantId: item.variantId,
-          limit: 1,
-        });
-
-        if (inventory.items.length > 0) {
-          await inventoryService.adjustStock(
-            inventory.items[0].id,
-            {
-              type: "OUT",
-              quantity: item.quantity,
-              reason: `Order ${order.orderNumber}`,
-              createdByUserId: userId,
-            },
-            branchId
-          );
+    if (resolvedLocationId != null && source) {
+      const saleType = source === "ONLINE" ? "SALE_ONLINE" : source === "CLINIC" ? "SALE_CLINIC" : "SALE_POS";
+      for (const item of items) {
+        if (item.variantId) {
+          await ledgerService.saleFEFO({
+            locationId: resolvedLocationId,
+            variantId: parseInt(item.variantId),
+            quantity: parseInt(item.quantity),
+            saleType,
+            refType: "ORDER",
+            refId: String(order.id),
+            createdByUserId: userId,
+          });
+        }
+      }
+    } else {
+      for (const item of items) {
+        if (item.variantId) {
+          const inventory = await inventoryService.getInventory({
+            branchId: branchIdNum,
+            productId: item.productId,
+            variantId: item.variantId,
+            limit: 1,
+          });
+          if (inventory.items.length > 0) {
+            await inventoryService.adjustStock(
+              inventory.items[0].id,
+              {
+                type: "OUT",
+                quantity: item.quantity,
+                reason: `Order ${order.orderNumber}`,
+                createdByUserId: userId,
+              },
+              branchIdNum
+            );
+          }
         }
       }
     }
@@ -329,20 +395,29 @@ exports.cancelOrder = async (req, res) => {
 
     const branchId = branchMember?.branchId;
 
-    const order = await service.cancelOrder(orderId, reason, branchId);
+    const result = await service.cancelOrder(orderId, reason, branchId);
+    const order = result.order;
+    const performedCancel = result.performedCancel === true;
 
-    // Restore stock if order was confirmed/processing
-    if (order.status === "CANCELLED") {
+    if (performedCancel && order.status === "CANCELLED" && order.fulfilmentInventoryLocationId != null && order.items?.length) {
+      const restoreItems = order.items.filter((i) => i.variantId).map((i) => ({ variantId: i.variantId, quantity: i.quantity }));
+      if (restoreItems.length > 0) {
+        await ledgerService.restoreStockForOrderCancel({
+          locationId: order.fulfilmentInventoryLocationId,
+          items: restoreItems,
+          refId: String(order.id),
+          createdByUserId: userId,
+        });
+      }
+    } else if (performedCancel && order.status === "CANCELLED") {
       for (const item of order.items) {
-        if (item.variantId) {
-          // Find inventory and restore stock
+        if (item.variantId && branchId) {
           const inventory = await inventoryService.getInventory({
             branchId: branchId,
             productId: item.productId,
             variantId: item.variantId,
             limit: 1,
           });
-
           if (inventory.items.length > 0) {
             await inventoryService.adjustStock(
               inventory.items[0].id,
@@ -362,7 +437,7 @@ exports.cancelOrder = async (req, res) => {
     return res.status(200).json({
       success: true,
       data: order,
-      message: "Order cancelled successfully",
+      message: performedCancel ? "Order cancelled successfully" : "Order already cancelled",
     });
   } catch (error) {
     console.error("cancelOrder error:", error);

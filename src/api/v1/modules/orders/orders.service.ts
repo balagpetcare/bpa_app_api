@@ -17,6 +17,7 @@ async function getOrders(options: {
   branchId?: number;
   customerId?: number;
   status?: string;
+  fulfilmentInventoryLocationId?: number;
   page?: number;
   limit?: number;
 }) {
@@ -36,6 +37,10 @@ async function getOrders(options: {
 
   if (options.status) {
     where.status = options.status;
+  }
+
+  if (options.fulfilmentInventoryLocationId != null) {
+    where.fulfilmentInventoryLocationId = options.fulfilmentInventoryLocationId;
   }
 
   const [orders, total] = await Promise.all([
@@ -68,6 +73,15 @@ async function getOrders(options: {
                 displayName: true,
               },
             },
+          },
+        },
+        fulfilmentInventoryLocation: {
+          select: {
+            id: true,
+            name: true,
+            code: true,
+            type: true,
+            branch: { select: { id: true, name: true } },
           },
         },
         items: {
@@ -127,6 +141,15 @@ async function getOrderById(orderId: number, branchId?: number) {
           profile: true,
         },
       },
+      fulfilmentInventoryLocation: {
+        select: {
+          id: true,
+          name: true,
+          code: true,
+          type: true,
+          branch: { select: { id: true, name: true } },
+        },
+      },
       items: {
         include: {
           product: {
@@ -148,6 +171,20 @@ async function getOrderById(orderId: number, branchId?: number) {
 }
 
 /**
+ * Get branch's default InventoryLocation by type (SHOP or CLINIC). Fallback: first active of that type.
+ */
+async function getDefaultFulfilmentLocationForBranch(
+  branchId: number,
+  type: "SHOP" | "CLINIC"
+): Promise<number | null> {
+  const loc = await prisma.inventoryLocation.findFirst({
+    where: { branchId, type, isActive: true },
+    select: { id: true },
+  });
+  return loc?.id ?? null;
+}
+
+/**
  * Create new order
  */
 async function createOrder(data: {
@@ -162,6 +199,8 @@ async function createOrder(data: {
   paymentMethod?: string;
   notes?: string;
   createdByUserId?: number;
+  fulfilmentInventoryLocationId?: number | null;
+  orderSource?: string | null;
 }) {
   // Calculate total
   const totalAmount = data.items.reduce((sum, item) => {
@@ -171,31 +210,48 @@ async function createOrder(data: {
   // Generate order number
   const orderNumber = generateOrderNumber();
 
+  const orderData: any = {
+    orderNumber: orderNumber,
+    branchId: data.branchId,
+    customerId: data.customerId || null,
+    status: "PENDING",
+    totalAmount: totalAmount,
+    paymentMethod: data.paymentMethod || null,
+    paymentStatus: "PENDING",
+    notes: data.notes || null,
+    createdByUserId: data.createdByUserId || null,
+    items: {
+      create: data.items.map((item) => ({
+        productId: item.productId,
+        variantId: item.variantId || null,
+        quantity: item.quantity,
+        price: item.price,
+        total: item.price * item.quantity,
+      })),
+    },
+  };
+  if (data.fulfilmentInventoryLocationId != null) {
+    orderData.fulfilmentInventoryLocationId = data.fulfilmentInventoryLocationId;
+  }
+  if (data.orderSource != null && ["ONLINE", "POS", "CLINIC", "OTHER"].includes(data.orderSource)) {
+    orderData.orderSource = data.orderSource;
+  }
+
   // Create order with items
   const order = await prisma.order.create({
-    data: {
-      orderNumber: orderNumber,
-      branchId: data.branchId,
-      customerId: data.customerId || null,
-      status: "PENDING",
-      totalAmount: totalAmount,
-      paymentMethod: data.paymentMethod || null,
-      paymentStatus: "PENDING",
-      notes: data.notes || null,
-      createdByUserId: data.createdByUserId || null,
-      items: {
-        create: data.items.map((item) => ({
-          productId: item.productId,
-          variantId: item.variantId || null,
-          quantity: item.quantity,
-          price: item.price,
-          total: item.price * item.quantity,
-        })),
-      },
-    },
+    data: orderData,
     include: {
       branch: true,
       customer: true,
+      fulfilmentInventoryLocation: {
+        select: {
+          id: true,
+          name: true,
+          code: true,
+          type: true,
+          branch: { select: { id: true, name: true } },
+        },
+      },
       items: {
         include: {
           product: true,
@@ -289,7 +345,7 @@ async function processPayment(
 }
 
 /**
- * Cancel order
+ * Cancel order. Idempotent: if already CANCELLED, returns order without updating (no double restore).
  */
 async function cancelOrder(orderId: number, reason?: string, branchId?: number) {
   const where: any = { id: orderId };
@@ -302,8 +358,20 @@ async function cancelOrder(orderId: number, reason?: string, branchId?: number) 
     throw new Error("Order not found");
   }
 
-  if (existing.status === "DELIVERED" || existing.status === "CANCELLED") {
+  if (existing.status === "DELIVERED") {
     throw new Error(`Cannot cancel order with status: ${existing.status}`);
+  }
+
+  if (existing.status === "CANCELLED") {
+    const alreadyCancelled = await prisma.order.findFirst({
+      where: { id: orderId },
+      include: {
+        branch: true,
+        customer: true,
+        items: { include: { product: true, variant: true } },
+      },
+    });
+    return { order: alreadyCancelled, performedCancel: false };
   }
 
   const order = await prisma.order.update({
@@ -327,7 +395,7 @@ async function cancelOrder(orderId: number, reason?: string, branchId?: number) 
     },
   });
 
-  return order;
+  return { order, performedCancel: true };
 }
 
 module.exports = {
@@ -337,6 +405,7 @@ module.exports = {
   updateOrderStatus,
   processPayment,
   cancelOrder,
+  getDefaultFulfilmentLocationForBranch,
 };
 
 export {};

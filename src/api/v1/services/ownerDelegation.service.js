@@ -116,11 +116,30 @@ async function addTeamMember(teamId, ownerUserId, userId, roleInTeam) {
     where: { id: teamId, ownerUserId },
   });
   if (!team) throw new Error("Team not found");
-  return prismaClient.ownerTeamMember.upsert({
+  const member = await prismaClient.ownerTeamMember.upsert({
     where: { teamId_userId: { teamId, userId } },
     update: { roleInTeam: roleInTeam ?? null },
     create: { teamId, userId, roleInTeam: roleInTeam ?? null },
   });
+  // Auto-upsert org membership so team members are recognized as org members (e.g. for clone products).
+  const ownerOrgs = await prismaClient.organization.findMany({
+    where: { ownerUserId },
+    select: { id: true },
+  });
+  for (const org of ownerOrgs) {
+    await prismaClient.orgMember.upsert({
+      where: { orgId_userId: { orgId: org.id, userId } },
+      update: { status: "ACTIVE", updatedAt: new Date() },
+      create: {
+        orgId: org.id,
+        userId,
+        role: "BRANCH_STAFF",
+        status: "ACTIVE",
+        invitedByUserId: ownerUserId,
+      },
+    });
+  }
+  return member;
 }
 
 async function removeTeamMember(teamId, ownerUserId, userId) {

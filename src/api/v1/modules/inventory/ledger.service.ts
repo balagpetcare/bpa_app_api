@@ -444,13 +444,13 @@ async function reserveFEFO(params: {
 
 /**
  * Commit sale using FEFO (deduct from earliest expiring lots).
- * Creates SALE_POS or SALE_ONLINE + RELEASE_RESERVE entries.
+ * Creates SALE_POS, SALE_ONLINE, or SALE_CLINIC + optional RELEASE_RESERVE entries.
  */
 async function saleFEFO(params: {
   locationId: number;
   variantId: number;
   quantity: number;
-  saleType: "SALE_POS" | "SALE_ONLINE";
+  saleType: "SALE_POS" | "SALE_ONLINE" | "SALE_CLINIC";
   refType?: string;
   refId?: string;
   createdByUserId?: number;
@@ -471,7 +471,7 @@ async function saleFEFO(params: {
       lotId: item.lotId,
       type: params.saleType,
       quantityDelta: -take,
-      refType: params.refType || "POS_SALE",
+      refType: params.refType || "ORDER",
       refId: params.refId || null,
       createdByUserId: params.createdByUserId,
     });
@@ -500,6 +500,31 @@ async function saleFEFO(params: {
     );
   }
 
+  return recordMultipleLedgerEntries(entries);
+}
+
+/**
+ * Restore stock for a cancelled order: same locationId, RETURN_IN ledger entries, refType ORDER_CANCEL.
+ */
+async function restoreStockForOrderCancel(params: {
+  locationId: number;
+  items: Array<{ variantId: number; quantity: number }>;
+  refId: string;
+  createdByUserId?: number;
+}) {
+  const entries: LedgerEntryInput[] = [];
+  for (const item of params.items) {
+    if (item.quantity <= 0) continue;
+    entries.push({
+      locationId: params.locationId,
+      variantId: item.variantId,
+      quantityDelta: item.quantity,
+      type: "RETURN_IN",
+      refType: "ORDER_CANCEL",
+      refId: params.refId,
+      createdByUserId: params.createdByUserId,
+    });
+  }
   return recordMultipleLedgerEntries(entries);
 }
 
@@ -591,6 +616,7 @@ module.exports = {
   getAvailableLotsFEFO,
   reserveFEFO,
   saleFEFO,
+  restoreStockForOrderCancel,
   assertLotNotExpired,
   INVENTORY_ERROR_CODES,
 };

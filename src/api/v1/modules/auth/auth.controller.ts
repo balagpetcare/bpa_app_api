@@ -532,11 +532,15 @@ exports.getProfile = async (req, res) => {
     // Owner panel: scope-filtered permissions for delegates; full perms for actual owners.
     const hasDelegations =
       (await prisma.ownerDelegation.count({ where: { delegatedUserId: userId } })) > 0;
+    const hasTeamMember =
+      (await prisma.ownerTeamMember.count({ where: { userId } })) > 0;
     if (role !== "ADMIN") {
       if (ownerProfile || ownedOrgs.length > 0) {
         permissions = await resolvePermissionsForUser(userId);
-      } else if (hasDelegations) {
-        permissions = await getPermissionsForOwnerPanel(userId);
+      } else if (hasDelegations || hasTeamMember) {
+        const base = await resolvePermissionsForUser(userId);
+        const panelPerms = await getPermissionsForOwnerPanel(userId);
+        permissions = [...new Set([...base, ...panelPerms])];
       } else {
         permissions = await resolvePermissionsForUser(userId);
       }
@@ -567,7 +571,7 @@ exports.getProfile = async (req, res) => {
 
     const panels = {
       admin: isAdmin,
-      owner: Boolean(ownerProfile || ownedOrgs.length > 0 || kycApproved || hasDelegations),
+      owner: Boolean(ownerProfile || ownedOrgs.length > 0 || kycApproved || hasDelegations || hasTeamMember),
       partner: Boolean(user?.partnerStatus && user.partnerStatus !== "NOT_APPLIED"),
       country: countryRoles.length > 0,
       staff: hasStaffAccess,
@@ -585,6 +589,85 @@ exports.getProfile = async (req, res) => {
       !hasBranch &&
       contextCount === 0 &&
       !ownerProfile;
+
+    const authContexts = await resolveAuthContexts(userId);
+    let default_redirect = await decideRedirect(userId, authContexts);
+    const needsActivitySelection = default_redirect === "/choose-activity";
+
+    // Routing decision payload for post-auth-landing
+    const hasBusinessContext = hasOrg || hasBranch || contextCount > 0;
+    const allowedPanels = Object.entries(panels)
+      .filter(([, v]) => v === true)
+      .map(([k]) => k);
+    const isCustomerOnly = allowedPanels.length === 0;
+
+    const lastLoginAt = user?.auth?.lastLoginAt ?? null;
+    const isFirstLogin = lastLoginAt == null;
+    const noContextsOrOrg = contextCount === 0 && !hasOrg && !hasBranch;
+    const unclassified = allowedPanels.length === 0;
+    const onboardingIntroRequired = noContextsOrOrg && unclassified;
+    const onboardingReason = onboardingIntroRequired
+      ? (isFirstLogin ? "intro_first_login_no_context_no_panels" : "intro_unclassified_no_context_no_panels")
+      : null;
+
+    if (onboardingIntroRequired) {
+      default_redirect = "/getting-started";
+    }
+
+    const recommendedNextPaths = {
+      owner: "/owner/onboarding",
+      producer: "/producer/kyc",
+      clinic: "/clinic",
+      shop: "/shop",
+      customer: "/mother",
+    };
+
+    const ownerKycStatus = ownerKyc?.verificationStatus
+      ? String(ownerKyc.verificationStatus).toUpperCase()
+      : "NONE";
+    const producerCtx = authContexts.find((c) => c.role === "PRODUCER");
+    const producerPending = producerCtx?.status === "PENDING";
+    const ownerNeedsKyc =
+      panels.owner &&
+      (ownerKycStatus === "UNSUBMITTED" || ownerKycStatus === "REJECTED" || ownerKycStatus === "SUBMITTED");
+    const verificationRequired = ownerNeedsKyc || producerPending;
+    const verificationStatus =
+      producerPending
+        ? "PENDING"
+        : ownerKycStatus === "VERIFIED" || ownerKycStatus === "APPROVED"
+          ? "APPROVED"
+          : ownerKycStatus === "SUBMITTED"
+            ? "PENDING"
+            : ownerKycStatus === "REJECTED"
+              ? "REJECTED"
+              : "NONE";
+    const verificationRedirect = producerPending
+      ? "/producer/kyc"
+      : ownerNeedsKyc
+        ? "/owner/kyc"
+        : null;
+
+    const debugReasons = [];
+    if (onboardingIntroRequired) debugReasons.push("onboardingIntroRequired");
+    if (verificationRequired) debugReasons.push(`verification: ${verificationStatus} -> ${verificationRedirect}`);
+    if (needsActivitySelection) debugReasons.push("needsActivitySelection");
+    if (isCustomerOnly) debugReasons.push("isCustomerOnly");
+    debugReasons.push(`default_redirect: ${default_redirect}`);
+
+    const routing = {
+      needsActivitySelection: onboardingIntroRequired ? false : needsActivitySelection,
+      default_redirect,
+      allowedPanels,
+      isCustomerOnly,
+      hasBusinessContext,
+      verificationRequired,
+      verificationStatus,
+      verificationRedirect: verificationRedirect || null,
+      onboardingIntroRequired,
+      ...(onboardingReason && { onboardingReason }),
+      recommendedNextPaths,
+      ...(process.env.NODE_ENV !== "production" && { debugReason: debugReasons.join("; ") }),
+    };
 
     return res.status(200).json({
       success: true,
@@ -633,6 +716,9 @@ exports.getProfile = async (req, res) => {
         hasBranch,
         contextCount,
       },
+      default_redirect,
+      needsActivitySelection,
+      routing,
       owner: ownerProfile
         ? {
             ownerProfileId: ownerProfile.id,
@@ -944,6 +1030,9 @@ exports.acceptInvite = async (req, res) => {
         include: { auth: true, profile: true },
       });
 
+      const staffContexts = await resolveAuthContexts(userId);
+      const staffRedirect = await decideRedirect(userId, staffContexts, { forceStaffPanel: true });
+
       return res.json({
         success: true,
         message: "Invite accepted",
@@ -956,6 +1045,7 @@ exports.acceptInvite = async (req, res) => {
           username: user?.profile?.username || null,
         },
         data: { branchId: staffInvite.branchId, role: staffInvite.role },
+        default_redirect: staffRedirect,
       });
     }
 

@@ -188,6 +188,10 @@ async function loginProducer({ email, phone, password }) {
   return { user: auth.user, token };
 }
 
+/**
+ * Legacy KYC submit: updates ProducerOrg name/countryCode and persists docsJson to legacyDocsJson
+ * (do not rely on file refs in docsJson; use /kyc/documents for uploads).
+ */
 async function submitKyc({ userId, name, countryCode, docsJson }) {
   const org = await getProducerOrgByUser(userId);
   if (!org) {
@@ -197,6 +201,7 @@ async function submitKyc({ userId, name, countryCode, docsJson }) {
         name: name || "Producer Org",
         countryCode: countryCode || null,
         docsJson: docsJson || null,
+        legacyDocsJson: docsJson || null,
         status: "PENDING",
       },
     });
@@ -209,7 +214,7 @@ async function submitKyc({ userId, name, countryCode, docsJson }) {
     data: {
       ...(name ? { name } : {}),
       ...(countryCode ? { countryCode } : {}),
-      ...(docsJson ? { docsJson } : {}),
+      ...(docsJson ? { docsJson, legacyDocsJson: docsJson } : {}),
       status: "PENDING",
     },
   });

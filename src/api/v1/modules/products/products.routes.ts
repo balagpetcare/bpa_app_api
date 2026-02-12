@@ -3,6 +3,7 @@ const multer = require("multer");
 const controller = require("./products.controller");
 const masterCatalogController = require("./master-catalog.controller");
 const authenticateToken = require("../../../../middleware/auth.middleware");
+const requireOwnerKycVerified = require("../../../../middlewares/requireOwnerKycVerified");
 const appConfig = require("../../../../config/appConfig");
 
 // Public: product verify display (authenticity MVP)
@@ -25,7 +26,7 @@ function requirePermission(...permissions) {
   };
 }
 
-// Owner-only product master: only OWNER role or owner.products.manage permission
+// Owner or staff with product scope: OWNER role or owner.products.manage / product.update permission
 function requireOwnerOrProductManage(...mutatePerms) {
   return (req, res, next) => {
     const userId = req.user?.id;
@@ -33,18 +34,21 @@ function requireOwnerOrProductManage(...mutatePerms) {
       return res.status(401).json({ success: false, message: "Unauthorized" });
     }
     const userType = req.user?.userType;
+    const role = req.user?.role;
     const userPerms = req.user?.permissions || [];
-    const isOwner = userType === "OWNER";
+    const isOwner = userType === "OWNER" || role === "OWNER";
     const hasManage = userPerms.includes("owner.products.manage") ||
+      userPerms.includes("product.update") ||
       mutatePerms.some((p) => userPerms.includes(p));
     if (isOwner || hasManage) {
       return next();
     }
     return res.status(403).json({
       success: false,
-      message: "AccessDenied",
+      message: "Access denied",
       code: "ACCESS_DENIED",
-      detail: "Product master mutations require OWNER role or owner.products.manage permission",
+      detail: "Product mutations require OWNER role or product.update/owner.products.manage permission",
+      debug: { required: "product.update or owner.products.manage", role: role || userType || "unknown" },
     });
   };
 }
@@ -214,10 +218,11 @@ router.post(
   controller.rejectProduct
 );
 
-// POST /api/v1/products/:id/publish - Publish product (owner-only or owner.products.manage)
+// POST /api/v1/products/:id/publish - Publish product (owner-only or owner.products.manage; requires VERIFIED KYC)
 router.post(
   "/:id/publish",
   requireOwnerOrProductManage("product.update", "org.write"),
+  requireOwnerKycVerified,
   controller.publishProduct
 );
 

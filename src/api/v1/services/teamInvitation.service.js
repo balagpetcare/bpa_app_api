@@ -164,10 +164,26 @@ async function acceptTeamInvitation(token, existingUserId, newUserData = {}) {
       create: { teamId: invite.teamId, userId, roleInTeam: "MEMBER" },
     });
 
-    const orgIds = await tx.organization.findMany({
+    // Auto-upsert org membership so team members are recognized as org members (e.g. for clone products).
+    const ownerOrgs = await tx.organization.findMany({
       where: { ownerUserId: invite.ownerUserId },
       select: { id: true },
-    }).then((r) => r.map((o) => o.id));
+    });
+    for (const org of ownerOrgs) {
+      await tx.orgMember.upsert({
+        where: { orgId_userId: { orgId: org.id, userId } },
+        update: { status: "ACTIVE", updatedAt: new Date() },
+        create: {
+          orgId: org.id,
+          userId,
+          role: "BRANCH_STAFF",
+          status: "ACTIVE",
+          invitedByUserId: invite.invitedByUserId,
+        },
+      });
+    }
+
+    const orgIds = ownerOrgs.map((o) => o.id);
     const orgId = null;
     const singleBranchId = branchIds.length === 1 ? branchIds[0] : null;
     if (singleBranchId && orgIds.length > 0) {

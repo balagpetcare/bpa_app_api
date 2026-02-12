@@ -13,6 +13,10 @@ const {
   getOwnerStaffAccessRowsByUser,
   getOwnerBranchAccessRequest,
 } = require('../../services/branchAccessPermission.service');
+const {
+  getEffectiveOrgIdsForOwnerPanel,
+  getEffectiveBranchIdsForOwnerPanel,
+} = require('../../services/ownerPanelAccess.service');
 
 const REQUIRED_OWNER_KYC_DOCS = ['NID_FRONT', 'NID_BACK', 'SELFIE_WITH_NID'];
 const KYC_EXPIRY_DAYS = Number(process.env.KYC_EXPIRY_DAYS || 45);
@@ -545,6 +549,16 @@ exports.uploadOwnerKycDocument = async (req, res) => {
       return res.status(400).json({ success: false, message: "No file uploaded. Use multipart/form-data field name 'file'." });
     }
 
+    const maxBytes = Number(process.env.MAX_UPLOAD_BYTES || 15 * 1024 * 1024);
+    if (file.size && file.size > maxBytes) {
+      return res.status(400).json({ success: false, message: `File size exceeds maximum (${maxBytes} bytes).` });
+    }
+    const allowedMimes = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
+    const mime = (file.mimetype || '').toLowerCase().trim();
+    if (!allowedMimes.includes(mime)) {
+      return res.status(400).json({ success: false, message: `Invalid file type. Allowed: ${allowedMimes.join(', ')}` });
+    }
+
     const processed = await processUploadFile(file);
     const media = await mediaService.uploadAndCreateMedia({
       ownerUserId,
@@ -836,23 +850,23 @@ exports.createOrganization = async (req, res) => {
 exports.listOrganizations = async (req, res) => {
   try {
     const prisma = getPrisma(req);
-    // Robust user ID extraction
-    const ownerUserId = asIntId(req.user?.id || req.auth?.userId);
-    if (!ownerUserId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+    const userId = asIntId(req.user?.id || req.auth?.userId);
+    if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
     let status = req.query.status ? String(req.query.status).trim() : null;
     if (status === '') status = null;
 
-    // Validate status against PartnerStatus enum to prevent Prisma crash
     const VALID_PARTNER_STATUSES = ['NOT_APPLIED', 'PENDING_REVIEW', 'APPROVED', 'REJECTED', 'SUSPENDED'];
     if (status && !VALID_PARTNER_STATUSES.includes(status)) {
-       // If filtered by an invalid status (like "DRAFT"), return empty list instead of crashing
        return res.json({ success: true, data: [] });
     }
 
+    const orgIds = await getEffectiveOrgIdsForOwnerPanel(prisma, userId);
+    if (orgIds.length === 0) return res.json({ success: true, data: [] });
+
     const rows = await prisma.organization.findMany({
       where: {
-        ownerUserId,
+        id: { in: orgIds },
         ...(status ? { status } : {})
       },
       orderBy: { createdAt: 'desc' }
@@ -894,13 +908,16 @@ exports.deleteOrganization = async (req, res) => {
 exports.getOrganization = async (req, res) => {
   try {
     const prisma = getPrisma(req);
-    const ownerUserId = asIntId(req.user?.id || req.auth?.userId);
-    if (!ownerUserId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+    const userId = asIntId(req.user?.id || req.auth?.userId);
+    if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
     const id = asIntId(req.params.id);
     if (!id) return res.status(400).json({ success: false, message: 'Invalid id' });
 
+    const orgIds = await getEffectiveOrgIdsForOwnerPanel(prisma, userId);
+    if (!orgIds.length || !orgIds.includes(id)) return res.status(404).json({ success: false, message: 'Organization not found' });
+
     const org = await prisma.organization.findFirst({
-      where: { id, ownerUserId },
+      where: { id },
       include: {
         branches: true,
         legalProfile: {
@@ -1362,21 +1379,14 @@ exports.listBranches = async (req, res) => {
 exports.listOwnerBranchesAll = async (req, res) => {
   try {
     const prisma = getPrisma(req);
-    const ownerUserId = asIntId(req.user?.id || req.auth?.userId);
-    if (!ownerUserId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+    const userId = asIntId(req.user?.id || req.auth?.userId);
+    if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
-    // Organizations owned by this owner
-    const orgs = await prisma.organization.findMany({
-      where: { ownerUserId },
-      select: { id: true },
-      orderBy: { createdAt: 'desc' },
-    });
-
-    const orgIds = orgs.map((o) => o.id);
-    if (orgIds.length === 0) return res.json({ success: true, data: [] });
+    const branchIds = await getEffectiveBranchIdsForOwnerPanel(prisma, userId);
+    if (branchIds.length === 0) return res.json({ success: true, data: [] });
 
     const rows = await prisma.branch.findMany({
-      where: { orgId: { in: orgIds } },
+      where: { id: { in: branchIds } },
       orderBy: { createdAt: 'desc' },
       include: {
         org: { select: { id: true, name: true } },
@@ -1937,7 +1947,7 @@ exports.listProductChangeRequests = async (req, res) => {
   try {
     const statusParam = String(req.query.status || "PENDING").toUpperCase();
     const ownerUserId = asIntId(req.user?.id || req.auth?.userId);
-    const orgIds = await getOwnerOrgIds(prismaClient, ownerUserId);
+    const orgIds = await getOwnerOrgIdsForRequest(prismaClient, ownerUserId);
     if (!orgIds.length) {
       return res.json({ success: true, data: [] });
     }
@@ -1975,7 +1985,7 @@ exports.getProductChangeRequest = async (req, res) => {
     const id = asIntId(req.params.id);
     if (!id) return res.status(400).json({ success: false, message: "Invalid id" });
     const ownerUserId = asIntId(req.user?.id || req.auth?.userId);
-    const orgIds = await getOwnerOrgIds(prismaClient, ownerUserId);
+    const orgIds = await getOwnerOrgIdsForRequest(prismaClient, ownerUserId);
     if (!orgIds.length) {
       return res.status(404).json({ success: false, message: "Request not found" });
     }
@@ -2126,7 +2136,7 @@ const ledgerService = require("../inventory/ledger.service");
 exports.listStockAdjustmentRequests = async (req, res) => {
   try {
     const ownerUserId = asIntId(req.user?.id || req.auth?.userId);
-    const orgIds = await getOwnerOrgIds(prismaClient, ownerUserId);
+    const orgIds = await getOwnerOrgIdsForRequest(prismaClient, ownerUserId);
     if (!orgIds.length) {
       return res.json({ success: true, data: [] });
     }
@@ -2156,7 +2166,7 @@ exports.approveStockAdjustmentRequest = async (req, res) => {
     const id = Number(req.params.id);
     const note = req.body?.note;
     const ownerUserId = asIntId(req.user?.id || req.auth?.userId);
-    const orgIds = await getOwnerOrgIds(prismaClient, ownerUserId);
+    const orgIds = await getOwnerOrgIdsForRequest(prismaClient, ownerUserId);
 
     const row = await prismaClient.stockAdjustmentRequest.findFirst({
       where: { id, orgId: { in: orgIds } },
@@ -2197,7 +2207,7 @@ exports.rejectStockAdjustmentRequest = async (req, res) => {
     const id = Number(req.params.id);
     const note = req.body?.note;
     const ownerUserId = asIntId(req.user?.id || req.auth?.userId);
-    const orgIds = await getOwnerOrgIds(prismaClient, ownerUserId);
+    const orgIds = await getOwnerOrgIdsForRequest(prismaClient, ownerUserId);
 
     const row = await prismaClient.stockAdjustmentRequest.findFirst({
       where: { id, orgId: { in: orgIds } },
@@ -2757,16 +2767,12 @@ export {};
 exports.listStaffs = async (req, res) => {
   try {
     const prisma = getPrisma(req);
-    const ownerUserId = asIntId(req.user?.id || req.auth?.userId);
-    if (!ownerUserId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+    const userId = asIntId(req.user?.id || req.auth?.userId);
+    if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
     const search = req.query.search ? String(req.query.search).trim().toLowerCase() : '';
 
-    const orgs = await prisma.organization.findMany({
-      where: { ownerUserId },
-      select: { id: true, name: true }
-    });
-    const orgIds = orgs.map(o => o.id);
+    const orgIds = await getEffectiveOrgIdsForOwnerPanel(prisma, userId);
     if (!orgIds.length) return res.json({ success: true, data: { items: [], page: 1, limit: 50, total: 0 } });
 
     const where = {
@@ -2845,7 +2851,8 @@ exports.getStaff = async (req, res) => {
     });
 
     if (!row) return res.status(404).json({ success: false, message: 'Not found' });
-    if (row?.org?.ownerUserId !== ownerUserId) return res.status(403).json({ success: false, message: 'Forbidden' });
+    const effectiveOrgIds = await getEffectiveOrgIdsForOwnerPanel(prisma, ownerUserId);
+    if (!effectiveOrgIds.length || !effectiveOrgIds.includes(row.orgId)) return res.status(403).json({ success: false, message: 'Forbidden' });
 
     res.json({ success: true, data: row });
   } catch (e) {
@@ -3483,6 +3490,39 @@ exports.createStaff = async (req, res) => {
 };
 
 // ============================================
+/**
+ * GET /api/v1/owner/hubs
+ * List ONLINE_HUB InventoryLocations within effective org/branch scope (for order hub filter).
+ */
+exports.getHubs = async (req, res) => {
+  try {
+    const prisma = getPrisma(req);
+    const userId = asIntId(req.user?.id || req.auth?.userId);
+    if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+    const branchIds = await getEffectiveBranchIdsForOwnerPanel(prisma, userId);
+    if (branchIds.length === 0) return res.json({ success: true, data: [] });
+
+    const hubs = await prisma.inventoryLocation.findMany({
+      where: { branchId: { in: branchIds }, type: 'ONLINE_HUB', isActive: true },
+      select: {
+        id: true,
+        name: true,
+        code: true,
+        type: true,
+        branchId: true,
+        branch: { select: { id: true, name: true } },
+      },
+      orderBy: [{ branchId: 'asc' }, { name: 'asc' }],
+    });
+
+    return res.json({ success: true, data: hubs });
+  } catch (e) {
+    console.error('getHubs error:', e);
+    res.status(500).json({ success: false, message: e?.message || 'Server error' });
+  }
+};
+
 // Dashboard Endpoints
 // ============================================
 
@@ -4910,13 +4950,9 @@ function computePendingCounts(inbox = [], productRequests = []) {
   };
 }
 
-async function getOwnerOrgIds(prisma, ownerUserId) {
-  if (!ownerUserId) return [];
-  const orgs = await prisma.organization.findMany({
-    where: { ownerUserId: Number(ownerUserId) },
-    select: { id: true },
-  });
-  return orgs.map((o) => o.id);
+async function getOwnerOrgIdsForRequest(prisma, userId) {
+  if (!userId) return [];
+  return getEffectiveOrgIdsForOwnerPanel(prisma, Number(userId));
 }
 
 async function getOwnerRequestsPendingCounts(prisma, orgIds) {
@@ -5087,8 +5123,8 @@ async function getOwnerRequestsInboxItems(prisma, orgIds) {
 exports.getOwnerRequestsInbox = async (req, res) => {
   try {
     const prisma = req.prisma ? getPrisma(req) : prismaClient;
-    const ownerUserId = asIntId(req.user?.id || req.auth?.userId);
-    const orgIds = await getOwnerOrgIds(prisma, ownerUserId);
+    const userId = asIntId(req.user?.id || req.auth?.userId);
+    const orgIds = await getOwnerOrgIdsForRequest(prisma, userId);
 
     const summaryOnly = String(req.query?.summary || '').trim() === '1';
 
