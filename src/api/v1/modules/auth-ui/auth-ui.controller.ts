@@ -294,7 +294,11 @@ function getLoginPageHtml(app: string, returnTo: string, error?: string): string
           ? { email: identifier, password }
           : { phone: identifier.replace(/\\D/g, ''), password };
         
-        const response = await fetch('/api/v1/auth/login', {
+        // Use admin login when app=admin (validates whitelist, avoids 403 loop)
+        const appVal = form.querySelector('input[name="app"]')?.value || '';
+        const loginPath = appVal === 'admin' ? '/api/v1/admin/auth/login' : '/api/v1/auth/login';
+        
+        const response = await fetch(loginPath, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           credentials: 'include',
