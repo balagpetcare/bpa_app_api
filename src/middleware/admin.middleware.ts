@@ -4,8 +4,25 @@ function normalizePhoneDigits(v) {
   return String(v || "").replace(/\D/g, "");
 }
 
+function normalizeEmail(v) {
+  return String(v || "").trim().toLowerCase();
+}
+
+function parseAdminEmails() {
+  return String(process.env.ADMIN_EMAILS || "")
+    .split(",")
+    .map((x) => normalizeEmail(x))
+    .filter(Boolean);
+}
+
+function parseAdminPhones() {
+  return String(process.env.ADMIN_PHONES || "")
+    .split(",")
+    .map((x) => normalizePhoneDigits(x))
+    .filter(Boolean);
+}
+
 async function isAdminUser(userId) {
-  // ✅ BPA Standard: DB whitelist (source of truth)
   const auth = await prisma.userAuth.findUnique({
     where: { userId: Number(userId) },
     select: { phone: true, email: true },
@@ -13,40 +30,39 @@ async function isAdminUser(userId) {
 
   const phoneDigits = normalizePhoneDigits(auth?.phone);
   const phoneLast11 = phoneDigits.length > 11 ? phoneDigits.slice(-11) : phoneDigits;
-  const emailNorm = String(auth?.email || "").trim().toLowerCase();
+  const emailNorm = normalizeEmail(auth?.email);
 
   if (!phoneDigits && !emailNorm) return false;
 
-  const hit = await prisma.superAdminWhitelist.findFirst({
-    where: {
-      isActive: true,
-      OR: [
-        emailNorm ? { email: { equals: emailNorm, mode: "insensitive" } } : undefined,
-        phoneDigits ? { phone: phoneDigits } : undefined,
-        phoneLast11 ? { phone: phoneLast11 } : undefined,
-      ].filter(Boolean),
-    },
-    select: { id: true },
+  // Use SuperAdminWhitelist only if table has rows; otherwise use ADMIN_EMAILS/ADMIN_PHONES
+  const whitelistCount = await prisma.superAdminWhitelist.count({
+    where: { isActive: true },
   });
 
-  if (hit) return true;
+  if (whitelistCount > 0) {
+    const hit = await prisma.superAdminWhitelist.findFirst({
+      where: {
+        isActive: true,
+        OR: [
+          emailNorm ? { email: { equals: emailNorm, mode: "insensitive" } } : undefined,
+          phoneDigits ? { phone: phoneDigits } : undefined,
+          phoneLast11 ? { phone: phoneLast11 } : undefined,
+        ].filter(Boolean),
+      },
+      select: { id: true },
+    });
+    return Boolean(hit);
+  }
 
-  // 🚑 Emergency fallback (optional): old env allowlists
-  // Keep this for dev/ops rescue only. Remove later if you want strict DB-only.
+  // Env fallback when SuperAdminWhitelist is empty
   const allowIds = String(process.env.ADMIN_USER_IDS || "")
     .split(",")
     .map((x) => Number(String(x).trim()))
     .filter(Boolean);
   if (allowIds.includes(Number(userId))) return true;
 
-  const allowPhones = String(process.env.ADMIN_PHONES || "")
-    .split(",")
-    .map((x) => normalizePhoneDigits(x))
-    .filter(Boolean);
-  const allowEmails = String(process.env.ADMIN_EMAILS || "")
-    .split(",")
-    .map((x) => String(x || "").trim().toLowerCase())
-    .filter(Boolean);
+  const allowPhones = parseAdminPhones();
+  const allowEmails = parseAdminEmails();
 
   if (allowPhones.length && phoneDigits && allowPhones.includes(phoneDigits)) return true;
   if (allowPhones.length && phoneLast11 && allowPhones.includes(phoneLast11)) return true;

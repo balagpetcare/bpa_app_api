@@ -77,8 +77,20 @@ async function verifyCredentials(params: {
   return { authRow, user: authRow.user };
 }
 
+function normalizeEmail(v: string | null | undefined): string {
+  return String(v || "").trim().toLowerCase();
+}
+
+function parseAdminEmailsEnv(): string[] {
+  return String(process.env.ADMIN_EMAILS || "")
+    .split(",")
+    .map((x) => normalizeEmail(x))
+    .filter(Boolean);
+}
+
 /**
- * Check if user is allowed admin access (SuperAdminWhitelist or env fallback).
+ * Check if user is allowed admin access.
+ * Uses SuperAdminWhitelist only when table has rows; otherwise ADMIN_EMAILS/ADMIN_PHONES.
  */
 async function isAdminAllowed(userId: number): Promise<boolean> {
   const auth = await db.userAuth.findUnique({
@@ -88,21 +100,28 @@ async function isAdminAllowed(userId: number): Promise<boolean> {
 
   const phoneDigits = normalizePhoneDigits(auth?.phone);
   const phoneLast11 = phoneDigits.length > 11 ? phoneDigits.slice(-11) : phoneDigits;
-  const emailNorm = String(auth?.email || "").trim().toLowerCase();
+  const emailNorm = normalizeEmail(auth?.email);
 
-  const hit = await db.superAdminWhitelist.findFirst({
-    where: {
-      isActive: true,
-      OR: [
-        emailNorm ? { email: { equals: emailNorm, mode: "insensitive" } } : undefined,
-        phoneDigits ? { phone: phoneDigits } : undefined,
-        phoneLast11 ? { phone: phoneLast11 } : undefined,
-      ].filter(Boolean) as any[],
-    },
-    select: { id: true },
+  if (!phoneDigits && !emailNorm) return false;
+
+  const whitelistCount = await db.superAdminWhitelist.count({
+    where: { isActive: true },
   });
 
-  if (hit) return true;
+  if (whitelistCount > 0) {
+    const hit = await db.superAdminWhitelist.findFirst({
+      where: {
+        isActive: true,
+        OR: [
+          emailNorm ? { email: { equals: emailNorm, mode: "insensitive" } } : undefined,
+          phoneDigits ? { phone: phoneDigits } : undefined,
+          phoneLast11 ? { phone: phoneLast11 } : undefined,
+        ].filter(Boolean) as any[],
+      },
+      select: { id: true },
+    });
+    return Boolean(hit);
+  }
 
   const allowIds = String(process.env.ADMIN_USER_IDS || "")
     .split(",")
@@ -114,10 +133,7 @@ async function isAdminAllowed(userId: number): Promise<boolean> {
     .split(",")
     .map((x) => normalizePhoneDigits(x))
     .filter(Boolean);
-  const allowEmails = String(process.env.ADMIN_EMAILS || "")
-    .split(",")
-    .map((x) => String(x || "").trim().toLowerCase())
-    .filter(Boolean);
+  const allowEmails = parseAdminEmailsEnv();
 
   if (allowPhones.length && phoneDigits && allowPhones.includes(phoneDigits)) return true;
   if (allowPhones.length && phoneLast11 && allowPhones.includes(phoneLast11)) return true;
@@ -153,7 +169,8 @@ async function resolveAuthContexts(userId: number): Promise<AuthContext[]> {
   });
   const kycApproved =
     ownerKyc && ["VERIFIED", "APPROVED"].includes(String(ownerKyc.verificationStatus || "").toUpperCase());
-  if (ownerProfile || ownedOrgs.length > 0 || kycApproved) {
+  // Grant OWNER context if user has OwnerProfile, owned orgs, approved KYC, or any OwnerKyc row (draft/submitted)
+  if (ownerProfile || ownedOrgs.length > 0 || kycApproved || ownerKyc) {
     const scopeId = ownedOrgs[0]?.id ?? ownerProfile?.id ?? null;
     contexts.push({ role: "OWNER", scopeType: "OWNER", scopeId, status: "ACTIVE" });
   }

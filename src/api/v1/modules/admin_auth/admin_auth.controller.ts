@@ -39,12 +39,13 @@ exports.login = async (req, res) => {
     const { authRow, user, contexts, default_redirect } = result;
     const token = jwt.sign({ id: user.id }, appConfig.jwt.secret, { expiresIn: "7d" });
 
+    const isProd = String(process.env.NODE_ENV || "development") === "production";
     res.cookie("access_token", token, {
       httpOnly: true,
-      sameSite: "lax",
-      secure: String(process.env.NODE_ENV || "development") === "production",
-      maxAge: 30 * 24 * 60 * 60 * 1000,
       path: "/",
+      sameSite: "lax",
+      secure: isProd, // false in dev so cookie works over http
+      maxAge: 30 * 24 * 60 * 60 * 1000,
       domain: process.env.COOKIE_DOMAIN || "localhost",
     });
 
