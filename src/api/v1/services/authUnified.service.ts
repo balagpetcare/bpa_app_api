@@ -48,11 +48,19 @@ async function verifyCredentials(params: {
     throw Object.assign(new Error("password is required"), { statusCode: 400 });
   }
 
+  const phoneConditions: any[] = [];
+  if (phoneNorm) {
+    phoneConditions.push({ phone: phoneNorm });
+    if (phoneNorm.length >= 11 && phoneNorm.startsWith("880")) {
+      phoneConditions.push({ phone: phoneNorm.slice(-11) }); // BD: 8801777889994 → 01777889994
+    }
+  }
+
   const authRow = await db.userAuth.findFirst({
     where: {
       OR: [
         emailNorm ? { email: { equals: emailNorm, mode: "insensitive" } } : undefined,
-        phoneNorm ? { phone: phoneNorm } : undefined,
+        ...phoneConditions,
       ].filter(Boolean) as any[],
     },
     include: {
@@ -90,7 +98,8 @@ function parseAdminEmailsEnv(): string[] {
 
 /**
  * Check if user is allowed admin access.
- * Uses SuperAdminWhitelist only when table has rows; otherwise ADMIN_EMAILS/ADMIN_PHONES.
+ * Uses SuperAdminWhitelist when table has rows; otherwise ADMIN_EMAILS/ADMIN_PHONES.
+ * Also tries env fallback when DB has rows but no match (format mismatch / stale data).
  */
 async function isAdminAllowed(userId: number): Promise<boolean> {
   const auth = await db.userAuth.findUnique({
@@ -101,6 +110,12 @@ async function isAdminAllowed(userId: number): Promise<boolean> {
   const phoneDigits = normalizePhoneDigits(auth?.phone);
   const phoneLast11 = phoneDigits.length > 11 ? phoneDigits.slice(-11) : phoneDigits;
   const emailNorm = normalizeEmail(auth?.email);
+
+  const allowEmails = parseAdminEmailsEnv();
+  const allowPhones = String(process.env.ADMIN_PHONES || "")
+    .split(",")
+    .map((x) => normalizePhoneDigits(x))
+    .filter(Boolean);
 
   if (!phoneDigits && !emailNorm) return false;
 
@@ -120,20 +135,15 @@ async function isAdminAllowed(userId: number): Promise<boolean> {
       },
       select: { id: true },
     });
-    return Boolean(hit);
+    if (hit) return true;
   }
 
+  // Env fallback (when whitelist empty OR when DB had no match)
   const allowIds = String(process.env.ADMIN_USER_IDS || "")
     .split(",")
     .map((x) => Number(String(x).trim()))
     .filter(Boolean);
   if (allowIds.includes(Number(userId))) return true;
-
-  const allowPhones = String(process.env.ADMIN_PHONES || "")
-    .split(",")
-    .map((x) => normalizePhoneDigits(x))
-    .filter(Boolean);
-  const allowEmails = parseAdminEmailsEnv();
 
   if (allowPhones.length && phoneDigits && allowPhones.includes(phoneDigits)) return true;
   if (allowPhones.length && phoneLast11 && allowPhones.includes(phoneLast11)) return true;
