@@ -13,11 +13,8 @@ require("dotenv").config();
 const { S3Client, CreateBucketCommand, PutBucketPolicyCommand, HeadBucketCommand } = require("@aws-sdk/client-s3");
 const appConfig = require("../src/config/appConfig");
 
-// Use localhost when running from host machine (not in Docker)
-// If endpoint contains 'bpa-storage', replace with localhost
-const endpoint = appConfig.storage.endpoint?.includes('bpa-storage') 
-  ? appConfig.storage.endpoint.replace('bpa-storage', 'localhost')
-  : (process.env.AWS_ENDPOINT || appConfig.storage.endpoint || "http://localhost:9000");
+// Use appConfig endpoint as-is (bpa-storage:9000 in Docker, localhost:9000 when run from host with matching .env)
+const endpoint = appConfig.storage.endpoint || "http://localhost:9000";
 
 const s3Client = new S3Client({
   region: appConfig.storage.region,
@@ -45,43 +42,65 @@ const publicReadPolicy = {
   ],
 };
 
+async function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function isRetryableError(error: any): boolean {
+  const code = error?.code || error?.name;
+  return (
+    code === "ECONNREFUSED" ||
+    code === "ENOTFOUND" ||
+    code === "ETIMEDOUT" ||
+    code === "NetworkingError" ||
+    (error?.$metadata?.httpStatusCode >= 500 && error?.$metadata?.httpStatusCode < 600)
+  );
+}
+
 async function initMinIO() {
-  try {
-    console.log(`\n🔧 Initializing MinIO bucket: ${bucketName}`);
-    console.log(`📍 Endpoint: ${endpoint}\n`);
+  const maxAttempts = 5;
+  const delayMs = 3000;
 
-    // Check if bucket exists
-    let bucketExists = false;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      await s3Client.send(new HeadBucketCommand({ Bucket: bucketName }));
-      bucketExists = true;
-      console.log(`✅ Bucket "${bucketName}" already exists`);
-    } catch (error: any) {
-      if (error.name === "NotFound" || error.$metadata?.httpStatusCode === 404) {
-        console.log(`📦 Bucket "${bucketName}" does not exist, creating...`);
-        bucketExists = false;
-      } else {
-        throw error;
-      }
-    }
+      console.log(`\n🔧 Initializing MinIO bucket: ${bucketName} (attempt ${attempt}/${maxAttempts})`);
+      console.log(`📍 Endpoint: ${endpoint}\n`);
 
-    // Create bucket if it doesn't exist
-    if (!bucketExists) {
+      // Check if bucket exists
+      let bucketExists = false;
       try {
-        await s3Client.send(new CreateBucketCommand({ Bucket: bucketName }));
-        console.log(`✅ Bucket "${bucketName}" created successfully`);
+        await s3Client.send(new HeadBucketCommand({ Bucket: bucketName }));
+        bucketExists = true;
+        console.log(`✅ Bucket "${bucketName}" already exists`);
       } catch (error: any) {
-        if (error.name === "BucketAlreadyOwnedByYou") {
-          console.log(`✅ Bucket "${bucketName}" already exists (owned by you)`);
+        if (error.name === "NotFound" || error.$metadata?.httpStatusCode === 404) {
+          console.log(`📦 Bucket "${bucketName}" does not exist, creating...`);
+          bucketExists = false;
+        } else if (isRetryableError(error)) {
+          throw error;
         } else {
           throw error;
         }
       }
-    }
 
-    // Set public read policy
-    console.log(`\n🔓 Setting public read policy on bucket "${bucketName}"...`);
-    try {
+      // Create bucket if it doesn't exist
+      if (!bucketExists) {
+        try {
+          await s3Client.send(new CreateBucketCommand({ Bucket: bucketName }));
+          console.log(`✅ Bucket "${bucketName}" created successfully`);
+        } catch (error: any) {
+          if (error.name === "BucketAlreadyOwnedByYou") {
+            console.log(`✅ Bucket "${bucketName}" already exists (owned by you)`);
+          } else if (isRetryableError(error)) {
+            throw error;
+          } else {
+            throw error;
+          }
+        }
+      }
+
+      // Set public read policy
+      console.log(`\n🔓 Setting public read policy on bucket "${bucketName}"...`);
       await s3Client.send(
         new PutBucketPolicyCommand({
           Bucket: bucketName,
@@ -89,21 +108,24 @@ async function initMinIO() {
         })
       );
       console.log(`✅ Public read policy applied successfully`);
-    } catch (error: any) {
-      console.error(`❌ Failed to set bucket policy:`, error.message);
-      throw error;
-    }
 
-    console.log(`\n✨ MinIO initialization complete!`);
-    console.log(`\n📝 Files can now be accessed via:`);
-    console.log(`   ${appConfig.storage.publicUrl || appConfig.storage.endpoint}/${bucketName}/<key>\n`);
-  } catch (error: any) {
-    console.error(`\n❌ Error initializing MinIO:`, error.message);
-    if (error.$metadata) {
-      console.error(`   Status Code: ${error.$metadata.httpStatusCode}`);
-      console.error(`   Request ID: ${error.$metadata.requestId}`);
+      console.log(`\n✨ MinIO initialization complete!`);
+      console.log(`\n📝 Files can now be accessed via:`);
+      console.log(`   ${appConfig.storage.publicUrl || appConfig.storage.endpoint}/${bucketName}/<key>\n`);
+      return;
+    } catch (error: any) {
+      if (isRetryableError(error) && attempt < maxAttempts) {
+        console.warn(`⚠️ MinIO not ready (${error?.code || error?.message}), retrying in ${delayMs / 1000}s...`);
+        await sleep(delayMs);
+      } else {
+        console.error(`\n❌ Error initializing MinIO:`, error?.message || error);
+        if (error?.$metadata) {
+          console.error(`   Status Code: ${error.$metadata.httpStatusCode}`);
+          console.error(`   Request ID: ${error.$metadata.requestId}`);
+        }
+        process.exit(1);
+      }
     }
-    process.exit(1);
   }
 }
 

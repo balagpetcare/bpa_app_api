@@ -16,6 +16,12 @@ export type CreateNotificationInput = {
   expiresAt?: Date | null;
   recipientScopeType?: "USER" | "ORG" | "BRANCH" | "ROLE" | null;
   recipientScopeId?: string | null;
+  /** Global Notification Center: org/branch scope */
+  orgId?: number | null;
+  branchId?: number | null;
+  severity?: "info" | "warn" | "error" | "success" | null;
+  source?: string | null; // module: auth|clinic|order|producer|wallet|branch_access|etc.
+  senderId?: number | null;
 };
 
 /**
@@ -35,6 +41,11 @@ export async function createNotification(input: CreateNotificationInput) {
     expiresAt = null,
     recipientScopeType = null,
     recipientScopeId = null,
+    orgId = null,
+    branchId = null,
+    severity = null,
+    source = null,
+    senderId = null,
   } = input;
 
   if (dedupeKey) {
@@ -73,6 +84,11 @@ export async function createNotification(input: CreateNotificationInput) {
       expiresAt: expiresAt ?? undefined,
       recipientScopeType: recipientScopeType ?? undefined,
       recipientScopeId: recipientScopeId ?? undefined,
+      orgId: orgId ?? undefined,
+      branchId: branchId ?? undefined,
+      severity: severity ?? undefined,
+      source: source ?? undefined,
+      senderId: senderId ?? undefined,
     },
   });
 
@@ -90,6 +106,27 @@ export async function createNotification(input: CreateNotificationInput) {
     publishNotificationToUser(userId, { event: "notification:new", data: { notificationId: notification.id } });
   } catch (_) {
     // realtime optional
+  }
+  try {
+    const { emitNotificationNew } = require("../../../realtime/socketio.gateway");
+    emitNotificationNew(userId, {
+      notification: {
+        id: notification.id,
+        type: notification.type,
+        title: notification.title,
+        message: notification.message,
+        priority: notification.priority,
+        actionUrl: notification.actionUrl,
+        readAt: notification.readAt,
+        createdAt: notification.createdAt,
+        severity: notification.severity,
+        source: notification.source,
+        orgId: notification.orgId,
+        branchId: notification.branchId,
+      },
+    });
+  } catch (_) {
+    // socket.io optional
   }
 
   if (priority === "P0" || priority === "P1") {
@@ -169,4 +206,77 @@ async function enqueueEmailSmsIfAllowed(
     });
     await enqueueSmsJob({ ...payload, channel: "SMS", toAddress: user.auth.phone });
   }
+}
+
+/** Payload for notifyUser / notifyRole / notifyMany */
+export type NotificationPayload = Omit<CreateNotificationInput, "userId"> & {
+  type: NotificationType;
+  title: string;
+  message: string;
+};
+
+/**
+ * Notify a single user. Wrapper around createNotification.
+ * @see createNotification
+ */
+export async function notifyUser(
+  userId: number,
+  payload: NotificationPayload
+): Promise<{ notification: any; created: boolean }> {
+  return createNotification({ ...payload, userId });
+}
+
+/**
+ * Notify users with a given role in org/branch (Owner or BRANCH_MANAGER).
+ * Resolves userIds from BranchMember/Organization and creates one notification per user.
+ */
+export async function notifyRole(
+  orgId: number,
+  branchId: number | null,
+  role: "OWNER" | "BRANCH_MANAGER",
+  payload: NotificationPayload
+): Promise<Array<{ userId: number; created: boolean }>> {
+  const userIds: number[] = [];
+  if (role === "OWNER") {
+    const org = await prisma.organization.findUnique({
+      where: { id: orgId },
+      select: { ownerUserId: true },
+    });
+    if (org?.ownerUserId) userIds.push(org.ownerUserId);
+  } else if (role === "BRANCH_MANAGER" && branchId) {
+    const members = await prisma.branchMember.findMany({
+      where: { branchId, role: "BRANCH_MANAGER", status: "ACTIVE" },
+      select: { userId: true },
+    });
+    userIds.push(...members.map((m) => m.userId));
+  }
+  const results: Array<{ userId: number; created: boolean }> = [];
+  for (const uid of userIds) {
+    const res = await createNotification({
+      ...payload,
+      userId: uid,
+      orgId: payload.orgId ?? orgId,
+      branchId: payload.branchId ?? branchId,
+    }).catch(() => ({ notification: null, created: false }));
+    results.push({ userId: uid, created: (res as any).created ?? false });
+  }
+  return results;
+}
+
+/**
+ * Notify multiple users. Creates one notification per userId.
+ */
+export async function notifyMany(
+  userIds: number[],
+  payload: NotificationPayload
+): Promise<Array<{ userId: number; created: boolean }>> {
+  const results: Array<{ userId: number; created: boolean }> = [];
+  for (const uid of [...new Set(userIds)]) {
+    const res = await createNotification({ ...payload, userId: uid }).catch(() => ({
+      notification: null,
+      created: false,
+    }));
+    results.push({ userId: uid, created: (res as any).created ?? false });
+  }
+  return results;
 }

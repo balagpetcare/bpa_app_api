@@ -23,6 +23,7 @@ import {
   notifyStaffOfApproval,
   notifyStaffOfRevocation,
   notifyOwnerOfAccessRequest,
+  notifyStaffOfRequestSubmitted,
 } from "../../services/branchAccessNotification.service";
 
 function getAuthUserId(req: any): number | null {
@@ -56,7 +57,7 @@ export async function requestAccess(req: Request, res: Response, next: NextFunct
     const normalizedRole = requestedRole ? String(requestedRole).toUpperCase() : undefined;
     const permission = await requestBranchAccess(userId, Number(branchId), normalizedRole);
 
-    // If this is a new pending request, notify manager
+    // If this is a new pending request, notify manager, owner, and send staff confirmation
     if (permission.status === "PENDING" && permission.requestedAt) {
       // Check if this was just created (not updated from another status)
       const isNewRequest = new Date(permission.requestedAt).getTime() > Date.now() - 5000;
@@ -66,6 +67,9 @@ export async function requestAccess(req: Request, res: Response, next: NextFunct
         });
         notifyOwnerOfAccessRequest(Number(branchId), userId, permission.id).catch((err) => {
           console.error("[CONTROLLER] Failed to notify owner:", err);
+        });
+        notifyStaffOfRequestSubmitted(userId, Number(branchId)).catch((err) => {
+          console.error("[CONTROLLER] Failed to send staff confirmation:", err);
         });
       }
     }

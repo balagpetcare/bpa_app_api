@@ -83,5 +83,11 @@ try {
 } catch (e) {
   console.warn("[Realtime] Gateway attach failed", e?.message || e);
 }
+try {
+  const { attachSocketIO } = require("./realtime/socketio.gateway");
+  attachSocketIO(server);
+} catch (e) {
+  console.warn("[Socket.IO] Attach failed", e?.message || e);
+}
 
 export {};

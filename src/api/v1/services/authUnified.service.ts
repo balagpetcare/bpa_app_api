@@ -90,9 +90,18 @@ function normalizeEmail(v: string | null | undefined): string {
 }
 
 function parseAdminEmailsEnv(): string[] {
-  return String(process.env.ADMIN_EMAILS || "")
+  const raw = process.env.ADMIN_EMAILS || process.env.SUPER_ADMIN_WHITELIST_EMAILS || "";
+  return String(raw)
     .split(",")
     .map((x) => normalizeEmail(x))
+    .filter(Boolean);
+}
+
+function parseAdminPhonesEnv(): string[] {
+  const raw = process.env.ADMIN_PHONES || process.env.SUPER_ADMIN_WHITELIST_PHONES || "";
+  return String(raw)
+    .split(",")
+    .map((x) => normalizePhoneDigits(x))
     .filter(Boolean);
 }
 
@@ -112,10 +121,7 @@ async function isAdminAllowed(userId: number): Promise<boolean> {
   const emailNorm = normalizeEmail(auth?.email);
 
   const allowEmails = parseAdminEmailsEnv();
-  const allowPhones = String(process.env.ADMIN_PHONES || "")
-    .split(",")
-    .map((x) => normalizePhoneDigits(x))
-    .filter(Boolean);
+  const allowPhones = parseAdminPhonesEnv();
 
   if (!phoneDigits && !emailNorm) return false;
 

@@ -51,6 +51,13 @@ function getFallbackTemplate(templateName: string, variables: Record<string, str
   const expiresAt = variables.expiresAt || "";
 
   switch (templateName) {
+    case "branchAccessRequestConfirmation":
+      return `
+        <h2>Access Request Submitted</h2>
+        <p>Hi ${variables.staffName || "Staff"},</p>
+        <p>Your request to access <strong>${variables.branchName || "Branch"}</strong> (${variables.orgName || "Organization"}) has been submitted and is pending approval.</p>
+        <p>You will be notified by email once an owner or manager approves or rejects your request.</p>
+      `;
     case "branchAccessRequest":
       return `
         <h2>Branch Access Request</h2>
@@ -77,6 +84,50 @@ function getFallbackTemplate(templateName: string, variables: Record<string, str
       `;
     default:
       return `<p>${variables.message || "Notification"}</p>`;
+  }
+}
+
+/**
+ * Send confirmation email to staff when they submit an access request
+ */
+export async function notifyStaffOfRequestSubmitted(staffUserId: number, branchId: number) {
+  try {
+    const staff = await prisma.user.findUnique({
+      where: { id: staffUserId },
+      include: {
+        profile: { select: { displayName: true } },
+        auth: { select: { email: true } },
+      },
+    });
+    const branch = await prisma.branch.findUnique({
+      where: { id: branchId },
+      include: { org: { select: { name: true } } },
+    });
+    if (!staff?.auth?.email || !branch) return { success: true };
+
+    const staffName = staff.profile?.displayName || staff.auth?.email || "Staff";
+    const branchName = branch.name;
+    const orgName = branch.org?.name || "Organization";
+
+    const html = loadEmailTemplate("branchAccessRequestConfirmation", {
+      staffName,
+      branchName,
+      orgName,
+    });
+
+    if (isSmtpEnabled()) {
+      await sendMail({
+        to: staff.auth.email,
+        subject: `Access Request Submitted: ${branchName}`,
+        html,
+      });
+    } else {
+      console.log("[NOTIFICATION] Confirmation email would be sent to staff:", staff.auth.email);
+    }
+    return { success: true };
+  } catch (error) {
+    console.error("[NOTIFICATION] Error sending staff confirmation:", error);
+    return { success: false, error: String(error) };
   }
 }
 
@@ -164,6 +215,10 @@ export async function notifyManagerOfAccessRequest(branchId: number, staffUserId
         priority: "P1",
         actionUrl: "/owner/staff-access",
         dedupeKey: `access_request:${branchId}:${staffUserId}:${member.userId}`,
+        orgId: branch.org.id,
+        branchId,
+        severity: "info",
+        source: "branch_access",
       }).catch((err) => console.error("[NOTIFICATION] createNotification manager:", err?.message));
     }
 
@@ -264,6 +319,10 @@ export async function notifyOwnerOfAccessRequest(branchId: number, staffUserId: 
       priority: "P1",
       actionUrl: "/owner/access/requests",
       dedupeKey: `access_request_owner:${branchId}:${staffUserId}`,
+      orgId: branch.org.id,
+      branchId,
+      severity: "info",
+      source: "branch_access",
     }).catch((err) => console.error("[NOTIFICATION] createNotification owner:", err?.message));
 
     // Send email to Owner
@@ -362,8 +421,12 @@ export async function notifyStaffOfApproval(userId: number, branchId: number) {
       message: `Your access to ${branchName} has been approved`,
       meta: { branchId, branchName, orgName, expiresAt: permission.expiresAt },
       priority: "P1",
-      actionUrl: "/staff/branches",
+      actionUrl: "/staff/branch",
       dedupeKey: `access_approved:${permission.id}`,
+      orgId: permission.branch.orgId,
+      branchId,
+      severity: "success",
+      source: "branch_access",
     }).catch((err) => console.error("[NOTIFICATION] createNotification approval:", err?.message));
 
     // Send email

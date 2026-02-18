@@ -13,23 +13,38 @@ function getAuthUserId(req: any): number | null {
 }
 
 /**
- * GET /api/v1/notifications?limit=20&cursor=
+ * GET /api/v1/notifications?scope=dropdown|page&limit=20&cursor=&type=&branchId=&priority=&from=&to=&unread=
  * List notifications for current user with cursor pagination.
+ * scope=dropdown: limit 20, quick load. scope=page: full paged list.
  */
 export async function list(req: Request, res: Response, next: NextFunction) {
   try {
     const userId = getAuthUserId(req as any);
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
 
-    const limit = Math.min(Math.max(1, Number(req.query.limit) || 20), 100);
+    const scope = (req.query.scope as string) || "dropdown";
+    const limit = scope === "page"
+      ? Math.min(Math.max(1, Number(req.query.limit) || 50), 100)
+      : Math.min(Math.max(1, Number(req.query.limit) || 20), 100);
     const cursor = req.query.cursor as string | undefined;
     const cursorId = cursor ? parseInt(cursor, 10) : undefined;
     const unreadOnly = String(req.query.unread || "").toLowerCase() === "1" || req.query.unread === "true";
+    const typeFilter = req.query.type as string | undefined;
+    const branchIdFilter = req.query.branchId ? Number(req.query.branchId) : undefined;
+    const priorityFilter = req.query.priority as string | undefined;
+    const fromDate = req.query.from ? new Date(req.query.from as string) : undefined;
+    const toDate = req.query.to ? new Date(req.query.to as string) : undefined;
 
-    const where: any = { userId };
+    const where: any = { userId, status: "ACTIVE" };
     if (unreadOnly) where.readAt = null;
-    if (cursorId && Number.isFinite(cursorId)) {
-      where.id = { lt: cursorId };
+    if (cursorId && Number.isFinite(cursorId)) where.id = { lt: cursorId };
+    if (typeFilter) where.type = typeFilter;
+    if (branchIdFilter && Number.isFinite(branchIdFilter)) where.branchId = branchIdFilter;
+    if (priorityFilter) where.priority = priorityFilter;
+    if ((fromDate && !isNaN(fromDate.getTime())) || (toDate && !isNaN(toDate.getTime()))) {
+      where.createdAt = {};
+      if (fromDate && !isNaN(fromDate.getTime())) (where.createdAt as any).gte = fromDate;
+      if (toDate && !isNaN(toDate.getTime())) (where.createdAt as any).lte = toDate;
     }
 
     const notifications = await prisma.notification.findMany({
@@ -48,6 +63,12 @@ export async function list(req: Request, res: Response, next: NextFunction) {
         readAt: true,
         createdAt: true,
         expiresAt: true,
+        severity: true,
+        source: true,
+        orgId: true,
+        branchId: true,
+        senderId: true,
+        sender: { select: { id: true, profile: { select: { displayName: true } } } },
       },
     });
 
@@ -111,8 +132,47 @@ export async function markRead(req: Request, res: Response, next: NextFunction) 
       create: { notificationId: id, userId },
       update: {},
     });
-
+    try {
+      const { emitUnreadCount } = require("../../../../realtime/socketio.gateway");
+      const count = await prisma.notification.count({ where: { userId, readAt: null, status: "ACTIVE" } });
+      emitUnreadCount(userId, count);
+    } catch (_) {}
     return res.json({ success: true });
+  } catch (err) {
+    return next(err);
+  }
+}
+
+/**
+ * GET /api/v1/notifications/count
+ * Alias for unread-count. Returns { count: number }.
+ */
+export async function count(req: Request, res: Response, next: NextFunction) {
+  return unreadCount(req, res, next);
+}
+
+/**
+ * POST /api/v1/notifications/mark-read
+ * Body: { ids: number[] } - mark specific notifications as read.
+ */
+export async function markReadBulk(req: Request, res: Response, next: NextFunction) {
+  try {
+    const userId = getAuthUserId(req as any);
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.map((x: any) => Number(x)).filter(Number.isFinite) : [];
+    if (ids.length === 0) return res.json({ success: true, data: { updated: 0 } });
+
+    const updated = await prisma.notification.updateMany({
+      where: { id: { in: ids }, userId },
+      data: { readAt: new Date() },
+    });
+    try {
+      const { emitUnreadCount } = require("../../../../realtime/socketio.gateway");
+      const count = await prisma.notification.count({ where: { userId, readAt: null, status: "ACTIVE" } });
+      emitUnreadCount(userId, count);
+    } catch (_) {}
+    return res.json({ success: true, data: { updated: updated.count } });
   } catch (err) {
     return next(err);
   }
@@ -130,7 +190,10 @@ export async function readAll(req: Request, res: Response, next: NextFunction) {
       where: { userId, readAt: null },
       data: { readAt: new Date() },
     });
-
+    try {
+      const { emitUnreadCount } = require("../../../../realtime/socketio.gateway");
+      emitUnreadCount(userId, 0);
+    } catch (_) {}
     return res.json({ success: true, data: { updated: updated.count } });
   } catch (err) {
     return next(err);
@@ -175,6 +238,7 @@ export async function putSettings(req: Request, res: Response, next: NextFunctio
     const body = req.body || {};
     const allowEmail = body.allowEmail !== undefined ? Boolean(body.allowEmail) : undefined;
     const allowSms = body.allowSms !== undefined ? Boolean(body.allowSms) : undefined;
+    const soundEnabled = body.soundEnabled !== undefined ? Boolean(body.soundEnabled) : undefined;
     const quietHoursStart = body.quietHoursStart !== undefined ? (Number(body.quietHoursStart) || null) : undefined;
     const quietHoursEnd = body.quietHoursEnd !== undefined ? (Number(body.quietHoursEnd) || null) : undefined;
     const enabledTypes = body.enabledTypes !== undefined ? body.enabledTypes : undefined;
@@ -185,6 +249,7 @@ export async function putSettings(req: Request, res: Response, next: NextFunctio
         userId,
         allowEmail: allowEmail ?? true,
         allowSms: allowSms ?? false,
+        soundEnabled: soundEnabled ?? true,
         quietHoursStart: quietHoursStart ?? null,
         quietHoursEnd: quietHoursEnd ?? null,
         enabledTypes: enabledTypes ?? undefined,
@@ -192,6 +257,7 @@ export async function putSettings(req: Request, res: Response, next: NextFunctio
       update: {
         ...(allowEmail !== undefined && { allowEmail }),
         ...(allowSms !== undefined && { allowSms }),
+        ...(soundEnabled !== undefined && { soundEnabled }),
         ...(quietHoursStart !== undefined && { quietHoursStart }),
         ...(quietHoursEnd !== undefined && { quietHoursEnd }),
         ...(enabledTypes !== undefined && { enabledTypes }),
@@ -199,6 +265,91 @@ export async function putSettings(req: Request, res: Response, next: NextFunctio
     });
 
     return res.json({ success: true, data: prefs });
+  } catch (err) {
+    return next(err);
+  }
+}
+
+/**
+ * GET /api/v1/notifications/analytics?range=7d|30d|custom&from=&to=
+ * Returns counts by type, priority, and unread trend.
+ */
+export async function analytics(req: Request, res: Response, next: NextFunction) {
+  try {
+    const userId = getAuthUserId(req as any);
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+
+    const range = (req.query.range as string) || "7d";
+    let from: Date;
+    const to = new Date();
+    if (range === "30d") {
+      from = new Date();
+      from.setDate(from.getDate() - 30);
+    } else if (range === "custom" && req.query.from) {
+      from = new Date(req.query.from as string);
+      if (isNaN(from.getTime())) from = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    } else {
+      from = new Date();
+      from.setDate(from.getDate() - 7);
+    }
+
+    const where = { userId, status: "ACTIVE", createdAt: { gte: from, lte: to } };
+
+    const [byType, byPriority, unreadCount] = await Promise.all([
+      prisma.notification.groupBy({
+        by: ["type"],
+        where,
+        _count: { id: true },
+      }),
+      prisma.notification.groupBy({
+        by: ["priority"],
+        where,
+        _count: { id: true },
+      }),
+      prisma.notification.count({
+        where: { userId, readAt: null, status: "ACTIVE" },
+      }),
+    ]);
+
+    return res.json({
+      success: true,
+      data: {
+        range: { from: from.toISOString(), to: to.toISOString() },
+        byType: byType.map((x) => ({ type: x.type, count: x._count.id })),
+        byPriority: byPriority.map((x) => ({ priority: x.priority, count: x._count.id })),
+        unreadCount,
+      },
+    });
+  } catch (err) {
+    return next(err);
+  }
+}
+
+/**
+ * POST /api/v1/notifications/test (dev only)
+ * Creates a test notification for the current user.
+ */
+export async function testCreate(req: Request, res: Response, next: NextFunction) {
+  try {
+    if (process.env.NODE_ENV === "production") {
+      return res.status(403).json({ success: false, message: "Test endpoint disabled in production" });
+    }
+    const userId = getAuthUserId(req as any);
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+
+    const { createNotification } = require("../../services/notification.service");
+    const body = req.body || {};
+    const { notification } = await createNotification({
+      userId,
+      type: body.type || "SYSTEM",
+      title: body.title || "Test notification",
+      message: body.message || "This is a test notification from the API.",
+      priority: body.priority || "P2",
+      actionUrl: body.actionUrl || null,
+      source: "test",
+      severity: "info",
+    });
+    return res.json({ success: true, data: { notification } });
   } catch (err) {
     return next(err);
   }

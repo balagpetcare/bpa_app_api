@@ -215,13 +215,24 @@ async function submit(req: any, res: any) {
         select: { ownerUserId: true },
       });
       if (org?.ownerUserId) {
+        const branch = await db.branch.findUnique({
+          where: { id: existing.branchId },
+          select: { name: true },
+        });
         await createNotification({
           userId: org.ownerUserId,
-          type: "SYSTEM",
+          type: "INVENTORY_STOCK_REQUEST",
           title: "New stock request",
           message: `Stock request #${id} has been submitted and needs your review.`,
           actionUrl: `/owner/inventory/stock-requests/${id}`,
           dedupeKey: `stock-request:${id}`,
+          branchId: existing.branchId,
+          source: "inventory",
+          meta: {
+            stockRequestId: id,
+            branchId: existing.branchId,
+            branchName: branch?.name ?? `Branch #${existing.branchId}`,
+          },
         });
       }
     } catch (notifErr: any) {

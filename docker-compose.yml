@@ -56,7 +56,7 @@ services:
       dockerfile: Dockerfile
     container_name: bpa_api
     # Ensure DB tables exist before starting API (prevents P2021: table does not exist)
-    command: sh -c "npx prisma generate && npx prisma migrate deploy && npm run dev"
+    command: sh -c "npx prisma generate && npx prisma migrate deploy && npm run minio:init && npm run dev"
     env_file:
       - .env.docker
     ports:

@@ -14,6 +14,10 @@ const {
   getOwnerBranchAccessRequest,
 } = require('../../services/branchAccessPermission.service');
 const {
+  notifyStaffOfApproval,
+  notifyStaffOfRevocation,
+} = require('../../services/branchAccessNotification.service');
+const {
   getEffectiveOrgIdsForOwnerPanel,
   getEffectiveBranchIdsForOwnerPanel,
 } = require('../../services/ownerPanelAccess.service');
@@ -2267,6 +2271,9 @@ exports.approveBranchAccessOwner = async (req, res) => {
     }
 
     const permission = await approveBranchAccess(id, ownerUserId, expiresAt);
+    notifyStaffOfApproval(permission.userId, permission.branchId).catch((err) => {
+      console.error('[owner.controller] notifyStaffOfApproval:', err?.message);
+    });
     return res.json({ success: true, data: permission, message: 'Access approved' });
   } catch (e) {
     return res.status(400).json({ success: false, message: e?.message || 'Failed to approve' });
@@ -2282,6 +2289,9 @@ exports.rejectBranchAccessOwner = async (req, res) => {
     if (!id || !Number.isFinite(id)) return res.status(400).json({ success: false, message: 'Invalid id' });
 
     const permission = await revokeBranchAccess(id, ownerUserId, req.body?.note);
+    notifyStaffOfRevocation(permission.userId, permission.branchId).catch((err) => {
+      console.error('[owner.controller] notifyStaffOfRevocation:', err?.message);
+    });
     return res.json({ success: true, data: permission, message: 'Access rejected' });
   } catch (e) {
     return res.status(400).json({ success: false, message: e?.message || 'Failed to reject' });
