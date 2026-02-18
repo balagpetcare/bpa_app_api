@@ -3533,6 +3533,68 @@ exports.getHubs = async (req, res) => {
   }
 };
 
+/**
+ * GET /api/v1/owner/central-warehouse
+ * Resolve org's central warehouse location(s) — locations with type CENTRAL_WAREHOUSE in owner's branches.
+ */
+exports.getCentralWarehouse = async (req, res) => {
+  try {
+    const prisma = getPrisma(req);
+    const userId = asIntId(req.user?.id || req.auth?.userId);
+    if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+    const branchIds = await getEffectiveBranchIdsForOwnerPanel(prisma, userId);
+    if (branchIds.length === 0) return res.json({ success: true, data: [] });
+    const locations = await prisma.inventoryLocation.findMany({
+      where: { branchId: { in: branchIds }, type: 'CENTRAL_WAREHOUSE', isActive: true },
+      select: {
+        id: true,
+        name: true,
+        code: true,
+        type: true,
+        branchId: true,
+        branch: { select: { id: true, name: true, orgId: true } },
+      },
+      orderBy: [{ branchId: 'asc' }, { id: 'asc' }],
+    });
+    return res.json({ success: true, data: locations });
+  } catch (e) {
+    console.error('getCentralWarehouse error:', e);
+    res.status(500).json({ success: false, message: e?.message || 'Server error' });
+  }
+};
+
+/**
+ * POST /api/v1/owner/central-warehouse
+ * Designate/create a central warehouse location. Body: branchId, name?, code?
+ */
+exports.postCentralWarehouse = async (req, res) => {
+  try {
+    const prisma = getPrisma(req);
+    const userId = asIntId(req.user?.id || req.auth?.userId);
+    if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+    const branchIds = await getEffectiveBranchIdsForOwnerPanel(prisma, userId);
+    if (branchIds.length === 0) return res.status(403).json({ success: false, message: 'No branch access' });
+    const { branchId, name, code } = req.body || {};
+    if (!branchId) return res.status(400).json({ success: false, message: 'branchId is required' });
+    const bid = parseInt(branchId, 10);
+    if (!branchIds.includes(bid)) return res.status(403).json({ success: false, message: 'Branch not accessible' });
+    const location = await prisma.inventoryLocation.create({
+      data: {
+        branchId: bid,
+        type: 'CENTRAL_WAREHOUSE',
+        name: name || 'Central Warehouse',
+        code: code || null,
+        isActive: true,
+      },
+      include: { branch: { select: { id: true, name: true } } },
+    });
+    return res.status(201).json({ success: true, data: location, message: 'Central warehouse location created' });
+  } catch (e) {
+    console.error('postCentralWarehouse error:', e);
+    res.status(400).json({ success: false, message: e?.message || 'Server error' });
+  }
+};
+
 // Dashboard Endpoints
 // ============================================
 

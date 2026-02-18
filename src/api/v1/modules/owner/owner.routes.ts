@@ -193,6 +193,10 @@ router.get('/staff/:id/activity-summary', staffCtrl.getActivitySummary);
 // Hubs (ONLINE_HUB locations for order fulfilment filter)
 router.get('/hubs', ctrl.getHubs);
 
+// Central Warehouse (resolve or designate)
+router.get('/central-warehouse', ctrl.getCentralWarehouse);
+router.post('/central-warehouse', ctrl.postCentralWarehouse);
+
 // Dashboard endpoints
 router.get('/dashboard/metrics', ctrl.getDashboardMetrics);
 router.get('/dashboard/revenue', ctrl.getDashboardRevenue);

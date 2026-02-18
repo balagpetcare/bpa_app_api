@@ -322,6 +322,53 @@ async function dispatch(req: any, res: any) {
 }
 
 /**
+ * POST /api/v1/stock-requests/:id/approve — Owner: approve with partial qty + optional extra items.
+ * Body: approvedItems[{ variantId, approvedQty }], extraItems?[{ variantId, quantity }]
+ */
+async function approve(req: any, res: any) {
+  try {
+    const userId = getUserId(req);
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ success: false, message: "Invalid id" });
+    const { approvedItems, extraItems } = req.body || {};
+    if (!approvedItems?.length && !(extraItems?.length)) {
+      return res.status(400).json({
+        success: false,
+        message: "approvedItems (array) or extraItems (array) is required",
+      });
+    }
+    const existing = await db.stockRequest.findUnique({
+      where: { id },
+      select: { orgId: true },
+    });
+    if (!existing) return res.status(404).json({ success: false, message: "Stock request not found" });
+    const ownedOrg = await db.organization.findFirst({
+      where: { ownerUserId: userId },
+      select: { id: true },
+    });
+    if (ownedOrg?.id !== existing.orgId) {
+      return res.status(403).json({ success: false, message: "Only org owner can approve" });
+    }
+    const request = await service.approveRequest(id, {
+      approvedItems: (approvedItems || []).map((i: any) => ({
+        variantId: Number(i.variantId),
+        approvedQty: Number(i.approvedQty),
+      })),
+      extraItems: (extraItems || []).map((i: any) => ({
+        variantId: Number(i.variantId),
+        quantity: Number(i.quantity),
+      })),
+      approvedByUserId: userId,
+    });
+    return res.status(200).json({ success: true, data: request, message: "Approved" });
+  } catch (e: any) {
+    console.error("stock_requests.approve", e);
+    return res.status(400).json({ success: false, message: e?.message || "Failed to approve" });
+  }
+}
+
+/**
  * POST /api/v1/stock-requests/:id/decline — Owner: decline with reason/source.
  */
 async function decline(req: any, res: any) {
@@ -362,6 +409,7 @@ module.exports = {
   updateItems,
   submit,
   cancel,
+  approve,
   decline,
   dispatch,
 };

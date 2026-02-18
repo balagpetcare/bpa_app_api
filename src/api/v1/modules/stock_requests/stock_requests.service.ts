@@ -278,6 +278,43 @@ async function cancelRequest(requestId: number) {
 }
 
 /**
+ * Owner: approve request (optional partial qty per variant + extra items). Status → OWNER_REVIEW.
+ */
+async function approveRequest(
+  requestId: number,
+  opts: {
+    approvedItems: Array<{ variantId: number; approvedQty: number }>;
+    extraItems?: Array<{ variantId: number; quantity: number }>;
+    approvedByUserId: number;
+  }
+) {
+  const req = await prisma.stockRequest.findUnique({
+    where: { id: requestId },
+    include: { items: true },
+  });
+  if (!req) throw new Error("Stock request not found");
+  if (!["SUBMITTED", "OWNER_REVIEW"].includes(req.status)) {
+    throw new Error(`Request cannot be approved in status ${req.status}`);
+  }
+  const approvedItems = opts.approvedItems ?? [];
+  const extraItems = opts.extraItems ?? [];
+  if (!approvedItems.length && !extraItems.length) {
+    throw new Error("At least one approved item or extra item is required");
+  }
+  await prisma.stockRequest.update({
+    where: { id: requestId },
+    data: {
+      status: "OWNER_REVIEW",
+      approvedItems: approvedItems as any,
+      extraItems: extraItems as any,
+      approvedAt: new Date(),
+      approvedByUserId: opts.approvedByUserId,
+    },
+  });
+  return getRequestById(requestId);
+}
+
+/**
  * Owner: decline a submitted stock request with reason/source (auditable).
  */
 async function declineRequest(
@@ -399,6 +436,7 @@ module.exports = {
   updateRequestItems,
   submitRequest,
   cancelRequest,
+  approveRequest,
   declineRequest,
   fulfillAndDispatch,
   markRequestReceivedIfLinked,

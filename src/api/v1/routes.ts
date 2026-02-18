@@ -155,6 +155,12 @@ router.use("/returns", countryScopeGuard, require("./modules/returns/returns.rou
 // Vendors
 router.use("/vendors", countryScopeGuard, require("./modules/vendors/vendors.routes"));
 
+// GRN (Goods Received Note) - stock-in to location via vendor
+router.use("/grn", countryScopeGuard, require("./modules/grn/grn.routes"));
+
+// Catalog Enable Request (branch asks to enable product/variant for selling)
+router.use("/catalog-requests", countryScopeGuard, require("./modules/catalog_requests/catalog_requests.routes"));
+
 // Pricing
 router.use("/pricing", countryScopeGuard, require("./modules/pricing/pricing.routes"));
 

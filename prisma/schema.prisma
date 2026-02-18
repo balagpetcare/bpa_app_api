@@ -390,6 +390,10 @@ model User {
   productCRRequested ProductChangeRequest[] @relation("ProductCRRequestedBy")
   productCRReviewed  ProductChangeRequest[] @relation("ProductCRReviewedBy")
 
+  grnsReceived             Grn[]                 @relation("GrnReceivedBy")
+  catalogEnableRequestsRequested CatalogEnableRequest[] @relation("CatalogEnableRequestedBy")
+  catalogEnableRequestsReviewed  CatalogEnableRequest[] @relation("CatalogEnableReviewedBy")
+
   // === BPA PATCH: staff invites (token-based) ===
   staffInvitesSent      StaffInvite[]  @relation("StaffInviteInvitedBy")
   staffInvitesAccepted  StaffInvite[]  @relation("StaffInviteAcceptedBy")
@@ -416,6 +420,7 @@ model User {
   stockDiscrepanciesResolved       StockDiscrepancy[]       @relation("StockDiscrepancyResolvedBy")
   stockRequestsRequested          StockRequest[]           @relation("StockRequestRequestedBy")
   stockRequestsDeclined          StockRequest[]           @relation("StockRequestDeclinedBy")
+  stockRequestsApproved          StockRequest[]           @relation("StockRequestApprovedBy")
 
   // === Product Authenticity (MVP) ===
   productVersionsCreated ProductVersion[] @relation("ProductVersionCreatedBy")
@@ -2526,6 +2531,10 @@ model Organization {
   // === Stock Request ===
   stockRequests StockRequest[]
 
+  // === GRN (Goods Received Note) & Catalog Enable ===
+  grns                 Grn[]
+  catalogEnableRequests CatalogEnableRequest[]
+
   // === Owner Delegation (scope-limited to org) ===
   ownerDelegations OwnerDelegation[]
 
@@ -2589,6 +2598,8 @@ model Branch {
 
   // === Stock Request (branch requests stock from owner) ===
   stockRequests StockRequest[]
+
+  catalogEnableRequests CatalogEnableRequest[]
 
   // === Multi-Branch Staff Permission System ===
   accessPermissions BranchAccessPermission[]
@@ -2847,6 +2858,7 @@ enum InventoryLocationType {
   CLINIC
   SHOP
   ONLINE_HUB
+  CENTRAL_WAREHOUSE
 }
 
 enum LocationChannel {
@@ -2857,6 +2869,7 @@ enum LocationChannel {
 
 enum StockLedgerType {
   OPENING
+  GRN_IN
   SALE_POS
   SALE_CLINIC
   RESERVE_ONLINE
@@ -2992,6 +3005,7 @@ model Product {
   vendorListings    VendorProductListing[]
   stockRequestItems StockRequestItem[]
   importRows        ProductImportRow[]
+  catalogEnableRequests CatalogEnableRequest[]
 
   // === Product Authenticity (MVP) ===
   versions   ProductVersion[]
@@ -3040,6 +3054,8 @@ model ProductVariant {
   stockDiscrepancies StockDiscrepancy[]
   stockAdjustmentRequests StockAdjustmentRequest[]
   stockRequestItems StockRequestItem[]
+  grnLines        GrnLine[]
+  catalogEnableRequests CatalogEnableRequest[]
 
   @@index([productId, isActive])
   @@index([flavorId])
@@ -4065,6 +4081,8 @@ model InventoryLocation {
   stockLotBalances StockLotBalance[]
   stockAdjustmentRequests StockAdjustmentRequest[]
   ordersFulfilled Order[]                @relation("OrderFulfilmentLocation")
+  grns            Grn[]
+  catalogEnableRequests CatalogEnableRequest[]
 
   @@index([type])
   @@index([branchId])
@@ -4210,10 +4228,17 @@ model StockRequest {
   declineSource    String?             @db.VarChar(100)
   declinedByUserId Int?
 
+  // Owner approve (partial qty + extra items): [{ variantId, approvedQty }], [{ variantId, quantity }]
+  approvedItems    Json?
+  extraItems       Json?
+  approvedAt       DateTime?
+  approvedByUserId Int?
+
   org      Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
   branch   Branch         @relation(fields: [branchId], references: [id], onDelete: Cascade)
   requester User          @relation("StockRequestRequestedBy", fields: [requesterUserId], references: [id], onDelete: Restrict)
   declinedBy User?        @relation("StockRequestDeclinedBy", fields: [declinedByUserId], references: [id], onDelete: SetNull)
+  approvedBy User?        @relation("StockRequestApprovedBy", fields: [approvedByUserId], references: [id], onDelete: SetNull)
   items    StockRequestItem[]
   transfer StockTransfer?
 
@@ -4265,6 +4290,7 @@ model StockLot {
   transferItems   StockTransferItem[]
   stockDiscrepancies StockDiscrepancy[]
   stockAdjustmentRequests StockAdjustmentRequest[]
+  grnLines        GrnLine[]
 
   @@unique([orgId, variantId, lotCode])
   @@index([orgId])
@@ -4395,6 +4421,7 @@ model Vendor {
   org            Organization           @relation(fields: [orgId], references: [id], onDelete: Cascade)
   listings       VendorProductListing[]
   payoutAccounts PayoutAccount[]
+  grns           Grn[]
 
   @@index([orgId])
   @@map("vendors")
@@ -4453,6 +4480,98 @@ model PayoutAccount {
   @@index([vendorId])
   @@index([isDefault])
   @@map("payout_accounts")
+}
+
+// === GRN (Goods Received Note) - stock-in to location via vendor invoice ===
+enum GrnStatus {
+  DRAFT
+  RECEIVED
+}
+
+model Grn {
+  id          Int       @id @default(autoincrement())
+  orgId       Int
+  vendorId    Int
+  locationId  Int
+  status      GrnStatus @default(DRAFT)
+  notes       String?   @db.Text
+  receivedAt  DateTime?
+  receivedByUserId Int?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  org      Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  vendor   Vendor           @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+  location InventoryLocation @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  receivedBy User?           @relation("GrnReceivedBy", fields: [receivedByUserId], references: [id], onDelete: SetNull)
+  lines    GrnLine[]
+
+  @@index([orgId])
+  @@index([vendorId])
+  @@index([locationId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("grns")
+}
+
+model GrnLine {
+  id        Int   @id @default(autoincrement())
+  grnId     Int
+  variantId Int
+  quantity  Int
+  lotId     Int?  // set when received (created or existing)
+  lotCode   String?  // optional: for new lot at receive
+  mfgDate   DateTime?
+  expDate   DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  grn    Grn            @relation(fields: [grnId], references: [id], onDelete: Cascade)
+  variant ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
+  lot    StockLot?      @relation(fields: [lotId], references: [id], onDelete: SetNull)
+
+  @@index([grnId])
+  @@index([variantId])
+  @@index([lotId])
+  @@map("grn_lines")
+}
+
+// === Catalog Enable Request: branch asks to enable product/variant for selling (no stock movement) ===
+enum CatalogEnableRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model CatalogEnableRequest {
+  id         Int                      @id @default(autoincrement())
+  orgId      Int
+  branchId   Int
+  productId  Int
+  variantId  Int
+  locationId Int?                     // optional: specific location; else branch default
+  requestedPrice Decimal?             @db.Decimal(10, 2)
+  status     CatalogEnableRequestStatus @default(PENDING)
+  requestedByUserId Int
+  reviewedByUserId Int?
+  reviewedAt DateTime?
+  reviewNote String?                  @db.Text
+  createdAt  DateTime                 @default(now())
+  updatedAt  DateTime                 @updatedAt
+
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  branch      Branch       @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  product     Product      @relation(fields: [productId], references: [id], onDelete: Restrict)
+  variant     ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
+  location    InventoryLocation? @relation(fields: [locationId], references: [id], onDelete: SetNull)
+  requestedBy User         @relation("CatalogEnableRequestedBy", fields: [requestedByUserId], references: [id], onDelete: Restrict)
+  reviewedBy  User?        @relation("CatalogEnableReviewedBy", fields: [reviewedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([orgId])
+  @@index([branchId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("catalog_enable_requests")
 }
 
 // ============================
