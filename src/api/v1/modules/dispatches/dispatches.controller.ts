@@ -197,15 +197,13 @@ exports.receiveDispatch = async (req, res) => {
         }).catch(() => {});
       }
     }
-    const qBranch = req.query.branchId != null ? parseInt(String(req.query.branchId), 10) : null;
-    const bBranch = req.body?.branchId != null ? parseInt(String(req.body.branchId), 10) : null;
-    const notifyToBranchId = toBranchId ?? (Number.isInteger(qBranch) ? qBranch : null) ?? (Number.isInteger(bBranch) ? bBranch : null) ?? null;
+    // toBranchId is derived only from dispatch destination (toLocation.branchId or DB lookup by toLocationId)
     notifyDispatchReceived({
       dispatchId: id,
       dispatch,
       result,
       receiverUserId: userId,
-      toBranchId: notifyToBranchId,
+      toBranchId: toBranchId ?? null,
     }).catch((e) => console.warn("notifyDispatchReceived failed", (e as Error)?.message));
     return res.status(200).json({ success: true, data: result });
   } catch (e: any) {

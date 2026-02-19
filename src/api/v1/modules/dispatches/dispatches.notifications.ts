@@ -21,11 +21,13 @@ export type NotifyDispatchReceivedParams = {
     } | null;
   };
   receiverUserId: number;
+  /** Must be derived only from dispatch destination (toLocation.branchId or DB by toLocationId). Never from request. */
   toBranchId: number | null;
 };
 
 /**
  * After successful receive: notify receiver, sender (if createdByUserId), and org owner.
+ * actionUrl is always /staff/branch/{toBranchId}/inventory/incoming/{dispatchId} when toBranchId is set.
  * Dedupes recipients. Does not change API response.
  */
 export async function notifyDispatchReceived(params: NotifyDispatchReceivedParams): Promise<void> {
