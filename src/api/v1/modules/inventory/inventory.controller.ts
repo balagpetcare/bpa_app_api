@@ -144,7 +144,7 @@ exports.createAdjustmentRequest = async (req, res) => {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
 
-    const { locationId, variantId, lotId, quantityDelta, reason } = req.body;
+    const { locationId, variantId, lotId, quantityDelta, reason, adjustmentCategory } = req.body;
     if (!locationId || !variantId || quantityDelta === undefined) {
       return res.status(400).json({ success: false, message: "locationId, variantId, quantityDelta required" });
     }
@@ -166,6 +166,7 @@ exports.createAdjustmentRequest = async (req, res) => {
     const isOwner = await prisma.organization.findFirst({ where: { id: orgId, ownerUserId: userId } });
     if (!member && !isOwner) return res.status(403).json({ success: false, message: "Not authorized" });
 
+    const category = adjustmentCategory && ["DAMAGE", "LOSS", "CORRECTION"].includes(String(adjustmentCategory).toUpperCase()) ? String(adjustmentCategory).toUpperCase() : null;
     const adj = await prisma.stockAdjustmentRequest.create({
       data: {
         orgId,
@@ -174,6 +175,7 @@ exports.createAdjustmentRequest = async (req, res) => {
         lotId: lotId != null ? parseInt(lotId) : null,
         quantityDelta: parseInt(quantityDelta),
         reason: reason || null,
+        adjustmentCategory: category,
         status: "PENDING",
         requestedByUserId: userId,
       },
@@ -187,6 +189,152 @@ exports.createAdjustmentRequest = async (req, res) => {
   } catch (e) {
     console.error("createAdjustmentRequest error:", e);
     return res.status(400).json({ success: false, message: (e as Error).message });
+  }
+};
+
+/**
+ * PATCH /api/v1/inventory/adjustment-requests/:id
+ * Approve or reject adjustment request. Approve writes ADJUSTMENT/DAMAGE/LOSS ledger and updates status.
+ */
+exports.reviewAdjustmentRequest = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id)) return res.status(400).json({ success: false, message: "Invalid id" });
+    const { status: newStatus, reviewNote } = req.body || {};
+    if (!["APPROVED", "REJECTED"].includes(newStatus)) {
+      return res.status(400).json({ success: false, message: "status must be APPROVED or REJECTED" });
+    }
+
+    const request = await prisma.stockAdjustmentRequest.findUnique({
+      where: { id },
+      include: { location: { select: { id: true } }, variant: true },
+    });
+    if (!request) return res.status(404).json({ success: false, message: "Adjustment request not found" });
+    if (request.status !== "PENDING") {
+      return res.status(400).json({ success: false, message: `Request is already ${request.status}` });
+    }
+
+    const member = await prisma.orgMember.findFirst({ where: { userId, orgId: request.orgId, status: "ACTIVE" } });
+    const isOwner = await prisma.organization.findFirst({ where: { id: request.orgId, ownerUserId: userId } });
+    if (!member && !isOwner) return res.status(403).json({ success: false, message: "Not authorized" });
+
+    if (newStatus === "REJECTED") {
+      const updated = await prisma.stockAdjustmentRequest.update({
+        where: { id },
+        data: { status: "REJECTED", reviewedByUserId: userId, reviewedAt: new Date(), reviewNote: reviewNote || null },
+        include: { location: true, variant: true },
+      });
+      return res.status(200).json({ success: true, data: updated, message: "Adjustment request rejected" });
+    }
+
+    const ledgerType = request.adjustmentCategory === "DAMAGE" ? "DAMAGE" : request.adjustmentCategory === "LOSS" ? "LOSS" : "ADJUSTMENT";
+    await prisma.$transaction(async (tx) => {
+      await ledgerService.recordLedgerEntryInTx(tx, {
+        orgId: request.orgId,
+        locationId: request.locationId,
+        variantId: request.variantId,
+        lotId: request.lotId ?? undefined,
+        type: ledgerType,
+        quantityDelta: request.quantityDelta,
+        refType: "ADJUSTMENT_REQUEST",
+        refId: String(request.id),
+        createdByUserId: userId,
+      });
+      await tx.stockAdjustmentRequest.update({
+        where: { id },
+        data: { status: "APPROVED", reviewedByUserId: userId, reviewedAt: new Date(), reviewNote: reviewNote || null },
+      });
+    });
+
+    const updated = await prisma.stockAdjustmentRequest.findUnique({
+      where: { id },
+      include: { location: true, variant: true, reviewedBy: { select: { id: true, profile: { select: { displayName: true } } } } },
+    });
+    return res.status(200).json({ success: true, data: updated, message: "Adjustment applied" });
+  } catch (e) {
+    console.error("reviewAdjustmentRequest error:", e);
+    return res.status(400).json({ success: false, message: (e && e.message) || "Review failed" });
+  }
+};
+
+const grnService = require("../grn/grn.service");
+
+/**
+ * GET /api/v1/inventory/receipts/bulk-template
+ * Download CSV template for bulk receive (variantId, sku, quantity, unitCost, lotCode, mfgDate, expDate).
+ */
+exports.getBulkReceiveTemplate = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const header = "variantId,sku,quantity,unitCost,lotCode,mfgDate,expDate\n";
+    const example = "1,SKU-001,10,99.50,LOT-2024-01,2024-01-15,2025-01-15\n";
+    const csv = header + example;
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", 'attachment; filename="bulk-receive-template.csv"');
+    return res.status(200).send(csv);
+  } catch (e) {
+    console.error("getBulkReceiveTemplate error:", e);
+    return res.status(500).json({ success: false, message: (e && (e as Error).message) || "Failed" });
+  }
+};
+
+/**
+ * POST /api/v1/inventory/receipts/bulk
+ * Bulk purchase receive: create GRN + receive in one atomic call.
+ * Body: { locationId, vendorId, invoiceNo?, invoiceDate?, notes?, lines: [{ variantId, quantity, unitCost?, lotCode?, mfgDate?, expDate? }] }
+ */
+exports.createBulkReceipt = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+
+    const { locationId, vendorId, invoiceNo, invoiceDate, notes, lines } = req.body || {};
+    const locId = locationId != null ? parseInt(locationId, 10) : NaN;
+    const vendorIdNum = vendorId != null && vendorId !== "" ? parseInt(vendorId, 10) : null;
+    if (!Number.isInteger(locId) || !Array.isArray(lines) || lines.length === 0) {
+      return res.status(400).json({ success: false, message: "locationId and non-empty lines required" });
+    }
+    if (vendorIdNum != null && !Number.isInteger(vendorIdNum)) {
+      return res.status(400).json({ success: false, message: "vendorId must be a number when provided" });
+    }
+
+    const location = await prisma.inventoryLocation.findUnique({
+      where: { id: locId },
+      include: { branch: true },
+    });
+    if (!location) return res.status(404).json({ success: false, message: "Location not found" });
+    const orgId = location.branch.orgId;
+    const member = await prisma.orgMember.findFirst({ where: { userId, orgId, status: "ACTIVE" } });
+    const isOwner = await prisma.organization.findFirst({ where: { id: orgId, ownerUserId: userId } });
+    if (!member && !isOwner) return res.status(403).json({ success: false, message: "Not authorized for this org" });
+
+    const payload = {
+      orgId,
+      vendorId: vendorIdNum ?? undefined,
+      locationId: locId,
+      invoiceNo: invoiceNo != null ? String(invoiceNo).trim() || undefined : undefined,
+      invoiceDate: invoiceDate || undefined,
+      notes: notes != null ? String(notes) : undefined,
+      lines: lines.map((l) => ({
+        variantId: parseInt(l.variantId, 10),
+        quantity: parseInt(l.quantity, 10) || 0,
+        unitCost: l.unitCost != null ? Number(l.unitCost) : undefined,
+        lotCode: l.lotCode != null ? String(l.lotCode) : undefined,
+        mfgDate: l.mfgDate || undefined,
+        expDate: l.expDate || undefined,
+      })),
+    };
+    const grn = await grnService.createAndReceiveGrn(payload, userId);
+    return res.status(201).json({ success: true, data: grn, message: "Bulk receipt received" });
+  } catch (e: any) {
+    console.error("createBulkReceipt error:", e);
+    if (e?.code === "BULK_RECEIVE_VALIDATION" && Array.isArray(e.errors)) {
+      return res.status(400).json({ success: false, message: e.message || "Validation failed", errors: e.errors });
+    }
+    return res.status(400).json({ success: false, message: (e && e.message) || "Bulk receipt failed" });
   }
 };
 
@@ -437,11 +585,16 @@ exports.getExpiringItems = async (req, res) => {
       where: { userId, status: "ACTIVE" },
       select: { branchId: true },
     });
+    const ownerOrg = await prisma.organization.findFirst({
+      where: { ownerUserId: userId },
+      select: { id: true },
+    });
     const branchId = branchMember?.branchId || (req.query.branchId ? parseInt(req.query.branchId) : undefined);
     const locationId = req.query.locationId ? parseInt(req.query.locationId) : undefined;
+    const orgId = ownerOrg?.id || (req.query.orgId ? parseInt(req.query.orgId) : undefined);
     const daysAhead = parseInt(req.query.daysAhead) || 30;
 
-    const items = await service.getExpiringItemsV2({ branchId, locationId, daysAhead });
+    const items = await service.getExpiringItemsV2({ branchId, locationId, orgId, daysAhead });
     return res.status(200).json({ success: true, data: items });
   } catch (error) {
     console.error("getExpiringItems error:", error);
@@ -540,6 +693,22 @@ exports.createOpeningStock = async (req, res) => {
         return res.status(400).json({ success: false, message: "orgId must match location's organization" });
       }
 
+      const mfg = new Date(mfgDate);
+      const exp = new Date(expDate);
+      if (exp <= mfg) {
+        return res.status(400).json({
+          success: false,
+          message: "Expiry date must be after manufacturing date",
+        });
+      }
+      if (new Date() >= exp) {
+        return res.status(400).json({
+          success: false,
+          message: "Lot expiry date must be in the future",
+          code: INVENTORY_ERROR_CODES.LOT_EXPIRED,
+        });
+      }
+
       let lot = await prisma.stockLot.findFirst({
         where: {
           orgId: org,
@@ -548,20 +717,12 @@ exports.createOpeningStock = async (req, res) => {
         },
       });
       if (!lot) {
-        const exp = new Date(expDate);
-        if (new Date() >= exp) {
-          return res.status(400).json({
-            success: false,
-            message: "Lot expiry date must be in the future",
-            code: INVENTORY_ERROR_CODES.LOT_EXPIRED,
-          });
-        }
         lot = await prisma.stockLot.create({
           data: {
             orgId: org,
             variantId: parseInt(variantId),
             lotCode: String(lotCode).trim(),
-            mfgDate: new Date(mfgDate),
+            mfgDate: mfg,
             expDate: exp,
             createdByUserId: userId,
           },
@@ -575,7 +736,14 @@ exports.createOpeningStock = async (req, res) => {
       });
     }
 
+    const loc = await prisma.inventoryLocation.findUnique({
+      where: { id: parseInt(locationId) },
+      include: { branch: { select: { orgId: true } } },
+    });
+    const ledgerOrgId = loc?.branch?.orgId ?? null;
+
     const ledger = await ledgerService.recordLedgerEntry({
+      orgId: ledgerOrgId,
       locationId: parseInt(locationId),
       variantId: parseInt(variantId),
       lotId: resolvedLotId,
@@ -656,6 +824,85 @@ exports.adjustStockNew = async (req, res) => {
 };
 
 /**
+ * GET /api/v1/inventory/dashboard
+ * Dashboard cards: totalSkus, lowStockCount, expiringCount. Query: branchId=, locationId=, orgId=
+ */
+exports.getInventoryDashboard = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const branchId = req.query.branchId ? parseInt(String(req.query.branchId), 10) : undefined;
+    const locationId = req.query.locationId ? parseInt(String(req.query.locationId), 10) : undefined;
+    const orgId = req.query.orgId ? parseInt(String(req.query.orgId), 10) : undefined;
+    const data = await service.getInventoryDashboardCards({ branchId, locationId, orgId });
+    return res.status(200).json({ success: true, data });
+  } catch (e) {
+    console.error("getInventoryDashboard error:", e);
+    return res.status(500).json({ success: false, message: (e && (e as Error).message) || "Failed" });
+  }
+};
+
+/**
+ * GET /api/v1/inventory/valuation
+ * Stock valuation (FIFO or Weighted Average). Query: locationId=, variantId=, method=FIFO|WEIGHTED_AVG
+ */
+exports.getValuation = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const locationId = req.query.locationId ? parseInt(String(req.query.locationId), 10) : undefined;
+    if (!locationId) return res.status(400).json({ success: false, message: "locationId required" });
+    const variantId = req.query.variantId ? parseInt(String(req.query.variantId), 10) : undefined;
+    const method = req.query.method === "FIFO" ? "FIFO" : "WEIGHTED_AVG";
+    const result = await service.getValuation({ locationId, variantId, method });
+    return res.status(200).json({ success: true, data: result });
+  } catch (e) {
+    console.error("getValuation error:", e);
+    return res.status(500).json({ success: false, message: (e && e.message) || "Valuation failed" });
+  }
+};
+
+/**
+ * GET /api/v1/inventory/variants/search
+ * Searchable product/variant picker for bulk receive. Query: q=, orgId=, limit=, page=
+ * Resolves orgIds from user (owner orgs + member orgs).
+ */
+exports.getVariantsSearch = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const ownerOrgs = await prisma.organization.findMany({
+      where: { ownerUserId: userId },
+      select: { id: true },
+    });
+    const memberOrgs = await prisma.orgMember.findMany({
+      where: { userId, status: "ACTIVE" },
+      select: { orgId: true },
+    });
+    const orgIds = [...new Set([...ownerOrgs.map((o) => o.id), ...memberOrgs.map((m) => m.orgId)])];
+    if (orgIds.length === 0) {
+      return res.status(200).json({
+        success: true,
+        data: [],
+        pagination: { page: 1, limit: 20, total: 0, totalPages: 0 },
+      });
+    }
+    const orgIdFilter = req.query.orgId ? [parseInt(String(req.query.orgId), 10)].filter(Number.isInteger) : orgIds;
+    const effectiveOrgIds = req.query.orgId ? orgIds.filter((id) => orgIdFilter.includes(id)) : orgIds;
+    const result = await service.getVariantsSearch({
+      orgIds: effectiveOrgIds,
+      q: req.query.q as string | undefined,
+      limit: req.query.limit ? parseInt(String(req.query.limit), 10) : undefined,
+      page: req.query.page ? parseInt(String(req.query.page), 10) : undefined,
+    });
+    return res.status(200).json({ success: true, data: result.items, pagination: result.pagination });
+  } catch (e) {
+    console.error("getVariantsSearch error:", e);
+    return res.status(500).json({ success: false, message: (e && e.message) || "Search failed" });
+  }
+};
+
+/**
  * GET /api/v1/inventory/ledger
  * Ledger history for audit UIs. Query: locationId, variantId, lotId, type, refType, refId, page, limit
  */
@@ -687,6 +934,45 @@ exports.getInventoryLedger = async (req, res) => {
     return res.status(200).json({ success: true, data: result.items, pagination: result.pagination });
   } catch (e) {
     console.error("getInventoryLedger error:", e);
+    return res.status(500).json({ success: false, message: (e as Error).message });
+  }
+};
+
+/**
+ * GET /api/v1/inventory/reports/stock-balance
+ * Current stock by location (optional variantId, locationId, orgId)
+ */
+exports.getReportsStockBalance = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const result = await service.getStockBalanceReport({
+      locationId: req.query.locationId ? parseInt(req.query.locationId) : undefined,
+      variantId: req.query.variantId ? parseInt(req.query.variantId) : undefined,
+      orgId: req.query.orgId ? parseInt(req.query.orgId) : undefined,
+    });
+    return res.status(200).json({ success: true, data: result });
+  } catch (e) {
+    console.error("getReportsStockBalance error:", e);
+    return res.status(500).json({ success: false, message: (e as Error).message });
+  }
+};
+
+/**
+ * GET /api/v1/inventory/reports/stock-by-lot-expiry
+ * By lot with expiry buckets: 0-30, 31-90, 90+ days
+ */
+exports.getReportsStockByLotExpiry = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const result = await service.getStockByLotExpiryReport({
+      locationId: req.query.locationId ? parseInt(req.query.locationId) : undefined,
+      variantId: req.query.variantId ? parseInt(req.query.variantId) : undefined,
+    });
+    return res.status(200).json({ success: true, data: result });
+  } catch (e) {
+    console.error("getReportsStockByLotExpiry error:", e);
     return res.status(500).json({ success: false, message: (e as Error).message });
   }
 };

@@ -24,7 +24,7 @@ export async function create(req: any, res: any) {
     const orgIds = await getOrgIds(req);
     if (!orgIds.length) return res.status(403).json({ success: false, message: "No organization access" });
 
-    const { vendorId, locationId, notes, lines } = req.body;
+    const { vendorId, locationId, notes, invoiceNo, invoiceDate, lines } = req.body;
     if (!vendorId || !locationId || !lines?.length) {
       return res.status(400).json({ success: false, message: "vendorId, locationId, and lines (array) are required" });
     }
@@ -40,10 +40,13 @@ export async function create(req: any, res: any) {
       orgId,
       vendorId: Number(vendorId),
       locationId: Number(locationId),
+      invoiceNo: invoiceNo ?? undefined,
+      invoiceDate: invoiceDate ?? undefined,
       notes: notes || undefined,
       lines: lines.map((l: any) => ({
         variantId: Number(l.variantId),
         quantity: Number(l.quantity),
+        unitCost: l.unitCost != null ? Number(l.unitCost) : undefined,
         lotCode: l.lotCode,
         mfgDate: l.mfgDate,
         expDate: l.expDate,

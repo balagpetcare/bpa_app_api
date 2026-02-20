@@ -197,6 +197,12 @@ router.get('/hubs', ctrl.getHubs);
 router.get('/central-warehouse', ctrl.getCentralWarehouse);
 router.post('/central-warehouse', ctrl.postCentralWarehouse);
 
+// Inventory locations: idempotent ensure default location per branch (for receipts dropdown)
+router.post('/inventory/locations/ensure-defaults', ctrl.ensureDefaultInventoryLocations);
+router.post('/inventory/locations', ctrl.createInventoryLocation);
+router.patch('/inventory/locations/:id', ctrl.updateInventoryLocation);
+router.delete('/inventory/locations/:id', ctrl.deleteInventoryLocation);
+
 // Dashboard endpoints
 router.get('/dashboard/metrics', ctrl.getDashboardMetrics);
 router.get('/dashboard/revenue', ctrl.getDashboardRevenue);

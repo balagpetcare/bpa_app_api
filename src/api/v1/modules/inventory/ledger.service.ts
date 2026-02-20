@@ -24,11 +24,13 @@ export async function assertLotNotExpired(lotId: number): Promise<void> {
 }
 
 type LedgerEntryInput = {
+  orgId?: number | null;
   locationId: number;
   variantId: number;
   lotId?: number | null;
   type: string;
   quantityDelta: number;
+  unitCost?: number | null;
   refType?: string;
   refId?: string;
   createdByUserId?: number;
@@ -78,11 +80,13 @@ async function recordLedgerEntryInTx(tx: any, data: LedgerEntryInput) {
     // 1. Create ledger entry (immutable)
     const ledger = await tx.stockLedger.create({
       data: {
+        orgId: data.orgId ?? null,
         locationId: data.locationId,
         variantId: data.variantId,
         lotId: data.lotId ?? null,
         type: data.type as any,
         quantityDelta: data.quantityDelta,
+        unitCost: data.unitCost != null ? data.unitCost : undefined,
         refType: data.refType || null,
         refId: data.refId || null,
         createdByUserId: data.createdByUserId || null,

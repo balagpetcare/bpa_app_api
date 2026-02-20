@@ -1344,6 +1344,18 @@ exports.createBranch = async (req, res) => {
       }
     }
 
+    // Create default inventory location so GET /inventory/locations returns at least one for this branch
+    const defaultLocationName = name ? `${name} - Main` : 'Main';
+    await prisma.inventoryLocation.create({
+      data: {
+        branchId: created.id,
+        type: 'SHOP',
+        name: defaultLocationName,
+        code: null,
+        isActive: true,
+      },
+    });
+
     await writeAudit({ prisma, req, action: 'BRANCH_CREATE', entityType: 'BRANCH', entityId: created.id, before: null, after: created });
 
     res.json({ success: true, data: created });
@@ -3592,6 +3604,157 @@ exports.postCentralWarehouse = async (req, res) => {
   } catch (e) {
     console.error('postCentralWarehouse error:', e);
     res.status(400).json({ success: false, message: e?.message || 'Server error' });
+  }
+};
+
+/**
+ * POST /api/v1/owner/inventory/locations/ensure-defaults
+ * Idempotent: for each branch the owner can access that has zero inventory locations,
+ * create one default location (type SHOP, name "{Branch name} - Main").
+ */
+exports.ensureDefaultInventoryLocations = async (req, res) => {
+  try {
+    const prisma = getPrisma(req);
+    const userId = asIntId(req.user?.id || req.auth?.userId);
+    if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+    const branchIds = await getEffectiveBranchIdsForOwnerPanel(prisma, userId);
+    if (branchIds.length === 0) return res.status(200).json({ success: true, data: { created: 0, branchesProcessed: 0 }, message: 'No branches to process' });
+
+    const branches = await prisma.branch.findMany({
+      where: { id: { in: branchIds } },
+      select: { id: true, name: true },
+    });
+    let created = 0;
+    for (const branch of branches) {
+      const count = await prisma.inventoryLocation.count({ where: { branchId: branch.id } });
+      if (count === 0) {
+        await prisma.inventoryLocation.create({
+          data: {
+            branchId: branch.id,
+            type: 'SHOP',
+            name: branch.name ? `${branch.name} - Main` : 'Main',
+            code: null,
+            isActive: true,
+          },
+        });
+        created += 1;
+      }
+    }
+    return res.status(200).json({
+      success: true,
+      data: { created, branchesProcessed: branches.length },
+      message: created ? `Created ${created} default location(s) for branches that had none.` : 'All branches already have at least one location.',
+    });
+  } catch (e) {
+    console.error('ensureDefaultInventoryLocations error:', e);
+    res.status(500).json({ success: false, message: e?.message || 'Server error' });
+  }
+};
+
+/**
+ * POST /api/v1/owner/inventory/locations
+ * Create inventory location (branch must be accessible to owner).
+ */
+exports.createInventoryLocation = async (req, res) => {
+  try {
+    const prisma = getPrisma(req);
+    const userId = asIntId(req.user?.id || req.auth?.userId);
+    if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+    const branchIds = await getEffectiveBranchIdsForOwnerPanel(prisma, userId);
+    if (branchIds.length === 0) return res.status(403).json({ success: false, message: 'No branches accessible' });
+
+    const { branchId, type, name, code } = req.body || {};
+    const bid = branchId != null ? parseInt(branchId, 10) : NaN;
+    if (!Number.isInteger(bid) || !branchIds.includes(bid)) {
+      return res.status(400).json({ success: false, message: 'Valid branchId required (must be an accessible branch)' });
+    }
+    const typeVal = (type && ['CLINIC', 'SHOP', 'ONLINE_HUB', 'CENTRAL_WAREHOUSE', 'BRANCH_STORE', 'CLINIC_STORE', 'DAMAGE_AREA', 'RETURN_AREA'].includes(type)) ? type : 'SHOP';
+    const location = await prisma.inventoryLocation.create({
+      data: {
+        branchId: bid,
+        type: typeVal,
+        name: name && String(name).trim() ? String(name).trim() : 'New Location',
+        code: code != null && String(code).trim() !== '' ? String(code).trim() : null,
+        isActive: true,
+      },
+      include: { branch: { select: { id: true, name: true } } },
+    });
+    return res.status(201).json({ success: true, data: location, message: 'Location created' });
+  } catch (e) {
+    console.error('createInventoryLocation error:', e);
+    res.status(500).json({ success: false, message: e?.message || 'Server error' });
+  }
+};
+
+/**
+ * PATCH /api/v1/owner/inventory/locations/:id
+ * Update inventory location (must belong to owner-accessible branch).
+ */
+exports.updateInventoryLocation = async (req, res) => {
+  try {
+    const prisma = getPrisma(req);
+    const userId = asIntId(req.user?.id || req.auth?.userId);
+    if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+    const branchIds = await getEffectiveBranchIdsForOwnerPanel(prisma, userId);
+    const locationId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(locationId)) return res.status(400).json({ success: false, message: 'Invalid location id' });
+
+    const existing = await prisma.inventoryLocation.findFirst({
+      where: { id: locationId, branchId: { in: branchIds } },
+      include: { branch: { select: { id: true, name: true } } },
+    });
+    if (!existing) return res.status(404).json({ success: false, message: 'Location not found' });
+
+    const { type, name, code, isActive } = req.body || {};
+    const data = {} as { type?: string; name?: string; code?: string | null; isActive?: boolean };
+    if (type && ['CLINIC', 'SHOP', 'ONLINE_HUB', 'CENTRAL_WAREHOUSE', 'BRANCH_STORE', 'CLINIC_STORE', 'DAMAGE_AREA', 'RETURN_AREA'].includes(type)) data.type = type;
+    if (name !== undefined) data.name = String(name).trim() || existing.name;
+    if (code !== undefined) data.code = code == null || String(code).trim() === '' ? null : String(code).trim();
+    if (typeof isActive === 'boolean') data.isActive = isActive;
+
+    const updated = await prisma.inventoryLocation.update({
+      where: { id: locationId },
+      data,
+      include: { branch: { select: { id: true, name: true } } },
+    });
+    return res.status(200).json({ success: true, data: updated, message: 'Location updated' });
+  } catch (e) {
+    console.error('updateInventoryLocation error:', e);
+    res.status(500).json({ success: false, message: e?.message || 'Server error' });
+  }
+};
+
+/**
+ * DELETE /api/v1/owner/inventory/locations/:id
+ * Delete or deactivate inventory location (must belong to owner-accessible branch).
+ */
+exports.deleteInventoryLocation = async (req, res) => {
+  try {
+    const prisma = getPrisma(req);
+    const userId = asIntId(req.user?.id || req.auth?.userId);
+    if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+    const branchIds = await getEffectiveBranchIdsForOwnerPanel(prisma, userId);
+    const locationId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(locationId)) return res.status(400).json({ success: false, message: 'Invalid location id' });
+
+    const existing = await prisma.inventoryLocation.findFirst({
+      where: { id: locationId, branchId: { in: branchIds } },
+    });
+    if (!existing) return res.status(404).json({ success: false, message: 'Location not found' });
+
+    const hasStock = await prisma.stockBalance.count({ where: { locationId } }).then((c) => c > 0);
+    if (hasStock) {
+      await prisma.inventoryLocation.update({
+        where: { id: locationId },
+        data: { isActive: false },
+      });
+      return res.status(200).json({ success: true, data: { deactivated: true }, message: 'Location deactivated (has stock)' });
+    }
+    await prisma.inventoryLocation.delete({ where: { id: locationId } });
+    return res.status(200).json({ success: true, data: { deleted: true }, message: 'Location deleted' });
+  } catch (e) {
+    console.error('deleteInventoryLocation error:', e);
+    res.status(500).json({ success: false, message: e?.message || 'Server error' });
   }
 };
 

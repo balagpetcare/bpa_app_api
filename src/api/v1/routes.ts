@@ -155,6 +155,9 @@ router.use("/returns", countryScopeGuard, require("./modules/returns/returns.rou
 // Vendors
 router.use("/vendors", countryScopeGuard, require("./modules/vendors/vendors.routes"));
 
+// Vendor payments (credit in vendor ledger)
+router.use("/vendor-payments", countryScopeGuard, require("./modules/vendor_payments/vendor_payments.routes"));
+
 // GRN (Goods Received Note) - stock-in to location via vendor
 router.use("/grn", countryScopeGuard, require("./modules/grn/grn.routes"));
 

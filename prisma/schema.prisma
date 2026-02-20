@@ -413,10 +413,14 @@ model User {
   // === Products Module: Stock Ledger & Transfers ===
   stockLedgersCreated   StockLedger[]   @relation("StockLedgerCreatedBy")
   stockTransfersCreated StockTransfer[] @relation("StockTransferCreatedBy")
+  stockDispatchesCreated StockDispatch[] @relation("StockDispatchCreatedBy")
+  stockReturnsCreated    StockReturn[]   @relation("StockReturnCreatedBy")
+  stockReturnsReceived  StockReturn[]   @relation("StockReturnReceivedBy")
   returnRequestsCreated ReturnRequest[] @relation("ReturnRequestedBy")
   stockLotsCreated      StockLot[]      @relation("StockLotCreatedBy")
   stockAdjustmentRequestsRequested StockAdjustmentRequest[] @relation("StockAdjustmentRequestedBy")
   stockAdjustmentRequestsReviewed  StockAdjustmentRequest[] @relation("StockAdjustmentReviewedBy")
+  stockCountSessionsCreated        StockCountSession[]      @relation("StockCountSessionCreatedBy")
   stockDiscrepanciesResolved       StockDiscrepancy[]       @relation("StockDiscrepancyResolvedBy")
   stockRequestsRequested          StockRequest[]           @relation("StockRequestRequestedBy")
   stockRequestsDeclined          StockRequest[]           @relation("StockRequestDeclinedBy")
@@ -2133,15 +2137,16 @@ enum AuditEntityType {
   ORGANIZATION
   BRANCH
   OWNER_KYC
-  // Global-Ready Phase 2: donation/transaction audit
   DONATION
   TRANSACTION
-  // Owner control over branch managers (audit actions by owner on manager userId)
   USER
-  // Workspace system (task, alert, approval audit)
   WORKSPACE_TASK
   WORKSPACE_ALERT
   WORKSPACE_APPROVAL
+  // Stock workflow audit
+  STOCK_REQUEST
+  STOCK_DISPATCH
+  GRN
 }
 
 enum AuditActorRole {
@@ -2517,8 +2522,10 @@ model Organization {
   services      Service[]
 
   // === Products Module: Vendors & Commission Rules ===
-  vendors         Vendor[]
-  commissionRules CommissionRule[]
+  vendors            Vendor[]
+  vendorAttachments  VendorAttachment[]
+  vendorLedgerEntries VendorLedgerEntry[]
+  commissionRules    CommissionRule[]
 
   // === Product Authenticity (MVP) ===
   factories Factory[]
@@ -2531,9 +2538,21 @@ model Organization {
   // === Stock Request ===
   stockRequests StockRequest[]
 
+  // === Stock Dispatch (Challan/DO) ===
+  stockDispatches StockDispatch[]
+
+  // === Stock Return (branch → warehouse) ===
+  stockReturns StockReturn[]
+
+  // === Stock Ledger (tenant-scoped) ===
+  stockLedgers StockLedger[]
+
   // === GRN (Goods Received Note) & Catalog Enable ===
   grns                 Grn[]
   catalogEnableRequests CatalogEnableRequest[]
+
+  // === Stock Count (cycle count) ===
+  stockCountSessions StockCountSession[]
 
   // === Owner Delegation (scope-limited to org) ===
   ownerDelegations OwnerDelegation[]
@@ -2859,6 +2878,10 @@ enum InventoryLocationType {
   SHOP
   ONLINE_HUB
   CENTRAL_WAREHOUSE
+  BRANCH_STORE   // Alias for branch selling location
+  CLINIC_STORE   // Alias for clinic selling location
+  DAMAGE_AREA    // Enterprise: quarantine damaged stock
+  RETURN_AREA    // Enterprise: returns holding
 }
 
 enum LocationChannel {
@@ -2870,6 +2893,8 @@ enum LocationChannel {
 enum StockLedgerType {
   OPENING
   GRN_IN
+  PURCHASE_IN    // Alias for GRN_IN (enterprise naming)
+  PRODUCTION_IN  // Enterprise: production receipt
   SALE_POS
   SALE_CLINIC
   RESERVE_ONLINE
@@ -2929,13 +2954,25 @@ enum StockRequestStatus {
   DRAFT
   SUBMITTED
   OWNER_REVIEW
+  APPROVED
+  REJECTED
   FULFILLED_PARTIAL
   FULFILLED_FULL
+  PARTIALLY_DISPATCHED
   DISPATCHED
   RECEIVED_PARTIAL
   RECEIVED_FULL
+  PARTIALLY_RECEIVED
+  RECEIVED
   CLOSED
   CANCELLED
+}
+
+enum StockDispatchStatus {
+  CREATED
+  PACKED
+  IN_TRANSIT
+  DELIVERED
 }
 
 enum ReturnRequestStatus {
@@ -2954,6 +2991,13 @@ enum StockAdjustmentStatus {
   PENDING
   APPROVED
   REJECTED
+}
+
+enum StockCountSessionStatus {
+  DRAFT
+  FROZEN
+  SUBMITTED
+  POSTED
 }
 
 enum CommissionRuleType {
@@ -2988,15 +3032,19 @@ model Product {
   // Master catalog reference
   masterCatalogId Int?
 
+  // Preferred vendor (optional; for sourcing)
+  preferredVendorId Int?
+
   createdByUserId Int
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
-  org           Organization          @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  createdBy     User                  @relation("ProductCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
-  category      Category?             @relation(fields: [categoryId], references: [id], onDelete: SetNull)
-  brand         Brand?                @relation(fields: [brandId], references: [id], onDelete: SetNull)
-  masterCatalog MasterProductCatalog? @relation("MasterProductCloned", fields: [masterCatalogId], references: [id], onDelete: SetNull)
+  org              Organization          @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdBy        User                  @relation("ProductCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  category         Category?             @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  brand            Brand?                @relation(fields: [brandId], references: [id], onDelete: SetNull)
+  masterCatalog    MasterProductCatalog? @relation("MasterProductCloned", fields: [masterCatalogId], references: [id], onDelete: SetNull)
+  preferredVendor  Vendor?               @relation("ProductPreferredVendor", fields: [preferredVendorId], references: [id], onDelete: SetNull)
 
   variants          ProductVariant[]
   inventory         Inventory[]
@@ -3018,6 +3066,7 @@ model Product {
   @@index([approvalStatus])
   @@index([masterCatalogId])
   @@index([publishStatus])
+  @@index([preferredVendorId])
   @@map("products")
 }
 
@@ -3034,6 +3083,11 @@ model ProductVariant {
   unitId   Int?
   barcode  String? @unique
 
+  // Lot/expiry enforcement (enterprise)
+  requiresLot    Boolean @default(false)
+  requiresExpiry Boolean @default(false)
+  requiresMfg    Boolean @default(false)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -3048,13 +3102,16 @@ model ProductVariant {
   locationPrices  LocationPrice[]
   stockLedgers    StockLedger[]
   transferItems   StockTransferItem[]
+  stockDispatchItems StockDispatchItem[]
   returnItems     ReturnItem[]
   vendorListings  VendorProductListing[]
   stockLots       StockLot[]
   stockDiscrepancies StockDiscrepancy[]
   stockAdjustmentRequests StockAdjustmentRequest[]
   stockRequestItems StockRequestItem[]
+  stockReturnItems  StockReturnItem[]
   grnLines        GrnLine[]
+  stockCountLines StockCountLine[]
   catalogEnableRequests CatalogEnableRequest[]
 
   @@index([productId, isActive])
@@ -4077,9 +4134,14 @@ model InventoryLocation {
   locationPrices LocationPrice[]
   transfersFrom  StockTransfer[]         @relation("TransferFrom")
   transfersTo    StockTransfer[]         @relation("TransferTo")
+  dispatchesFrom StockDispatch[]         @relation("DispatchFrom")
+  dispatchesTo   StockDispatch[]         @relation("DispatchTo")
+  stockReturnsFrom StockReturn[]         @relation("StockReturnFrom")
+  stockReturnsTo   StockReturn[]         @relation("StockReturnTo")
   returnItems    ReturnItem[]
   stockLotBalances StockLotBalance[]
   stockAdjustmentRequests StockAdjustmentRequest[]
+  stockCountSessions      StockCountSession[]
   ordersFulfilled Order[]                @relation("OrderFulfilmentLocation")
   grns            Grn[]
   catalogEnableRequests CatalogEnableRequest[]
@@ -4141,21 +4203,25 @@ model StockBalance {
 
 model StockLedger {
   id              Int             @id @default(autoincrement())
+  orgId           Int?            // Tenant isolation; backfilled from location.branch
   locationId      Int
   variantId       Int
-  lotId           Int? // Batch/lot reference for batch-wise stock
+  lotId           Int?            // Batch/lot reference for batch-wise stock
   type            StockLedgerType
-  quantityDelta   Int // Positive for IN, negative for OUT
-  refType         String? // ORDER, TRANSFER, RETURN, etc.
+  quantityDelta   Int             // Positive for IN, negative for OUT
+  unitCost        Decimal?        @db.Decimal(12, 4) // Optional for reporting
+  refType         String?         // ORDER, TRANSFER, RETURN, DISPATCH, GRN, etc.
   refId           String?
   createdByUserId Int?
   createdAt       DateTime        @default(now())
 
-  location  InventoryLocation @relation(fields: [locationId], references: [id], onDelete: Cascade)
-  variant   ProductVariant    @relation(fields: [variantId], references: [id], onDelete: Cascade)
-  lot       StockLot?         @relation(fields: [lotId], references: [id], onDelete: SetNull)
-  createdBy User?             @relation("StockLedgerCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  org      Organization?     @relation(fields: [orgId], references: [id], onDelete: SetNull)
+  location InventoryLocation @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  variant  ProductVariant    @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  lot      StockLot?         @relation(fields: [lotId], references: [id], onDelete: SetNull)
+  createdBy User?            @relation("StockLedgerCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
 
+  @@index([orgId])
   @@index([locationId, variantId, createdAt])
   @@index([lotId])
   @@index([refType, refId])
@@ -4211,6 +4277,69 @@ model StockTransferItem {
   @@map("stock_transfer_items")
 }
 
+// === Stock Dispatch (Challan/DO) – from fulfill plan; transport + status CREATED→PACKED→IN_TRANSIT→DELIVERED ===
+model StockDispatch {
+  id              Int                 @id @default(autoincrement())
+  orgId           Int
+  stockRequestId  Int
+  fromLocationId  Int
+  toLocationId    Int
+  status          StockDispatchStatus @default(CREATED)
+  // Transport
+  carrierType     String?             @db.VarChar(50)   // own | courier
+  vehicleNo       String?             @db.VarChar(100)
+  driverName      String?             @db.VarChar(200)
+  driverPhone     String?             @db.VarChar(50)
+  trackingId      String?             @db.VarChar(200)
+  eta             DateTime?
+  shippingCost    Decimal?            @db.Decimal(12, 2)
+  note            String?            @db.Text
+  packedAt        DateTime?
+  inTransitAt      DateTime?
+  deliveredAt     DateTime?
+  createdByUserId Int?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  org           Organization       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  stockRequest  StockRequest       @relation(fields: [stockRequestId], references: [id], onDelete: Cascade)
+  fromLocation  InventoryLocation   @relation("DispatchFrom", fields: [fromLocationId], references: [id], onDelete: Restrict)
+  toLocation    InventoryLocation   @relation("DispatchTo", fields: [toLocationId], references: [id], onDelete: Restrict)
+  createdBy     User?              @relation("StockDispatchCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  items         StockDispatchItem[]
+  grns          Grn[]
+
+  @@index([orgId])
+  @@index([stockRequestId])
+  @@index([fromLocationId])
+  @@index([toLocationId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("stock_dispatches")
+}
+
+model StockDispatchItem {
+  id                Int     @id @default(autoincrement())
+  stockDispatchId   Int
+  variantId         Int
+  lotId             Int
+  quantityDispatched Int
+  quantityReceived  Int      @default(0)
+  quantityDamaged   Int      @default(0)
+  quantityShort     Int      @default(0)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  stockDispatch StockDispatch  @relation(fields: [stockDispatchId], references: [id], onDelete: Cascade)
+  variant       ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
+  lot           StockLot       @relation(fields: [lotId], references: [id], onDelete: Restrict)
+
+  @@index([stockDispatchId])
+  @@index([variantId])
+  @@index([lotId])
+  @@map("stock_dispatch_items")
+}
+
 // === Stock Request (branch requests stock; owner fulfills → dispatch) ===
 model StockRequest {
   id              Int                 @id @default(autoincrement())
@@ -4239,8 +4368,9 @@ model StockRequest {
   requester User          @relation("StockRequestRequestedBy", fields: [requesterUserId], references: [id], onDelete: Restrict)
   declinedBy User?        @relation("StockRequestDeclinedBy", fields: [declinedByUserId], references: [id], onDelete: SetNull)
   approvedBy User?        @relation("StockRequestApprovedBy", fields: [approvedByUserId], references: [id], onDelete: SetNull)
-  items    StockRequestItem[]
-  transfer StockTransfer?
+  items     StockRequestItem[]
+  transfer  StockTransfer?
+  dispatches StockDispatch[]
 
   @@index([orgId])
   @@index([branchId])
@@ -4288,9 +4418,12 @@ model StockLot {
   stockLedgers    StockLedger[]
   stockLotBalances StockLotBalance[]
   transferItems   StockTransferItem[]
+  stockDispatchItems StockDispatchItem[]
   stockDiscrepancies StockDiscrepancy[]
   stockAdjustmentRequests StockAdjustmentRequest[]
+  stockReturnItems  StockReturnItem[]
   grnLines        GrnLine[]
+  stockCountLines StockCountLine[]
 
   @@unique([orgId, variantId, lotCode])
   @@index([orgId])
@@ -4351,6 +4484,7 @@ model StockAdjustmentRequest {
   lotId            Int?
   quantityDelta    Int // positive = add, negative = deduct
   reason           String?               @db.Text
+  adjustmentCategory String?            @db.VarChar(32) // DAMAGE | LOSS | CORRECTION → ledger type
   payload          Json?
   status           StockAdjustmentStatus @default(PENDING)
   requestedByUserId Int
@@ -4370,6 +4504,50 @@ model StockAdjustmentRequest {
   @@index([orgId, status])
   @@index([locationId])
   @@map("stock_adjustment_requests")
+}
+
+model StockCountSession {
+  id          Int                    @id @default(autoincrement())
+  orgId       Int
+  locationId  Int
+  status      StockCountSessionStatus @default(DRAFT)
+  note        String?                @db.Text
+  createdByUserId Int?
+  frozenAt    DateTime?
+  postedAt    DateTime?
+  createdAt   DateTime               @default(now())
+  updatedAt   DateTime               @updatedAt
+
+  org       Organization       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  location  InventoryLocation  @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  createdBy User?              @relation("StockCountSessionCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  lines     StockCountLine[]
+
+  @@index([orgId])
+  @@index([locationId])
+  @@index([status])
+  @@map("stock_count_sessions")
+}
+
+model StockCountLine {
+  id           Int     @id @default(autoincrement())
+  sessionId    Int
+  variantId    Int
+  lotId        Int?    // optional for lot-level count later; variant-level uses null
+  systemQty    Int     @default(0)
+  countedQty   Int     @default(0)
+  varianceQty  Int     @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  session StockCountSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  variant ProductVariant    @relation(fields: [variantId], references: [id], onDelete: Restrict)
+  lot     StockLot?         @relation(fields: [lotId], references: [id], onDelete: SetNull)
+
+  @@unique([sessionId, variantId])
+  @@index([sessionId])
+  @@index([variantId])
+  @@map("stock_count_lines")
 }
 
 model ReturnRequest {
@@ -4409,22 +4587,192 @@ model ReturnItem {
   @@map("return_items")
 }
 
+// === Stock Return (branch → warehouse): damaged, wrong item, near-expiry, overstock ===
+enum StockReturnReason {
+  DAMAGED
+  WRONG_ITEM
+  NEAR_EXPIRY
+  OVERSTOCK
+  OTHER
+}
+
+enum StockReturnStatus {
+  CREATED
+  IN_TRANSIT
+  RECEIVED
+  CANCELLED
+}
+
+model StockReturn {
+  id              Int                @id @default(autoincrement())
+  orgId           Int
+  fromLocationId  Int                // branch
+  toLocationId    Int                // warehouse
+  reason          StockReturnReason
+  status          StockReturnStatus  @default(CREATED)
+  note            String?           @db.Text
+  createdByUserId Int?
+  receivedAt      DateTime?
+  receivedByUserId Int?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  org           Organization       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  fromLocation  InventoryLocation  @relation("StockReturnFrom", fields: [fromLocationId], references: [id], onDelete: Restrict)
+  toLocation    InventoryLocation  @relation("StockReturnTo", fields: [toLocationId], references: [id], onDelete: Restrict)
+  createdBy     User?              @relation("StockReturnCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  receivedBy    User?              @relation("StockReturnReceivedBy", fields: [receivedByUserId], references: [id], onDelete: SetNull)
+  items         StockReturnItem[]
+
+  @@index([orgId])
+  @@index([fromLocationId])
+  @@index([toLocationId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("stock_returns")
+}
+
+model StockReturnItem {
+  id               Int    @id @default(autoincrement())
+  stockReturnId    Int
+  variantId        Int
+  lotId            Int?
+  quantityReturned Int
+  quantityReceived Int    @default(0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  stockReturn StockReturn   @relation(fields: [stockReturnId], references: [id], onDelete: Cascade)
+  variant    ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
+  lot        StockLot?      @relation(fields: [lotId], references: [id], onDelete: SetNull)
+
+  @@index([stockReturnId])
+  @@index([variantId])
+  @@index([lotId])
+  @@map("stock_return_items")
+}
+
+// === Vendor Module (enterprise) ===
+enum VendorType {
+  DISTRIBUTOR
+  WHOLESALER
+  IMPORTER
+  LOCAL
+  MANUFACTURER
+  OTHER
+}
+
+enum VendorStatus {
+  ACTIVE
+  INACTIVE
+  BLACKLISTED
+}
+
+enum VendorAttachmentType {
+  TRADE_LICENSE
+  INVOICE
+  CHALLAN
+  OTHER
+}
+
+enum VendorLedgerSourceType {
+  PURCHASE_ORDER
+  GRN
+  PAYMENT
+  ADJUSTMENT
+  RETURN
+}
+
 model Vendor {
   id          Int      @id @default(autoincrement())
   orgId       Int
+  code        String? // unique per org, human-friendly e.g. VEN-0001
   name        String
-  contactJson Json?
-  status      String   @default("ACTIVE")
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  phone       String?
+  email       String?
+  addressLine1 String?
+  addressLine2 String?
+  district    String?
+  city        String?
+  country     String?
+  vendorType  VendorType? @default(OTHER)
+  status      VendorStatus @default(ACTIVE)
+  defaultPaymentTermsDays Int?
+  creditLimit Decimal?     @db.Decimal(12, 2)
+  openingBalance Decimal   @default(0) @db.Decimal(12, 2)
+  notes       String?      @db.Text
+  contactJson Json?        // legacy / extra
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
 
   org            Organization           @relation(fields: [orgId], references: [id], onDelete: Cascade)
   listings       VendorProductListing[]
   payoutAccounts PayoutAccount[]
   grns           Grn[]
+  contacts       VendorContact[]
+  attachments    VendorAttachment[]
+  ledgerEntries     VendorLedgerEntry[]
+  productsPreferred Product[]              @relation("ProductPreferredVendor")
 
+  @@unique([orgId, code])
   @@index([orgId])
+  @@index([orgId, name])
   @@map("vendors")
+}
+
+model VendorContact {
+  id          Int     @id @default(autoincrement())
+  vendorId    Int
+  name        String?
+  phone       String?
+  email       String?
+  designation String?
+  isPrimary   Boolean @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  vendor Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@index([vendorId])
+  @@map("vendor_contacts")
+}
+
+model VendorAttachment {
+  id        Int                 @id @default(autoincrement())
+  vendorId  Int
+  orgId     Int
+  fileKey   String              // MinIO key
+  type      VendorAttachmentType @default(OTHER)
+  note      String?             @db.Text
+  createdAt DateTime            @default(now())
+  updatedAt DateTime            @updatedAt
+
+  vendor Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  org    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([vendorId])
+  @@index([orgId])
+  @@map("vendor_attachments")
+}
+
+model VendorLedgerEntry {
+  id          Int     @id @default(autoincrement())
+  vendorId    Int
+  orgId       Int
+  sourceType  VendorLedgerSourceType
+  sourceId    String? // reference to GRN id, payment id, etc.
+  debit       Decimal @default(0) @db.Decimal(12, 2)
+  credit      Decimal @default(0) @db.Decimal(12, 2)
+  balanceAfter Decimal? @db.Decimal(12, 2)
+  createdAt   DateTime @default(now())
+
+  vendor Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  org    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([vendorId])
+  @@index([orgId])
+  @@index([vendorId, createdAt])
+  @@map("vendor_ledger_entries")
 }
 
 model VendorProductListing {
@@ -4489,25 +4837,32 @@ enum GrnStatus {
 }
 
 model Grn {
-  id          Int       @id @default(autoincrement())
-  orgId       Int
-  vendorId    Int
-  locationId  Int
-  status      GrnStatus @default(DRAFT)
-  notes       String?   @db.Text
-  receivedAt  DateTime?
+  id               Int       @id @default(autoincrement())
+  orgId            Int
+  vendorId         Int?      // Null when GRN is for transfer receive (stockDispatchId set)
+  stockDispatchId  Int?      // Set when receiving a stock dispatch at branch
+  idempotencyKey   String?   @db.VarChar(64) // Optional: duplicate receive with same key returns 409
+  locationId       Int
+  status           GrnStatus @default(DRAFT)
+  invoiceNo        String?   @db.VarChar(120) // Enterprise: vendor invoice number
+  invoiceDate      DateTime? // Enterprise: vendor invoice date
+  notes            String?  @db.Text
+  receivedAt       DateTime?
   receivedByUserId Int?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
-  org      Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  vendor   Vendor           @relation(fields: [vendorId], references: [id], onDelete: Restrict)
-  location InventoryLocation @relation(fields: [locationId], references: [id], onDelete: Restrict)
-  receivedBy User?           @relation("GrnReceivedBy", fields: [receivedByUserId], references: [id], onDelete: SetNull)
-  lines    GrnLine[]
+  org          Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  vendor       Vendor?          @relation(fields: [vendorId], references: [id], onDelete: SetNull)
+  stockDispatch StockDispatch?  @relation(fields: [stockDispatchId], references: [id], onDelete: SetNull)
+  location     InventoryLocation @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  receivedBy   User?            @relation("GrnReceivedBy", fields: [receivedByUserId], references: [id], onDelete: SetNull)
+  lines        GrnLine[]
 
+  @@unique([stockDispatchId, idempotencyKey])
   @@index([orgId])
   @@index([vendorId])
+  @@index([stockDispatchId])
   @@index([locationId])
   @@index([status])
   @@index([createdAt])
@@ -4515,16 +4870,19 @@ model Grn {
 }
 
 model GrnLine {
-  id        Int   @id @default(autoincrement())
-  grnId     Int
-  variantId Int
-  quantity  Int
-  lotId     Int?  // set when received (created or existing)
-  lotCode   String?  // optional: for new lot at receive
-  mfgDate   DateTime?
-  expDate   DateTime?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id             Int   @id @default(autoincrement())
+  grnId          Int
+  variantId      Int
+  quantity       Int   // received qty (good)
+  quantityDamaged Int  @default(0)  // discrepancy: damaged (DAMAGE ledger)
+  quantityShort  Int   @default(0)  // discrepancy: short (no stock movement, audit only)
+  unitCost       Decimal? @db.Decimal(12, 4) // Enterprise: cost per unit at receive
+  lotId          Int?  // set when received (created or existing)
+  lotCode        String?  // optional: for new lot at receive
+  mfgDate        DateTime?
+  expDate        DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
   grn    Grn            @relation(fields: [grnId], references: [id], onDelete: Cascade)
   variant ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)

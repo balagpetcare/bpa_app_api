@@ -326,11 +326,19 @@ exports.cloneMasterProduct = async (req, res) => {
       data: product,
       message: "Product cloned successfully from master catalog",
     });
-  } catch (error) {
+  } catch (error: any) {
+    if (error?.alreadyAdded === true && error?.existingProduct) {
+      return res.status(409).json({
+        success: false,
+        alreadyAdded: true,
+        data: error.existingProduct,
+        message: "Already added to catalog",
+      });
+    }
     console.error("cloneMasterProduct error:", error);
     return res.status(400).json({
       success: false,
-      message: error.message || "Failed to clone master product",
+      message: error?.message || "Failed to clone master product",
     });
   }
 };

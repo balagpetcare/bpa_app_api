@@ -530,7 +530,7 @@ async function getInventoryLocations(userId: number) {
 
   const locations = await prisma.inventoryLocation.findMany({
     where: { branchId: { in: [...new Set(branchIds)] }, isActive: true },
-    include: { branch: { select: { id: true, name: true } } },
+    include: { branch: { select: { id: true, name: true, orgId: true } } },
   });
 
   return locations;
@@ -542,6 +542,7 @@ async function getInventoryLocations(userId: number) {
 async function getExpiringItemsV2(options: {
   branchId?: number;
   locationId?: number;
+  orgId?: number;
   daysAhead?: number;
 }) {
   const daysAhead = options.daysAhead ?? 30;
@@ -556,7 +557,11 @@ async function getExpiringItemsV2(options: {
     onHandQty: { gt: 0 },
   };
   if (options.locationId) where.locationId = options.locationId;
-  if (options.branchId) where.location = { branchId: options.branchId };
+  if (options.branchId || options.orgId) {
+    where.location = {};
+    if (options.branchId) where.location.branchId = options.branchId;
+    if (options.orgId) where.location.branch = { orgId: options.orgId };
+  }
 
   const items = await prisma.stockLotBalance.findMany({
     where,
@@ -631,6 +636,210 @@ async function getLowStockAlertsV2(options: { branchId?: number; locationId?: nu
   }));
 }
 
+/**
+ * Report: current stock balance by location/variant (ledger-derived StockBalance)
+ */
+async function getStockBalanceReport(options: {
+  locationId?: number;
+  variantId?: number;
+  orgId?: number;
+}) {
+  const where: any = {};
+  if (options.locationId) where.locationId = options.locationId;
+  if (options.variantId) where.variantId = options.variantId;
+  if (options.orgId) where.location = { branch: { orgId: options.orgId } };
+
+  const balances = await prisma.stockBalance.findMany({
+    where,
+    include: {
+      location: { include: { branch: { select: { id: true, name: true, orgId: true } } } },
+      variant: { select: { id: true, sku: true, title: true } },
+    },
+  });
+  return balances.map((b) => ({
+    locationId: b.locationId,
+    variantId: b.variantId,
+    onHandQty: b.onHandQty,
+    reservedQty: b.reservedQty,
+    location: b.location,
+    variant: b.variant,
+  }));
+}
+
+/**
+ * Report: stock by lot with expiry buckets (0-30, 31-90, 90+ days)
+ */
+async function getStockByLotExpiryReport(options: { locationId?: number; variantId?: number }) {
+  const where: any = { onHandQty: { gt: 0 } };
+  if (options.locationId) where.locationId = options.locationId;
+  if (options.variantId) where.lot = { variantId: options.variantId };
+
+  const lotBalances = await prisma.stockLotBalance.findMany({
+    where,
+    include: {
+      lot: {
+        select: {
+          id: true,
+          lotCode: true,
+          expDate: true,
+          variantId: true,
+          variant: { select: { id: true, sku: true, title: true } },
+        },
+      },
+      location: { select: { id: true, name: true } },
+    },
+  });
+
+  const now = new Date();
+  const bucket = (expDate: Date) => {
+    const days = Math.ceil((expDate.getTime() - now.getTime()) / (24 * 60 * 60 * 1000));
+    if (days < 0) return "expired";
+    if (days <= 30) return "0-30";
+    if (days <= 90) return "31-90";
+    return "90+";
+  };
+
+  const byBucket: Record<string, any[]> = { expired: [], "0-30": [], "31-90": [], "90+": [] };
+  for (const lb of lotBalances) {
+    const b = bucket(lb.lot.expDate);
+    byBucket[b].push({
+      lotId: lb.lotId,
+      lot: lb.lot,
+      onHandQty: lb.onHandQty,
+      reservedQty: lb.reservedQty,
+      locationId: lb.locationId,
+      location: lb.location,
+      expiryBucket: b,
+    });
+  }
+  return { byBucket, items: lotBalances };
+}
+
+/**
+ * Search variants for product picker (bulk receive, etc.).
+ * orgIds: orgs the user can access; q: search string (sku, barcode, title, product name).
+ */
+async function getVariantsSearch(options: {
+  orgIds: number[];
+  q?: string;
+  limit?: number;
+  page?: number;
+}) {
+  const limit = Math.min(options.limit ?? 20, 100);
+  const page = options.page ?? 1;
+  const skip = (page - 1) * limit;
+  const where: any = { product: { orgId: { in: options.orgIds } }, isActive: true };
+  if (options.q && options.q.trim()) {
+    const q = options.q.trim();
+    where.OR = [
+      { sku: { contains: q, mode: "insensitive" } },
+      { title: { contains: q, mode: "insensitive" } },
+      { barcode: q },
+      { product: { name: { contains: q, mode: "insensitive" } } },
+      { product: { slug: { contains: q, mode: "insensitive" } } },
+    ];
+  }
+  const [items, total] = await Promise.all([
+    prisma.productVariant.findMany({
+      where,
+      skip,
+      take: limit,
+      orderBy: [{ product: { name: "asc" } }, { sku: "asc" }],
+      select: {
+        id: true,
+        sku: true,
+        title: true,
+        barcode: true,
+        productId: true,
+        requiresLot: true,
+        requiresExpiry: true,
+        requiresMfg: true,
+        product: { select: { id: true, name: true, slug: true } },
+      },
+    }),
+    prisma.productVariant.count({ where }),
+  ]);
+  return {
+    items,
+    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+  };
+}
+
+/**
+ * Stock valuation (FIFO or Weighted Average) for a location, optionally by variant.
+ * method: FIFO | WEIGHTED_AVG. Returns totalValue, totalQty, unitCost (avg), breakdown by variant if no variantId.
+ */
+async function getValuation(options: {
+  locationId: number;
+  variantId?: number;
+  method?: "FIFO" | "WEIGHTED_AVG";
+}) {
+  const method = options.method === "FIFO" ? "FIFO" : "WEIGHTED_AVG";
+  const where: any = { locationId: options.locationId, quantityDelta: { gt: 0 } };
+  if (options.variantId) where.variantId = options.variantId;
+  const entries = await prisma.stockLedger.findMany({
+    where,
+    orderBy: { createdAt: "asc" },
+    select: { variantId: true, quantityDelta: true, unitCost: true },
+  });
+  const balances = await prisma.stockBalance.findMany({
+    where: { locationId: options.locationId, ...(options.variantId ? { variantId: options.variantId } : {}), onHandQty: { gt: 0 } },
+    select: { variantId: true, onHandQty: true },
+  });
+  let totalValue = 0;
+  const byVariant: Record<number, { onHandQty: number; value: number; unitCost?: number }> = {};
+  for (const b of balances) {
+    const inEntries = entries.filter((e) => e.variantId === b.variantId);
+    const totalCost = inEntries.reduce((s, e) => s + (Number(e.unitCost || 0) * e.quantityDelta), 0);
+    const totalInQty = inEntries.reduce((s, e) => s + e.quantityDelta, 0);
+    const avgCost = totalInQty > 0 ? totalCost / totalInQty : 0;
+    const value = method === "WEIGHTED_AVG" ? b.onHandQty * avgCost : b.onHandQty * avgCost;
+    totalValue += value;
+    byVariant[b.variantId] = { onHandQty: b.onHandQty, value, unitCost: totalInQty > 0 ? avgCost : undefined };
+  }
+  const totalQty = balances.reduce((s, b) => s + b.onHandQty, 0);
+  const overallAvg = totalQty > 0 ? totalValue / totalQty : 0;
+  return {
+    method,
+    locationId: options.locationId,
+    variantId: options.variantId ?? null,
+    totalQty,
+    totalValue,
+    unitCost: totalQty > 0 ? overallAvg : null,
+    byVariant: options.variantId ? undefined : byVariant,
+  };
+}
+
+/**
+ * Dashboard cards: total SKUs with stock, low stock count, expiring (7d) count.
+ * Optional: branchId, locationId, orgId to scope.
+ */
+async function getInventoryDashboardCards(options: { branchId?: number; locationId?: number; orgId?: number }) {
+  const whereBalance: any = { onHandQty: { gt: 0 } };
+  if (options.locationId) whereBalance.locationId = options.locationId;
+  if (options.branchId) whereBalance.location = { branchId: options.branchId };
+  if (options.orgId) whereBalance.location = { ...whereBalance.location, branch: { orgId: options.orgId } };
+
+  const now = new Date();
+  const in7 = new Date(now);
+  in7.setDate(in7.getDate() + 7);
+  const whereExpiring: any = {
+    onHandQty: { gt: 0 },
+    lot: { expDate: { gte: now, lte: in7 } },
+  };
+  if (options.locationId) whereExpiring.locationId = options.locationId;
+  if (options.branchId) whereExpiring.location = { branchId: options.branchId };
+  if (options.orgId) whereExpiring.location = { ...whereExpiring.location, branch: { orgId: options.orgId } };
+
+  const [totalSkus, lowStockCount, expiringCount] = await Promise.all([
+    prisma.stockBalance.count({ where: { ...whereBalance, onHandQty: { gt: 0 } } }),
+    prisma.stockBalance.count({ where: { ...whereBalance, onHandQty: { lte: 10 } } }),
+    prisma.stockLotBalance.count({ where: whereExpiring }),
+  ]);
+
+  return { totalSkus, lowStockCount, expiringCount };
+}
+
 module.exports = {
   getInventory,
   getInventoryById,
@@ -644,6 +853,11 @@ module.exports = {
   getInventoryLocations,
   getExpiringItemsV2,
   getLowStockAlertsV2,
+  getStockBalanceReport,
+  getStockByLotExpiryReport,
+  getVariantsSearch,
+  getValuation,
+  getInventoryDashboardCards,
 };
 
 export {};

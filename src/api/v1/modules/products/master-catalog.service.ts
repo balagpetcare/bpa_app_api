@@ -1029,6 +1029,30 @@ async function cloneMasterProduct(
     customDescription?: string;
   }
 ) {
+  // Idempotent: if org already has a product cloned from this master, return existing (caller will map to 409)
+  const existingProduct = await prisma.product.findFirst({
+    where: {
+      orgId: orgId,
+      masterCatalogId: masterId,
+    },
+    include: {
+      org: { select: { id: true, name: true } },
+      category: true,
+      brand: true,
+      variants: { orderBy: { createdAt: "asc" } },
+      media: {
+        orderBy: { sortOrder: "asc" },
+        include: { media: { select: { id: true, url: true, type: true } } },
+      },
+    },
+  });
+  if (existingProduct) {
+    const err = new Error("Already added to catalog");
+    (err as any).alreadyAdded = true;
+    (err as any).existingProduct = existingProduct;
+    throw err;
+  }
+
   // Get master product
   const masterProduct = await getMasterProductById(masterId);
 

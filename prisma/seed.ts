@@ -12,6 +12,7 @@ import seedPetBrands from "./seeders/seedPetBrands";
 import seedPetCategories from "./seeders/seedPetCategories";
 import seedProductSubcategories from "./seeders/seedProductSubcategories";
 import seedMasterProductCatalog from "./seeders/seedMasterProductCatalog";
+import seedDemoMasterProductCatalog from "./seeders/seedDemoMasterProductCatalog";
 import seedCountries from "./seeders/seedCountries";
 import { runGlobalLocationSeed } from "./seeders/location";
 import seedCountryPolicies from "./seeders/seedCountryPolicies";
@@ -59,6 +60,9 @@ async function main() {
 
   // 13) Master Product Catalog (global product catalog for shop owners)
   await seedMasterProductCatalog(prisma);
+
+  // 13.1) Demo Master Product Catalog (~200 demo products)
+  await seedDemoMasterProductCatalog(prisma);
 
   // 14) Global-Ready Phase 1: Countries (BD, IN, US) + BD ACTIVE policy
   await seedCountries(prisma);

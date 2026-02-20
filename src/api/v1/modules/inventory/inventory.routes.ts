@@ -64,6 +64,26 @@ router.get(
   controller.getInventoryLots
 );
 
+// GET /api/v1/inventory/variants/search - Searchable product picker (q=, orgId=, limit=, page=)
+router.get(
+  "/variants/search",
+  requirePermission("inventory.read", "org.read"),
+  controller.getVariantsSearch
+);
+
+// GET /api/v1/inventory/dashboard - Dashboard cards (totalSkus, lowStockCount, expiringCount)
+router.get(
+  "/dashboard",
+  requirePermission("inventory.read", "org.read"),
+  controller.getInventoryDashboard
+);
+// GET /api/v1/inventory/valuation - Stock valuation (locationId=, variantId=, method=FIFO|WEIGHTED_AVG)
+router.get(
+  "/valuation",
+  requirePermission("inventory.read", "org.read"),
+  controller.getValuation
+);
+
 // POST /api/v1/inventory/opening - Create opening stock (OPENING ledger, requires lot)
 router.post(
   "/opening",
@@ -76,6 +96,12 @@ router.post(
   "/adjustment-requests",
   requirePermission("inventory.update", "org.write"),
   controller.createAdjustmentRequest
+);
+// PATCH /api/v1/inventory/adjustment-requests/:id - Approve or reject (body: { status: "APPROVED"|"REJECTED", reviewNote? })
+router.patch(
+  "/adjustment-requests/:id",
+  requirePermission("inventory.update", "org.write"),
+  controller.reviewAdjustmentRequest
 );
 
 // BLOCKED (ledger-only): legacy upsert/adjust/transfer return 410
@@ -97,6 +123,49 @@ router.get(
   requirePermission("inventory.read", "org.read"),
   controller.getInventoryLedger
 );
+
+// ============================
+// Stock requests (alias: /api/v1/inventory/stock-requests)
+// ============================
+router.use("/stock-requests", require("../stock_requests/stock_requests.routes"));
+
+// ============================
+// Dispatches (Challan/DO): list, create, send, receive, incoming
+// ============================
+router.use("/dispatches", require("../dispatches/dispatches.routes"));
+
+// GET /api/v1/inventory/receipts/bulk-template - CSV template for bulk receive
+router.get(
+  "/receipts/bulk-template",
+  requirePermission("inventory.read", "org.read"),
+  controller.getBulkReceiveTemplate
+);
+// POST /api/v1/inventory/receipts/bulk - Bulk purchase receive (create GRN + receive atomically)
+router.post(
+  "/receipts/bulk",
+  requirePermission("inventory.update", "org.write"),
+  controller.createBulkReceipt
+);
+// GET /api/v1/inventory/receipts/incoming - Incoming dispatches for branch (alias for GET /dispatches/incoming?branchId=)
+router.get("/receipts/incoming", requirePermission("inventory.read", "org.read"), require("../dispatches/dispatches.controller").getIncomingDispatches);
+
+// ============================
+// Stock count (cycle count)
+// ============================
+const stockCountController = require("./stockCount.controller");
+router.post("/stock-counts", requirePermission("inventory.update", "org.write"), stockCountController.createStockCount);
+router.get("/stock-counts", requirePermission("inventory.read", "org.read"), stockCountController.listStockCounts);
+router.get("/stock-counts/:id", requirePermission("inventory.read", "org.read"), stockCountController.getStockCountById);
+router.post("/stock-counts/:id/freeze", requirePermission("inventory.update", "org.write"), stockCountController.freezeStockCount);
+router.patch("/stock-counts/:id/lines", requirePermission("inventory.update", "org.write"), stockCountController.upsertCountLines);
+router.post("/stock-counts/:id/post", requirePermission("inventory.update", "org.write"), stockCountController.postStockCount);
+
+// ============================
+// Reports (ledger-based)
+// ============================
+router.get("/reports/stock-balance", requirePermission("inventory.read", "org.read"), controller.getReportsStockBalance);
+router.get("/reports/stock-by-lot-expiry", requirePermission("inventory.read", "org.read"), controller.getReportsStockByLotExpiry);
+router.get("/reports/movements", requirePermission("inventory.read", "org.read"), controller.getInventoryLedger);
 
 // GET /api/v1/inventory/:id - Get single item (ledger summary by composite id)
 router.get("/:id", controller.getInventoryItem);
