@@ -54,6 +54,7 @@ exports.uploadMedia = async (req, res) => {
         ownerUserId: Number(userId),
         file: processed,
         folder,
+        countryCode: req.countryContext?.countryCode,
       });
       created.push(media);
     }

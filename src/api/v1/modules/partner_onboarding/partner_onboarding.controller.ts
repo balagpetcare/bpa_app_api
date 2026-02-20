@@ -50,6 +50,16 @@ function applyWizardPatch(existingDocsJson, body) {
   return docs;
 }
 
+async function resolveRequestCountryId(req) {
+  const ctx = req.countryContext || {};
+  if (ctx.countryId) return ctx.countryId;
+  const code = String(ctx.countryCode || req.headers?.["x-country-code"] || "BD")
+    .toUpperCase()
+    .trim();
+  const country = await prisma.country.findUnique({ where: { code }, select: { id: true } });
+  return country?.id ?? null;
+}
+
 exports.createOrGetDraft = async (req, res) => {
   try {
     const userId = Number(req.user?.id);
@@ -227,6 +237,11 @@ exports.createOrganization = async (req, res) => {
     const { name, supportPhone, addressJson } = req.body || {};
     if (!name) return res.status(400).json({ success: false, message: "name is required" });
 
+    const countryId = await resolveRequestCountryId(req);
+    if (!countryId) {
+      return res.status(400).json({ success: false, message: "Country not resolved for organization" });
+    }
+
     const org = await prisma.organization.create({
       data: {
         ownerUserId: userId,
@@ -234,6 +249,7 @@ exports.createOrganization = async (req, res) => {
         name,
         supportPhone: supportPhone || null,
         addressJson: addressJson || null,
+        countryId,
       },
     });
 

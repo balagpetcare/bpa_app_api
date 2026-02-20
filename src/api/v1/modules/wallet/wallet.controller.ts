@@ -1,4 +1,5 @@
 const svc = require('./wallet.service');
+const prisma = require('../../../../infrastructure/db/prismaClient');
 const { logAdminAction } = require('../../../../infrastructure/audit/auditLogger');
 
 async function me(req, res, next) {
@@ -32,6 +33,17 @@ async function transactions(req, res, next) {
 async function createWithdrawRequest(req, res, next) {
   try {
     const userId = req.user?.id;
+    // Owner KYC gate: owners must be VERIFIED to withdraw
+    if (userId && prisma?.ownerKyc) {
+      const kyc = await prisma.ownerKyc.findUnique({ where: { userId }, select: { verificationStatus: true, deletedAt: true } }).catch(() => null);
+      if (kyc && !kyc.deletedAt && String(kyc.verificationStatus || '').toUpperCase() !== 'VERIFIED') {
+        return res.status(403).json({
+          success: false,
+          code: 'KYC_VERIFIED_REQUIRED',
+          message: 'Owner KYC must be approved (verified) before withdraw. You can continue setting up while pending.',
+        });
+      }
+    }
     const idempotencyKey = req.headers['idempotency-key'] || req.headers['x-idempotency-key'] || null;
     const data = await svc.createWithdrawRequest({ userId, body: req.body, idempotencyKey });
     return res.status(201).json({

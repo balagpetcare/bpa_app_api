@@ -27,6 +27,8 @@ module.exports = {
   storage: {
     region: process.env.AWS_REGION || "us-east-1",
     bucketName: process.env.AWS_BUCKET_NAME || "bpa-pets",
+    // Phase 3: per-country prefix in key (e.g. BD/, IN/) when true; single bucket
+    useCountryPrefix: boolEnv("STORAGE_USE_COUNTRY_PREFIX", true),
     // Internal endpoint (API container -> MinIO). In docker-compose this is usually http://bpa-storage:9000
     endpoint: process.env.AWS_ENDPOINT || "http://localhost:9000",
     // Public URL (mobile/browser). Should be reachable from the client device.

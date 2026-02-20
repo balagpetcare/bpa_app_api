@@ -1,6 +1,7 @@
 
-import { Prisma, PartnerStatus, FundraisingWithdrawRequestStatus, FundraisingAccountStatus } from "@prisma/client";
+import { Prisma, PartnerStatus, FundraisingWithdrawRequestStatus, FundraisingAccountStatus, TransactionStatus } from "@prisma/client";
 import { prisma } from "../../../../lib/prisma";
+const { notifyDonationThresholdExceeded } = require("../../services/govtReporting.service");
 
 function normalizeCampaignStatus(status) {
   const s = String(status || '').toUpperCase();
@@ -13,9 +14,16 @@ function parseIntSafe(v, def = 0) {
   return Number.isFinite(n) ? Math.trunc(n) : def;
 }
 
-async function getFeed({ limit = 50, cursor, verified, sort, category, location }) {
+function normalizeCountryCode(v) {
+  const code = String(v || "").toUpperCase().trim().slice(0, 2);
+  return code || "BD";
+}
+
+async function getFeed({ limit = 50, cursor, verified, sort, category, location, countryCode }) {
   const take = Math.min(parseIntSafe(limit, 50), 100);
   const where: Prisma.FundraisingCampaignWhereInput = { deletedAt: null };
+  const code = normalizeCountryCode(countryCode);
+  if (code) where.countryCode = code;
 
   if (verified !== undefined) {
     const b = String(verified).toLowerCase();
@@ -77,15 +85,16 @@ async function getFeed({ limit = 50, cursor, verified, sort, category, location 
 // My campaigns list for the unified withdraw UI.
 // Returns only campaigns created by the current user's fundraising account.
 // If the user has no fundraising account yet, returns an empty list.
-async function listMyCampaigns({ userId, limit = 100 }) {
+async function listMyCampaigns({ userId, limit = 100, countryCode }) {
   const take = Math.min(parseIntSafe(limit, 100), 200);
   const acc = await prisma.fundraisingAccount.findFirst({
     where: { userId: Number(userId), deletedAt: null },
   });
   if (!acc) return [];
+  const code = normalizeCountryCode(countryCode);
 
   return prisma.fundraisingCampaign.findMany({
-    where: { accountId: acc.id, deletedAt: null },
+    where: { accountId: acc.id, deletedAt: null, countryCode: code },
     take,
     orderBy: { createdAt: 'desc' },
     include: {
@@ -100,9 +109,10 @@ async function listMyCampaigns({ userId, limit = 100 }) {
   });
 }
 
-async function getCampaign({ id }) {
+async function getCampaign({ id, countryCode }) {
+  const code = normalizeCountryCode(countryCode);
   const campaign = await prisma.fundraisingCampaign.findFirst({
-    where: { id: parseIntSafe(id), deletedAt: null },
+    where: { id: parseIntSafe(id), deletedAt: null, countryCode: code },
     include: {
       post: {
         include: {
@@ -136,11 +146,12 @@ async function getCampaign({ id }) {
 
 // Aggregated endpoint for donation single page.
 // NOTE: Does not replace existing endpoints; it's an optional convenience endpoint.
-async function getCampaignSingle({ id }) {
+async function getCampaignSingle({ id, countryCode }) {
   const campaignId = parseIntSafe(id);
+  const code = normalizeCountryCode(countryCode);
 
   const campaign = await prisma.fundraisingCampaign.findFirst({
-    where: { id: campaignId, deletedAt: null },
+    where: { id: campaignId, deletedAt: null, countryCode: code },
     include: {
       post: {
         include: {
@@ -209,7 +220,7 @@ async function getCampaignSingle({ id }) {
   return { campaign, postCounts, updates };
 }
 
-async function createCampaign({ userId, title, caption, targetAmount, deadline, category, locationText, mediaIds = [] }) {
+async function createCampaign({ userId, title, caption, targetAmount, deadline, category, locationText, mediaIds = [], countryCode }) {
   const t = String(title || '').trim();
   if (!t) {
     const err = new Error('title is required');
@@ -262,7 +273,12 @@ async function createCampaign({ userId, title, caption, targetAmount, deadline, 
   const missing = [];
   if (!account.presentAddress) missing.push('presentAddress');
   if (!account.permanentAddress) missing.push('permanentAddress');
-  if (!account.divisionId || !account.districtId || !account.areaId) missing.push('location'); // upazilaId optional for City Corporation areas
+
+  // Location check: Either BD fields OR Global formattedAddress
+  const hasBdLocation = account.divisionId && account.districtId && account.areaId;
+  const hasGlobalLocation = account.formattedAddress;
+  if (!hasBdLocation && !hasGlobalLocation) missing.push('location');
+
   if (!account.dateOfBirth) missing.push('dateOfBirth');
 
   const docsCount = await prisma.fundraisingVerificationDocument.count({
@@ -277,6 +293,13 @@ async function createCampaign({ userId, title, caption, targetAmount, deadline, 
     throw err;
   }
 
+
+  const code = normalizeCountryCode(countryCode);
+  if (account.countryCode && account.countryCode !== code) {
+    const err = new Error("Fundraising account country mismatch");
+    (err as any).statusCode = 403;
+    throw err;
+  }
 
   const created = await prisma.$transaction(async (tx) => {
     const post = await tx.post.create({
@@ -298,6 +321,7 @@ async function createCampaign({ userId, title, caption, targetAmount, deadline, 
         deadline: dl,
         category: cat,
         locationText: loc,
+        countryCode: code,
 
         stats: { create: {} },
       },
@@ -314,8 +338,9 @@ async function createCampaign({ userId, title, caption, targetAmount, deadline, 
   return created;
 }
 
-async function updateCampaign({ userId, id, title, caption, targetAmount, deadline, category, locationText, status, mediaIds }) {
+async function updateCampaign({ userId, id, title, caption, targetAmount, deadline, category, locationText, status, mediaIds, countryCode }) {
   const campaignId = parseIntSafe(id);
+  const code = normalizeCountryCode(countryCode);
   const campaign = await prisma.fundraisingCampaign.findFirst({
     where: { id: campaignId, deletedAt: null },
     include: { post: { select: { id: true, authorId: true } }, account: { select: { userId: true } } },
@@ -324,6 +349,12 @@ async function updateCampaign({ userId, id, title, caption, targetAmount, deadli
   if (!campaign) {
     const err = new Error('Campaign not found');
     (err as any).statusCode = 404;
+    throw err;
+  }
+
+  if (campaign.countryCode && campaign.countryCode !== code) {
+    const err = new Error("Country mismatch");
+    (err as any).statusCode = 403;
     throw err;
   }
 
@@ -390,8 +421,9 @@ async function updateCampaign({ userId, id, title, caption, targetAmount, deadli
   return updated;
 }
 
-async function deleteCampaign({ userId, id }) {
+async function deleteCampaign({ userId, id, countryCode }) {
   const campaignId = parseIntSafe(id);
+  const code = normalizeCountryCode(countryCode);
   const campaign = await prisma.fundraisingCampaign.findFirst({
     where: { id: campaignId, deletedAt: null },
     include: { post: { select: { id: true, authorId: true } }, account: { select: { userId: true } } },
@@ -400,6 +432,12 @@ async function deleteCampaign({ userId, id }) {
   if (!campaign) {
     const err = new Error('Campaign not found');
     (err as any).statusCode = 404;
+    throw err;
+  }
+
+  if (campaign.countryCode && campaign.countryCode !== code) {
+    const err = new Error("Country mismatch");
+    (err as any).statusCode = 403;
     throw err;
   }
 
@@ -417,7 +455,7 @@ async function deleteCampaign({ userId, id }) {
   return { id: campaignId, deletedAt: true };
 }
 
-async function donate({ donorId, campaignId, amount }) {
+async function donate({ donorId, campaignId, amount, countryContext, idempotencyKey, ip, userAgent }) {
   const cid = parseIntSafe(campaignId);
   const amt = parseIntSafe(amount, 0);
   if (amt <= 0) {
@@ -425,6 +463,61 @@ async function donate({ donorId, campaignId, amount }) {
     (err as any).statusCode = 400;
     throw err;
   }
+
+  // Phase 2: Idempotency – return existing donation if same key
+  const key = typeof idempotencyKey === 'string' ? idempotencyKey.trim() || null : null;
+  if (key) {
+    const existing = await prisma.donation.findUnique({ where: { idempotencyKey: key } });
+    if (existing) {
+      const stats = await prisma.fundraisingCampaignStats.findUnique({ where: { campaignId: existing.campaignId } });
+      return { donation: existing, stats };
+    }
+  }
+
+  // Phase 2: Policy donation rules (INBOUND: single + daily limits)
+  const policy = countryContext?.policy;
+  if (policy?.donationRules) {
+    const inbound = policy.donationRules.find((r) => r.ruleType === 'INBOUND' && r.enabled);
+    if (inbound) {
+      const maxSingle = inbound.maxAmountSingle != null ? Number(inbound.maxAmountSingle) : null;
+      const maxDaily = inbound.maxAmountDaily != null ? Number(inbound.maxAmountDaily) : null;
+      if (maxSingle != null && amt > maxSingle) {
+        const err = new Error('Donation amount exceeds single transaction limit');
+        (err as any).statusCode = 403;
+        (err as any).code = 'POLICY_DENIED';
+        (err as any).reasonCode = 'LIMIT_EXCEEDED';
+        (err as any).details = { limit: 'maxAmountSingle', value: maxSingle };
+        throw err;
+      }
+      if (maxDaily != null && Number.isFinite(maxDaily)) {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const todayAgg = await prisma.donation.aggregate({
+          where: { donorId: Number(donorId), createdAt: { gte: today } },
+          _sum: { amount: true },
+        });
+        const todayTotal = todayAgg._sum?.amount ?? 0;
+        if (todayTotal + amt > maxDaily) {
+          const err = new Error('Donation would exceed daily limit');
+          (err as any).statusCode = 403;
+          (err as any).code = 'POLICY_DENIED';
+          (err as any).reasonCode = 'LIMIT_EXCEEDED';
+          (err as any).details = { limit: 'maxAmountDaily', value: maxDaily, todayTotal };
+          throw err;
+        }
+      }
+    }
+  }
+
+  // Phase 6: simple fraud/abuse detection (velocity check)
+  const fraudMax = Number(process.env.DONATION_FRAUD_MAX_PER_HOUR || 5);
+  const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+  const recentCount = await prisma.donation.count({
+    where: { donorId: Number(donorId), createdAt: { gte: oneHourAgo } },
+  });
+  const forceHold = Number.isFinite(fraudMax) && fraudMax > 0 && recentCount >= fraudMax;
+
+  const policyVersion = policy ? `policy-${policy.country?.code || ''}-${policy.id}` : null;
 
   const campaign = await prisma.fundraisingCampaign.findFirst({
     where: { id: cid, deletedAt: null, status: { in: ['ACTIVE', 'PAUSED'] } },
@@ -437,30 +530,60 @@ async function donate({ donorId, campaignId, amount }) {
     throw err;
   }
 
+  const reqCountry = normalizeCountryCode(countryContext?.countryCode);
+  if (campaign.countryCode && campaign.countryCode !== reqCountry) {
+    const err = new Error("Country mismatch");
+    (err as any).statusCode = 403;
+    throw err;
+  }
+
   const result = await prisma.$transaction(async (tx) => {
     const donation = await tx.donation.create({
       data: {
         campaignId: cid,
         donorId: Number(donorId),
         amount: amt,
-        status: 'SUCCESS',
+        status: forceHold ? 'ON_HOLD_REVIEW' : 'SUCCESS',
+        policyVersion: policyVersion || undefined,
+        idempotencyKey: key || undefined,
       },
     });
 
-    const stats = await tx.fundraisingCampaignStats.upsert({
-      where: { campaignId: cid },
-      update: {
-        raisedAmount: { increment: amt },
-        donorsCount: { increment: 1 },
-        lastDonationAt: new Date(),
-      },
-      create: {
-        campaignId: cid,
-        raisedAmount: amt,
-        donorsCount: 1,
-        lastDonationAt: new Date(),
-      },
-    });
+    // Phase 2: Audit DONATION_CREATED
+    try {
+      await tx.auditLog.create({
+        data: {
+          actorId: String(donorId),
+          actorRole: 'USER',
+          action: 'DONATION_CREATED',
+          entityType: 'DONATION',
+          entityId: String(donation.id),
+          after: { amount: amt, status: donation.status, policyVersion, holdReason: forceHold ? "VELOCITY" : null },
+          ip: ip || null,
+          userAgent: userAgent || null,
+        },
+      });
+    } catch (_) {
+      // non-blocking
+    }
+
+    let stats = await tx.fundraisingCampaignStats.findUnique({ where: { campaignId: cid } });
+    if (donation.status === 'SUCCESS') {
+      stats = await tx.fundraisingCampaignStats.upsert({
+        where: { campaignId: cid },
+        update: {
+          raisedAmount: { increment: amt },
+          donorsCount: { increment: 1 },
+          lastDonationAt: new Date(),
+        },
+        create: {
+          campaignId: cid,
+          raisedAmount: amt,
+          donorsCount: 1,
+          lastDonationAt: new Date(),
+        },
+      });
+    }
 
     // ------------------------------
     // V1: Donation -> Campaign Owner Wallet Credit (ledger)
@@ -541,6 +664,16 @@ async function donate({ donorId, campaignId, amount }) {
 
     return { donation, stats };
   });
+
+  // Phase 4: Govt reporting hook (threshold -> notify, non-blocking)
+  const countryCode = countryContext?.policy?.country?.code || countryContext?.countryCode;
+  notifyDonationThresholdExceeded({
+    amount: amt,
+    donationId: result.donation.id,
+    countryCode: countryCode || undefined,
+    campaignId: cid,
+    donorId: Number(donorId),
+  }).catch(() => {});
 
   return result;
 }
@@ -1311,7 +1444,9 @@ async function getMyAccount({ userId }) {
   return account;
 }
 
-async function updateMyAccount({ userId, accountType, permanentAddress, presentAddress, occupation, area, rescueSinceYear, orgName, orgDescription, orgWorkType, divisionId, districtId, upazilaId, areaId, dateOfBirth, nationalIdNumber, birthRegNumber, studentIdNumber }) {
+async function updateMyAccount({ userId, accountType, permanentAddress, presentAddress, occupation, area, rescueSinceYear, orgName, orgDescription, orgWorkType, divisionId, districtId, upazilaId, areaId, dateOfBirth, nationalIdNumber, birthRegNumber, studentIdNumber, countryCode,
+  countryName, stateName, cityName, addressLine, latitude, longitude, formattedAddress
+}) {
   const allowed = ["INDIVIDUAL", "ORGANIZATION"];
   const type = accountType !== undefined ? String(accountType).toUpperCase() : undefined;
   if (type !== undefined && !allowed.includes(type)) {
@@ -1329,6 +1464,16 @@ async function updateMyAccount({ userId, accountType, permanentAddress, presentA
   if (districtId !== undefined) data.districtId = districtId === null ? null : Number(districtId);
   if (upazilaId !== undefined) data.upazilaId = upazilaId === null ? null : Number(upazilaId);
   if (areaId !== undefined) data.areaId = areaId === null ? null : Number(areaId);
+
+  // Global / Map-based location
+  if (countryName !== undefined) data.countryName = countryName ? String(countryName) : null;
+  if (stateName !== undefined) data.stateName = stateName ? String(stateName) : null;
+  if (cityName !== undefined) data.cityName = cityName ? String(cityName) : null;
+  if (addressLine !== undefined) data.addressLine = addressLine ? String(addressLine) : null;
+  if (formattedAddress !== undefined) data.formattedAddress = formattedAddress ? String(formattedAddress) : null;
+  if (latitude !== undefined) data.latitude = latitude === null ? null : Number(latitude);
+  if (longitude !== undefined) data.longitude = longitude === null ? null : Number(longitude);
+
   if (dateOfBirth !== undefined) {
     const d = dateOfBirth ? new Date(dateOfBirth) : null;
     data.dateOfBirth = (d && !isNaN(d.getTime())) ? d : null;
@@ -1345,16 +1490,17 @@ async function updateMyAccount({ userId, accountType, permanentAddress, presentA
   if (orgDescription !== undefined) data.orgDescription = orgDescription ? String(orgDescription) : null;
   if (orgWorkType !== undefined) data.orgWorkType = orgWorkType ? String(orgWorkType) : null;
 
+  const code = normalizeCountryCode(countryCode);
   const account = await prisma.fundraisingAccount.upsert({
     where: { userId: Number(userId) },
-    update: { deletedAt: null, ...data },
-    create: { userId: Number(userId), ...data },
+    update: { deletedAt: null, countryCode: code, ...data },
+    create: { userId: Number(userId), countryCode: code, ...data },
   });
   return account;
 }
 
 
-async function addVerificationDocument({ userId, title, mediaId }) {
+async function addVerificationDocument({ userId, title, mediaId, countryCode }) {
   const t = String(title || '').trim();
   const mid = Number(mediaId);
   if (!t || !Number.isFinite(mid)) {
@@ -1364,10 +1510,11 @@ async function addVerificationDocument({ userId, title, mediaId }) {
   }
 
   // ensure account exists
+  const code = normalizeCountryCode(countryCode);
   const account = await prisma.fundraisingAccount.upsert({
     where: { userId: Number(userId) },
-    update: { deletedAt: null },
-    create: { userId: Number(userId) },
+    update: { deletedAt: null, countryCode: code },
+    create: { userId: Number(userId), countryCode: code },
   });
 
   const doc = await prisma.fundraisingVerificationDocument.create({
@@ -1459,6 +1606,180 @@ async function submitAccount({ userId }) {
   return updated;
 }
 
+// Phase 2.6: Admin donation review (hold / KYC list)
+async function adminListDonationsHold({ status, limit = 50, cursor }) {
+  const where: Prisma.DonationWhereInput = {};
+  const statusFilter = status ? String(status).toUpperCase() : null;
+  if (statusFilter === 'ON_HOLD_REVIEW' || statusFilter === 'KYC_REQUIRED') {
+    (where as any).status = statusFilter;
+  } else {
+    (where as any).status = { in: ['ON_HOLD_REVIEW', 'KYC_REQUIRED'] };
+  }
+
+  const take = Math.min(parseIntSafe(limit, 50), 100);
+  const args: Prisma.DonationFindManyArgs = {
+    where,
+    take,
+    orderBy: { createdAt: 'desc' },
+    include: {
+      campaign: { select: { id: true, title: true, account: { select: { userId: true } } } },
+      donor: { select: { id: true, profile: { select: { displayName: true, username: true } } } },
+    },
+  };
+  if (cursor) {
+    args.skip = 1;
+    args.cursor = { id: parseIntSafe(cursor) };
+  }
+  const list = await prisma.donation.findMany(args);
+  return list;
+}
+
+async function adminUpdateDonationStatus({ adminUserId, donationId, status, note }) {
+  const id = parseIntSafe(donationId);
+  const s = String(status || '').toUpperCase();
+  const allowedNew = ['SUCCESS', 'FAILED'];
+  if (!allowedNew.includes(s)) {
+    const err = new Error('Invalid status; use SUCCESS or FAILED');
+    (err as any).statusCode = 400;
+    throw err;
+  }
+
+  const donation = await prisma.donation.findUnique({
+    where: { id },
+    include: { campaign: { include: { account: { select: { userId: true } }, stats: true } }, donor: true },
+  });
+  if (!donation) {
+    const err = new Error('Donation not found');
+    (err as any).statusCode = 404;
+    throw err;
+  }
+  const current = donation.status;
+  const allowedFrom = ['ON_HOLD_REVIEW', 'KYC_REQUIRED'];
+  if (!allowedFrom.includes(current)) {
+    const err = new Error(`Donation status is ${current}; only ON_HOLD_REVIEW or KYC_REQUIRED can be updated`);
+    (err as any).statusCode = 400;
+    throw err;
+  }
+
+  const amt = Number(donation.amount);
+  const cid = donation.campaignId;
+  const donorId = donation.donorId;
+  const campaign = donation.campaign;
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const before = { id: donation.id, status: donation.status };
+    const statusEnum = s as TransactionStatus;
+    await tx.donation.update({ where: { id }, data: { status: statusEnum } });
+    const after = { id, status: statusEnum };
+
+    try {
+      await tx.auditLog.create({
+        data: {
+          actorId: String(adminUserId),
+          actorRole: 'ADMIN',
+          action: 'DONATION_STATUS_UPDATE',
+          entityType: 'DONATION',
+          entityId: String(id),
+          before,
+          after,
+          ip: null,
+          userAgent: null,
+        },
+      });
+    } catch (_) {
+      // non-blocking
+    }
+
+    if (s === 'SUCCESS') {
+      const ownerUserId = Number(campaign?.account?.userId);
+      if (ownerUserId && ownerUserId > 0) {
+        const existingTx = await tx.walletTransaction.findFirst({
+          where: { sourceType: 'DONATION', sourceId: id },
+        });
+        if (!existingTx) {
+          const ownerWallet = await tx.userWallet.upsert({
+            where: { userId: ownerUserId },
+            update: {},
+            create: {
+              userId: ownerUserId,
+              balance: 0,
+              availableBalance: 0,
+              pendingBalance: 0,
+              lockedBalance: 0,
+            },
+          });
+          const splitSum = Number(ownerWallet.availableBalance) + Number(ownerWallet.pendingBalance) + Number(ownerWallet.lockedBalance);
+          if (splitSum === 0 && Number(ownerWallet.balance) > 0) {
+            await tx.userWallet.update({
+              where: { id: ownerWallet.id },
+              data: { availableBalance: ownerWallet.balance },
+            });
+          }
+          await tx.userWallet.update({
+            where: { id: ownerWallet.id },
+            data: { balance: { increment: amt }, availableBalance: { increment: amt } },
+          });
+          await tx.walletTransaction.create({
+            data: {
+              walletId: ownerWallet.id,
+              type: 'CREDIT',
+              status: 'SUCCESS',
+              amount: amt,
+              method: null,
+              reference: null,
+              sourceType: 'DONATION',
+              sourceId: id,
+              note: `Donation approved (admin) for campaign ${cid}`,
+            },
+          });
+        }
+      }
+      await tx.fundraisingCampaignStats.upsert({
+        where: { campaignId: cid },
+        update: { raisedAmount: { increment: amt }, donorsCount: { increment: 1 }, lastDonationAt: new Date() },
+        create: { campaignId: cid, raisedAmount: amt, donorsCount: 1, lastDonationAt: new Date() },
+      });
+      const pointsPer100 = Number(process.env.DONATION_POINTS_PER_100 || 1);
+      const points = Math.floor(amt / 100) * (Number.isFinite(pointsPer100) ? pointsPer100 : 1);
+      if (points > 0) {
+        await tx.userWallet.upsert({
+          where: { userId: donorId },
+          update: { points: { increment: points } },
+          create: { userId: donorId, points },
+        });
+        await tx.rewardHistory.create({
+          data: {
+            userId: donorId,
+            action: 'DONATION',
+            points,
+            description: `Donation reward points (${amt})`,
+            referenceId: String(id),
+          },
+        });
+        await tx.userStatsCache.upsert({
+          where: { userId: donorId },
+          update: { pawPoints: { increment: points } },
+          create: { userId: donorId, pawPoints: points },
+        });
+      }
+    }
+
+    return tx.donation.findUnique({ where: { id }, include: { campaign: true, donor: { select: { id: true, profile: true } } } });
+  });
+
+  // Phase 4: Govt reporting hook (admin approval of held donation)
+  if (s === 'SUCCESS') {
+    notifyDonationThresholdExceeded({
+      amount: amt,
+      donationId: id,
+      campaignId: cid,
+      donorId,
+    }).catch(() => {});
+  }
+
+  return updated;
+}
+
 async function adminListAccounts({ status }) {
   const where: Prisma.FundraisingAccountWhereInput = { deletedAt: null };
   if (status) (where as any).status = String(status).toUpperCase() as FundraisingAccountStatus;
@@ -1531,6 +1852,8 @@ module.exports = {
   addVerificationDocument,
   deleteVerificationDocument,
   submitAccount,
+  adminListDonationsHold,
+  adminUpdateDonationStatus,
   adminListAccounts,
   adminUpdateAccountStatus,
 

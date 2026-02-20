@@ -38,11 +38,38 @@ const webhookLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+// Donation (Phase 2: limit donate requests per window)
+const donationLimiter = rateLimit({
+  windowMs: numEnv('RL_DONATION_WINDOW_MS', 60 * 1000),
+  limit: numEnv('RL_DONATION_MAX', 30),
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Phase 3: Geocode/reverse (Nominatim rate limit ~1 req/sec for public)
+const geocodeLimiter = rateLimit({
+  windowMs: numEnv('RL_GEOCODE_WINDOW_MS', 60 * 1000),
+  limit: numEnv('RL_GEOCODE_MAX', 60),
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Product import upload (per-user to avoid abuse)
+const productImportUploadLimiter = rateLimit({
+  windowMs: numEnv('RL_IMPORT_UPLOAD_WINDOW_MS', 15 * 60 * 1000),
+  limit: numEnv('RL_IMPORT_UPLOAD_MAX', 20),
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 module.exports = {
   generalLimiter,
   authLimiter,
   withdrawLimiter,
   webhookLimiter,
+  donationLimiter,
+  geocodeLimiter,
+  productImportUploadLimiter,
 };
 
 export {};

@@ -71,33 +71,51 @@ async function summaryLockedUpdateAttempts({ prisma, days = 7, entityType = null
     const byEntityType = await prisma.verificationLockedUpdateAttempt.groupBy({
       by: ['entityType'],
       where,
-      _count: { _all: true },
-      orderBy: { _count: { _all: 'desc' } },
+      _count: true,
     });
 
     // distinct (entityType, entityId)
-    const distinctRows = await prisma.$queryRaw`
-      SELECT COUNT(*)::int AS "uniqueEntities"
-      FROM (
-        SELECT "entityType", "entityId"
-        FROM "VerificationLockedUpdateAttempt"
-        WHERE "createdAt" >= ${since}
-        ${entityType ? prisma.$queryRaw`AND "entityType" = ${entityType}` : prisma.$queryRaw``}
-        GROUP BY "entityType", "entityId"
-      ) t;
-    `;
+    const distinctRows = entityType
+      ? await prisma.$queryRaw`
+          SELECT COUNT(*)::int AS "uniqueEntities"
+          FROM (
+            SELECT "entityType", "entityId"
+            FROM "verification_locked_update_attempts"
+            WHERE "createdAt" >= ${since}
+            AND "entityType" = ${entityType}::text
+            GROUP BY "entityType", "entityId"
+          ) t;
+        `
+      : await prisma.$queryRaw`
+          SELECT COUNT(*)::int AS "uniqueEntities"
+          FROM (
+            SELECT "entityType", "entityId"
+            FROM "verification_locked_update_attempts"
+            WHERE "createdAt" >= ${since}
+            GROUP BY "entityType", "entityId"
+          ) t;
+        `;
 
     const uniqueEntities = Array.isArray(distinctRows) && distinctRows[0]?.uniqueEntities ? Number(distinctRows[0].uniqueEntities) : 0;
 
-    const topEntities = await prisma.$queryRaw`
-      SELECT "entityType" AS "entityType", "entityId" AS "entityId", COUNT(*)::int AS "count"
-      FROM "VerificationLockedUpdateAttempt"
-      WHERE "createdAt" >= ${since}
-      ${entityType ? prisma.$queryRaw`AND "entityType" = ${entityType}` : prisma.$queryRaw``}
-      GROUP BY "entityType", "entityId"
-      ORDER BY COUNT(*) DESC
-      LIMIT ${topN};
-    `;
+    const topEntities = entityType
+      ? await prisma.$queryRaw`
+          SELECT "entityType" AS "entityType", "entityId" AS "entityId", COUNT(*)::int AS "count"
+          FROM "verification_locked_update_attempts"
+          WHERE "createdAt" >= ${since}
+          AND "entityType" = ${entityType}::text
+          GROUP BY "entityType", "entityId"
+          ORDER BY COUNT(*) DESC
+          LIMIT ${topN};
+        `
+      : await prisma.$queryRaw`
+          SELECT "entityType" AS "entityType", "entityId" AS "entityId", COUNT(*)::int AS "count"
+          FROM "verification_locked_update_attempts"
+          WHERE "createdAt" >= ${since}
+          GROUP BY "entityType", "entityId"
+          ORDER BY COUNT(*) DESC
+          LIMIT ${topN};
+        `;
 
     return {
       ok: true,
@@ -105,7 +123,9 @@ async function summaryLockedUpdateAttempts({ prisma, days = 7, entityType = null
       since,
       total,
       uniqueEntities,
-      byEntityType: (byEntityType || []).map((r) => ({ entityType: r.entityType, count: r._count?._all || 0 })),
+      byEntityType: (byEntityType || [])
+        .map((r) => ({ entityType: r.entityType, count: r._count || 0 }))
+        .sort((a, b) => b.count - a.count),
       topEntities: Array.isArray(topEntities) ? topEntities : [],
     };
   } catch (e) {
@@ -119,14 +139,22 @@ async function timeseriesLockedUpdateAttempts({ prisma, days = 7, entityType = n
     const { days: d, since } = buildSince(days);
 
     // day bucket (UTC) - good enough for ops dashboard
-    const rows = await prisma.$queryRaw`
-      SELECT DATE("createdAt") AS "day", COUNT(*)::int AS "count"
-      FROM "VerificationLockedUpdateAttempt"
-      WHERE "createdAt" >= ${since}
-      ${entityType ? prisma.$queryRaw`AND "entityType" = ${entityType}` : prisma.$queryRaw``}
-      GROUP BY DATE("createdAt")
-      ORDER BY DATE("createdAt") ASC;
-    `;
+    const rows = entityType
+      ? await prisma.$queryRaw`
+          SELECT DATE("createdAt") AS "day", COUNT(*)::int AS "count"
+          FROM "verification_locked_update_attempts"
+          WHERE "createdAt" >= ${since}
+          AND "entityType" = ${entityType}::text
+          GROUP BY DATE("createdAt")
+          ORDER BY DATE("createdAt") ASC;
+        `
+      : await prisma.$queryRaw`
+          SELECT DATE("createdAt") AS "day", COUNT(*)::int AS "count"
+          FROM "verification_locked_update_attempts"
+          WHERE "createdAt" >= ${since}
+          GROUP BY DATE("createdAt")
+          ORDER BY DATE("createdAt") ASC;
+        `;
 
     return {
       ok: true,
@@ -147,15 +175,24 @@ async function topEntitiesLockedUpdateAttempts({ prisma, days = 7, entityType = 
     const { days: d, since } = buildSince(days);
     const lim = clampInt(limit, { min: 1, max: 100, def: 10 });
 
-    const rows = await prisma.$queryRaw`
-      SELECT "entityType" AS "entityType", "entityId" AS "entityId", COUNT(*)::int AS "count"
-      FROM "VerificationLockedUpdateAttempt"
-      WHERE "createdAt" >= ${since}
-      ${entityType ? prisma.$queryRaw`AND "entityType" = ${entityType}` : prisma.$queryRaw``}
-      GROUP BY "entityType", "entityId"
-      ORDER BY COUNT(*) DESC
-      LIMIT ${lim};
-    `;
+    const rows = entityType
+      ? await prisma.$queryRaw`
+          SELECT "entityType" AS "entityType", "entityId" AS "entityId", COUNT(*)::int AS "count"
+          FROM "verification_locked_update_attempts"
+          WHERE "createdAt" >= ${since}
+          AND "entityType" = ${entityType}::text
+          GROUP BY "entityType", "entityId"
+          ORDER BY COUNT(*) DESC
+          LIMIT ${lim};
+        `
+      : await prisma.$queryRaw`
+          SELECT "entityType" AS "entityType", "entityId" AS "entityId", COUNT(*)::int AS "count"
+          FROM "verification_locked_update_attempts"
+          WHERE "createdAt" >= ${since}
+          GROUP BY "entityType", "entityId"
+          ORDER BY COUNT(*) DESC
+          LIMIT ${lim};
+        `;
 
     return {
       ok: true,

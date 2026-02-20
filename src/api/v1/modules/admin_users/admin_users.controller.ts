@@ -67,10 +67,20 @@ function pickSearchWhere(q) {
 exports.list = async (req, res) => {
   try {
     const q = req.query?.q;
-    const where = pickSearchWhere(q);
+    const status = req.query?.status;
+    const createdSince = parseInt(req.query?.createdSince, 10);
+    const searchWhere = pickSearchWhere(q);
+    const statusWhere = status && ["ACTIVE", "BLOCKED", "DELETED"].includes(String(status).toUpperCase())
+      ? { status: String(status).toUpperCase() }
+      : {};
+    const createdWhere = Number.isFinite(createdSince) && createdSince > 0
+      ? { createdAt: { gte: new Date(Date.now() - createdSince * 24 * 60 * 60 * 1000) } }
+      : {};
+    const where = [statusWhere, createdWhere, searchWhere].filter((w) => w && Object.keys(w).length);
+    const combined = where.length === 0 ? undefined : where.length === 1 ? where[0] : { AND: where };
 
     const rows = await prisma.user.findMany({
-      where,
+      where: combined,
       include: {
         auth: { select: { email: true, phone: true, provider: true, createdAt: true } },
         profile: { select: { displayName: true, username: true } },
@@ -94,6 +104,43 @@ exports.list = async (req, res) => {
     return res.json({ success: true, data });
   } catch (e) {
     console.error("admin_users.list error", e);
+    return res.status(500).json({ success: false, message: "Server Error" });
+  }
+};
+
+// GET /api/v1/admin/users/:id
+exports.getById = async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ success: false, message: "Invalid id" });
+
+    const user = await prisma.user.findUnique({
+      where: { id },
+      include: {
+        auth: { select: { email: true, phone: true, provider: true, createdAt: true } },
+        profile: { select: { displayName: true, username: true } },
+        ownerKyc: { select: { id: true, verificationStatus: true } },
+        ownedOrganizations: { select: { id: true, name: true, status: true } },
+      },
+    });
+    if (!user) return res.status(404).json({ success: false, message: "Not found" });
+
+    const data = {
+      id: user.id,
+      status: user.status,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+      email: user.auth?.email || null,
+      phone: user.auth?.phone || null,
+      provider: user.auth?.provider || null,
+      displayName: user.profile?.displayName || null,
+      username: user.profile?.username || null,
+      ownerKyc: user.ownerKyc || null,
+      organizations: user.ownedOrganizations || [],
+    };
+    return res.json({ success: true, data });
+  } catch (e) {
+    console.error("admin_users.getById error", e);
     return res.status(500).json({ success: false, message: "Server Error" });
   }
 };
@@ -261,6 +308,28 @@ exports.updateById = async (req, res) => {
       return res.status(409).json({ success: false, message: "Email/Phone already in use" });
     }
     console.error("admin_users.updateById error", e);
+    return res.status(500).json({ success: false, message: "Server Error" });
+  }
+};
+
+// POST /api/v1/admin/users/:id/force-logout
+exports.forceLogout = async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ success: false, message: "Invalid id" });
+
+    const user = await prisma.user.findUnique({ where: { id }, select: { id: true } });
+    if (!user) return res.status(404).json({ success: false, message: "Not found" });
+
+    const now = new Date();
+    await prisma.userSession.updateMany({
+      where: { userId: id, revokedAt: null },
+      data: { revokedAt: now },
+    });
+
+    return res.json({ success: true, message: "Sessions revoked" });
+  } catch (e) {
+    console.error("admin_users.forceLogout error", e);
     return res.status(500).json({ success: false, message: "Server Error" });
   }
 };

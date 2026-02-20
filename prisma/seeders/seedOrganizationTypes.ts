@@ -1,13 +1,47 @@
 import { PrismaClient } from '@prisma/client';
 
 const DEFAULT_ORG_TYPES = [
-  { code: 'CLINIC_ORG', nameEn: 'Clinic Organization', nameBn: 'ক্লিনিক প্রতিষ্ঠান', sortOrder: 10 },
-  { code: 'PET_SHOP_ORG', nameEn: 'Pet Shop Organization', nameBn: 'পেট শপ প্রতিষ্ঠান', sortOrder: 20 },
-  { code: 'DELIVERY_ORG', nameEn: 'Delivery Hub Organization', nameBn: 'ডেলিভারি হাব প্রতিষ্ঠান', sortOrder: 30 },
-  { code: 'NGO', nameEn: 'NGO / Shelter', nameBn: 'এনজিও / শেল্টার', sortOrder: 40 },
-  { code: 'BREEDER', nameEn: 'Breeder', nameBn: 'ব্রিডার', sortOrder: 50 },
-  { code: 'TRAINING_CENTER', nameEn: 'Training Center', nameBn: 'ট্রেনিং সেন্টার', sortOrder: 60 },
+  // BUSINESS (Profit)
+  {
+    code: 'VET_CLINIC',
+    nameEn: 'Veterinary Clinic',
+    nameBn: 'ভেটেরিনারি ক্লিনিক',
+    sortOrder: 10,
+  },
+  {
+    code: 'PET_SHOP',
+    nameEn: 'Pet Shop',
+    nameBn: 'পেট শপ',
+    sortOrder: 20,
+  },
+  {
+    code: 'FOSTER_CARE',
+    nameEn: 'Foster Care Service',
+    nameBn: 'ফস্টার কেয়ার সার্ভিস',
+    sortOrder: 30,
+  },
+  {
+    code: 'PET_TRAINING',
+    nameEn: 'Pet Training Center',
+    nameBn: 'পেট ট্রেনিং সেন্টার',
+    sortOrder: 40,
+  },
+
+  // NON-PROFIT / WELFARE
+  {
+    code: 'SHELTER_HOME',
+    nameEn: 'Animal Shelter Home',
+    nameBn: 'এনিমেল শেল্টার হোম',
+    sortOrder: 50,
+  },
+  {
+    code: 'ANIMAL_WELFARE_ORG',
+    nameEn: 'Animal Welfare Organization',
+    nameBn: 'প্রাণী কল্যাণ সংস্থা',
+    sortOrder: 60,
+  },
 ];
+
 
 export default async function seedOrganizationTypes(prisma: PrismaClient) {
   // If migration not applied yet, Prisma will throw. We keep seed resilient.

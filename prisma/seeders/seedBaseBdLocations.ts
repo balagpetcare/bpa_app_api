@@ -12,18 +12,33 @@ function readJson<T>(fileName: string): T {
   return JSON.parse(fs.readFileSync(p, 'utf-8')) as T;
 }
 
+function readJsonIfExists<T>(fileName: string): T | null {
+  try {
+    const p = path.join(__dirname, '..', 'seed-data', fileName);
+    if (!fs.existsSync(p)) return null;
+    return JSON.parse(fs.readFileSync(p, 'utf-8')) as T;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Seeds Bangladesh base locations from prisma/seed-data:
  *  - bd.divisions.json
  *  - bd.districts.json
  *  - bd.upazilas.json
  *  - bd.areas.json
+ * Skips gracefully if seed-data folder or any file is missing.
  */
 export default async function seedBaseBdLocations(prisma: PrismaClient) {
-  const divisions = readJson<DivisionSeed[]>('bd.divisions.json');
-  const districts = readJson<DistrictSeed[]>('bd.districts.json');
-  const upazilas = readJson<UpazilaSeed[]>('bd.upazilas.json');
-  const areas = readJson<AreaSeed[]>('bd.areas.json');
+  const divisions = readJsonIfExists<DivisionSeed[]>('bd.divisions.json');
+  if (!divisions || divisions.length === 0) {
+    console.warn('⚠️ seedBaseBdLocations skipped: prisma/seed-data/bd.divisions.json not found or empty');
+    return;
+  }
+  const districts = readJsonIfExists<DistrictSeed[]>('bd.districts.json') ?? [];
+  const upazilas = readJsonIfExists<UpazilaSeed[]>('bd.upazilas.json') ?? [];
+  const areas = readJsonIfExists<AreaSeed[]>('bd.areas.json') ?? [];
 
   // 1) Divisions
   for (const d of divisions) {

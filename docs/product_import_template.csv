@@ -1,0 +1,4 @@
+name,sku,barcode,price,category,subcategory,brand,unit,description,variant_name
+Royal Canin Kitten 2kg,RC-KIT-2,8901234567890,2300,Food,Dry Food,Royal Canin,kg,Premium kitten food,2kg bag
+Whiskas Temptations 60g Chicken,WH-TEMP-60-CH,,350,Cat Treats,Training Treats,Whiskas,g,Crunchy treats,60g Chicken
+Pedigree Adult 3kg,PED-ADULT-3,8901234567891,1850,Dog Food,Dry Food,Pedigree,kg,Complete adult dog nutrition,3kg bag

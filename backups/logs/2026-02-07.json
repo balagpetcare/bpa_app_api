@@ -1,0 +1,89 @@
+{
+  "exportedAt": "2026-02-08T01:54:01.257Z",
+  "date": "2026-02-07",
+  "count": 5,
+  "logs": [
+    {
+      "id": 1,
+      "ownerUserId": 1,
+      "actorUserId": 1,
+      "action": "TEAM_CREATED",
+      "meta": {
+        "name": "ALL TYPES",
+        "teamId": 1
+      },
+      "createdAt": "2026-02-07T15:56:00.869Z",
+      "actor": {
+        "id": 1,
+        "displayName": "Owner 1",
+        "email": "worldpetsassociation+owners1@gmail.com"
+      }
+    },
+    {
+      "id": 2,
+      "ownerUserId": 1,
+      "actorUserId": 1,
+      "action": "MEMBER_ADDED",
+      "meta": {
+        "teamId": 1,
+        "userId": 2
+      },
+      "createdAt": "2026-02-07T18:13:15.090Z",
+      "actor": {
+        "id": 1,
+        "displayName": "Owner 1",
+        "email": "worldpetsassociation+owners1@gmail.com"
+      }
+    },
+    {
+      "id": 3,
+      "ownerUserId": 1,
+      "actorUserId": 1,
+      "action": "DELEGATION_ASSIGNED",
+      "meta": {
+        "scopeKey": "clinics",
+        "delegationId": 1,
+        "delegatedUserId": 2
+      },
+      "createdAt": "2026-02-07T18:13:24.495Z",
+      "actor": {
+        "id": 1,
+        "displayName": "Owner 1",
+        "email": "worldpetsassociation+owners1@gmail.com"
+      }
+    },
+    {
+      "id": 4,
+      "ownerUserId": 1,
+      "actorUserId": 1,
+      "action": "MEMBER_REMOVED",
+      "meta": {
+        "teamId": 1,
+        "userId": 2
+      },
+      "createdAt": "2026-02-07T19:42:51.689Z",
+      "actor": {
+        "id": 1,
+        "displayName": "Owner 1",
+        "email": "worldpetsassociation+owners1@gmail.com"
+      }
+    },
+    {
+      "id": 5,
+      "ownerUserId": 1,
+      "actorUserId": 1,
+      "action": "MEMBER_ADDED",
+      "meta": {
+        "email": "freelancergobinda+team1@gmail.com",
+        "teamId": 1,
+        "inviteId": 1
+      },
+      "createdAt": "2026-02-07T23:32:37.110Z",
+      "actor": {
+        "id": 1,
+        "displayName": "Owner 1",
+        "email": "worldpetsassociation+owners1@gmail.com"
+      }
+    }
+  ]
+}

@@ -5,9 +5,11 @@ const prisma = require("../infrastructure/db/prismaClient");
  *
  * Rules:
  * - Owner must have an OwnerKyc row
- * - verificationStatus must be SUBMITTED or VERIFIED
+ * - verificationStatus must be SUBMITTED or VERIFIED (pending = SUBMITTED allows onboarding continuation)
  * - must not be locked/deleted
  * - must have at least 1 uploaded KYC document
+ *
+ * Pending (SUBMITTED) owners can create org/branch, add drafts; go-live/payout/ads require VERIFIED (see feature gating).
  */
 module.exports = async function ensureOwnerKyc(req, res, next) {
   try {

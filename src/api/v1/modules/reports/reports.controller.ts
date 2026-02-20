@@ -1,105 +1,240 @@
+const service = require("./reports.service");
 const prisma = require("../../../../infrastructure/db/prismaClient");
 
-// Reason catalogs (server source of truth)
-const REASONS = {
-  POST: [
-    { code: "SPAM", label: "Spam" },
-    { code: "INAPPROPRIATE", label: "Inappropriate content" },
-    { code: "ANIMAL_ABUSE", label: "Animal abuse" },
-    { code: "FALSE_INFO", label: "False or misleading information" },
-    { code: "HARASSMENT", label: "Harassment or hate" },
-    { code: "OTHER", label: "Other" },
-  ],
-  FUNDRAISING: [
-    { code: "FRAUD", label: "Fraud / scam" },
-    { code: "MISLEADING", label: "Misleading fundraising details" },
-    { code: "DUPLICATE", label: "Duplicate campaign" },
-    { code: "IMPROPER_USE", label: "Suspicious use of funds" },
-    { code: "INAPPROPRIATE", label: "Inappropriate content" },
-    { code: "OTHER", label: "Other" },
-  ],
-  USER: [
-    { code: "IMPERSONATION", label: "Impersonation" },
-    { code: "HARASSMENT", label: "Harassment or hate" },
-    { code: "SPAM", label: "Spam" },
-    { code: "SCAM", label: "Scam or suspicious behavior" },
-    { code: "OTHER", label: "Other" },
-  ],
-  PET: [
-    { code: "FAKE_PROFILE", label: "Fake pet profile" },
-    { code: "WRONG_INFO", label: "Wrong or misleading information" },
-    { code: "ABUSE", label: "Animal abuse / cruelty" },
-    { code: "SPAM", label: "Spam" },
-    { code: "OTHER", label: "Other" },
-  ],
-};
-
-// GET /api/v1/reports/reasons?type=POST|FUNDRAISING|USER|PET
-exports.getReasons = async (req, res) => {
-  const type = String(req.query.type || "POST").toUpperCase();
-  const list = REASONS[type];
-  if (!list) {
-    return res.status(400).json({
-      success: false,
-      message: "Invalid report type",
-    });
-  }
-  return res.status(200).json({ success: true, data: { type, reasons: list } });
-};
-
-// POST /api/v1/reports
-// Body: { type: "POST"|"FUNDRAISING"|"USER"|"PET", targetId: number, reasonCode: string, details?: string }
-exports.createReport = async (req, res) => {
+/**
+ * GET /api/v1/reports/sales
+ * Get sales report
+ */
+exports.getSalesReport = async (req, res) => {
   try {
-    const reporterId = req.user?.id;
-    const type = String(req.body.type || "").toUpperCase();
-    const targetId = Number(req.body.targetId);
-    const reasonCode = String(req.body.reasonCode || "").toUpperCase();
-    const details = req.body.details ? String(req.body.details).trim() : null;
-
-    if (!reporterId) {
+    const userId = req.user?.id;
+    if (!userId) {
       return res.status(401).json({ success: false, message: "Unauthorized" });
     }
-    if (!REASONS[type] || !Number.isFinite(targetId) || targetId <= 0) {
-      return res.status(400).json({ success: false, message: "Invalid type or targetId" });
-    }
-    const allowed = REASONS[type].some((r) => r.code === reasonCode);
-    if (!allowed) {
-      return res.status(400).json({ success: false, message: "Invalid reasonCode" });
-    }
 
-    // Validate target existence (best-effort)
-    if (type === "POST") {
-      const exists = await prisma.post.findUnique({ where: { id: targetId }, select: { id: true } });
-      if (!exists) return res.status(404).json({ success: false, message: "Post not found" });
-    }
-    if (type === "FUNDRAISING") {
-      const exists = await prisma.fundraisingCampaign.findUnique({ where: { id: targetId }, select: { id: true } });
-      if (!exists) return res.status(404).json({ success: false, message: "Campaign not found" });
-    }
-    if (type === "USER") {
-      const exists = await prisma.user.findUnique({ where: { id: targetId }, select: { id: true } });
-      if (!exists) return res.status(404).json({ success: false, message: "User not found" });
-    }
-    if (type === "PET") {
-      const exists = await prisma.pet.findUnique({ where: { id: targetId }, select: { id: true } });
-      if (!exists) return res.status(404).json({ success: false, message: "Pet not found" });
-    }
+    // Get user's organization/branch
+    const [orgMember, branchMember] = await Promise.all([
+      prisma.orgMember.findFirst({
+        where: { userId: userId, status: "ACTIVE" },
+        select: { orgId: true },
+      }),
+      prisma.branchMember.findFirst({
+        where: { userId: userId, status: "ACTIVE" },
+        select: { branchId: true },
+      }),
+    ]);
 
-    const report = await prisma.report.create({
-      data: {
-        type,
-        targetId,
-        reporterId,
-        reasonCode,
-        details,
-      },
-      select: { id: true, type: true, targetId: true, reasonCode: true, createdAt: true },
+    const orgId = orgMember?.orgId || parseInt(req.query.orgId) || undefined;
+    const branchId = branchMember?.branchId || parseInt(req.query.branchId) || undefined;
+
+    const startDate = req.query.startDate ? new Date(req.query.startDate as string) : undefined;
+    const endDate = req.query.endDate ? new Date(req.query.endDate as string) : undefined;
+    const groupBy = req.query.groupBy as "day" | "week" | "month" | undefined;
+
+    const report = await service.getSalesReport({
+      orgId: orgId,
+      branchId: branchId,
+      startDate: startDate,
+      endDate: endDate,
+      groupBy: groupBy,
     });
 
-    return res.status(201).json({ success: true, data: report });
-  } catch (e) {
-    return res.status(500).json({ success: false, message: "Failed to submit report" });
+    return res.status(200).json({
+      success: true,
+      data: report,
+    });
+  } catch (error) {
+    console.error("getSalesReport error:", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to get sales report",
+    });
+  }
+};
+
+/**
+ * GET /api/v1/reports/top-products
+ * Get top selling products
+ */
+exports.getTopSellingProducts = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+    }
+
+    // Get user's organization/branch
+    const [orgMember, branchMember] = await Promise.all([
+      prisma.orgMember.findFirst({
+        where: { userId: userId, status: "ACTIVE" },
+        select: { orgId: true },
+      }),
+      prisma.branchMember.findFirst({
+        where: { userId: userId, status: "ACTIVE" },
+        select: { branchId: true },
+      }),
+    ]);
+
+    const orgId = orgMember?.orgId || parseInt(req.query.orgId) || undefined;
+    const branchId = branchMember?.branchId || parseInt(req.query.branchId) || undefined;
+
+    const startDate = req.query.startDate ? new Date(req.query.startDate as string) : undefined;
+    const endDate = req.query.endDate ? new Date(req.query.endDate as string) : undefined;
+    const limit = parseInt(req.query.limit) || 10;
+
+    const products = await service.getTopSellingProducts({
+      orgId: orgId,
+      branchId: branchId,
+      startDate: startDate,
+      endDate: endDate,
+      limit: limit,
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: products,
+    });
+  } catch (error) {
+    console.error("getTopSellingProducts error:", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to get top products",
+    });
+  }
+};
+
+/**
+ * GET /api/v1/reports/zero-sales
+ * Get zero sales products
+ */
+exports.getZeroSalesProducts = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+    }
+
+    // Get user's organization
+    const orgMember = await prisma.orgMember.findFirst({
+      where: { userId: userId, status: "ACTIVE" },
+      select: { orgId: true },
+    });
+
+    const orgId = orgMember?.orgId || parseInt(req.query.orgId) || undefined;
+    const branchId = parseInt(req.query.branchId) || undefined;
+    const months = parseInt(req.query.months) || 3;
+
+    const products = await service.getZeroSalesProducts({
+      orgId: orgId,
+      branchId: branchId,
+      months: months,
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: products,
+    });
+  } catch (error) {
+    console.error("getZeroSalesProducts error:", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to get zero sales products",
+    });
+  }
+};
+
+/**
+ * GET /api/v1/reports/stock
+ * Get stock report
+ */
+exports.getStockReport = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+    }
+
+    // Get user's organization/branch
+    const [orgMember, branchMember] = await Promise.all([
+      prisma.orgMember.findFirst({
+        where: { userId: userId, status: "ACTIVE" },
+        select: { orgId: true },
+      }),
+      prisma.branchMember.findFirst({
+        where: { userId: userId, status: "ACTIVE" },
+        select: { branchId: true },
+      }),
+    ]);
+
+    const orgId = orgMember?.orgId || parseInt(req.query.orgId) || undefined;
+    const branchId = branchMember?.branchId || parseInt(req.query.branchId) || undefined;
+    const lowStockOnly = req.query.lowStockOnly === "true";
+
+    const report = await service.getStockReport({
+      orgId: orgId,
+      branchId: branchId,
+      lowStockOnly: lowStockOnly,
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: report,
+    });
+  } catch (error) {
+    console.error("getStockReport error:", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to get stock report",
+    });
+  }
+};
+
+/**
+ * GET /api/v1/reports/revenue
+ * Get revenue analytics
+ */
+exports.getRevenueAnalytics = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+    }
+
+    // Get user's organization/branch
+    const [orgMember, branchMember] = await Promise.all([
+      prisma.orgMember.findFirst({
+        where: { userId: userId, status: "ACTIVE" },
+        select: { orgId: true },
+      }),
+      prisma.branchMember.findFirst({
+        where: { userId: userId, status: "ACTIVE" },
+        select: { branchId: true },
+      }),
+    ]);
+
+    const orgId = orgMember?.orgId || parseInt(req.query.orgId) || undefined;
+    const branchId = branchMember?.branchId || parseInt(req.query.branchId) || undefined;
+
+    const startDate = req.query.startDate ? new Date(req.query.startDate as string) : undefined;
+    const endDate = req.query.endDate ? new Date(req.query.endDate as string) : undefined;
+
+    const analytics = await service.getRevenueAnalytics({
+      orgId: orgId,
+      branchId: branchId,
+      startDate: startDate,
+      endDate: endDate,
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: analytics,
+    });
+  } catch (error) {
+    console.error("getRevenueAnalytics error:", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to get revenue analytics",
+    });
   }
 };
 

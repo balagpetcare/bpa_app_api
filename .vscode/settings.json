@@ -25,5 +25,13 @@
   "tailwindCSS.emmetCompletions": true,
   "tailwindCSS.includeLanguages": {
     "plaintext": "html"
-  }
+  },
+
+  "files.exclude": {
+    "**/prisma/phase0.models.prisma": true,
+    "**/prisma/schema_final_clean/**": true,
+    "**/prisma/schema/**": true
+  },
+
+  "prisma.schema": "prisma/schema.prisma"
 }

@@ -1,12 +1,26 @@
 const router = require("express").Router();
-const reports = require("./reports.controller");
-const auth = require("../../../../middleware/auth.middleware");
+const controller = require("./reports.controller");
+const authenticateToken = require("../../../../middleware/auth.middleware");
+const requirePermission = require("../../../../middlewares/requirePermission");
 
-// Public: fetch reasons list for a given type
-router.get("/reasons", reports.getReasons);
+// All routes require authentication + reports.read permission
+router.use(authenticateToken);
+router.use(requirePermission("reports.read", "org.read", "branches.read"));
 
-// Auth: create a report
-router.post("/", auth, reports.createReport);
+// GET /api/v1/reports/sales - Sales report
+router.get("/sales", controller.getSalesReport);
+
+// GET /api/v1/reports/top-products - Top selling products
+router.get("/top-products", controller.getTopSellingProducts);
+
+// GET /api/v1/reports/zero-sales - Zero sales products
+router.get("/zero-sales", controller.getZeroSalesProducts);
+
+// GET /api/v1/reports/stock - Stock report
+router.get("/stock", controller.getStockReport);
+
+// GET /api/v1/reports/revenue - Revenue analytics
+router.get("/revenue", controller.getRevenueAnalytics);
 
 module.exports = router;
 

@@ -1,6 +1,7 @@
 const router = require("express").Router();
 
 const authenticateToken = require("../../../../middleware/auth.middleware");
+const requireOwnerKycVerified = require("../../../../middlewares/requireOwnerKycVerified");
 const ctrl = require("./partner_onboarding.controller");
 
 // Partner Application
@@ -24,7 +25,7 @@ router.get("/organizations", authenticateToken, ctrl.listMyOrganizations);
 // Branch
 router.post("/organizations/:orgId/branches", authenticateToken, ctrl.createBranch);
 router.patch("/branches/:branchId", authenticateToken, ctrl.updateBranch);
-router.post("/branches/:branchId/publish", authenticateToken, ctrl.submitPublishRequest);
+router.post("/branches/:branchId/publish", authenticateToken, requireOwnerKycVerified, ctrl.submitPublishRequest);
 router.get("/branches/:branchId/publish", authenticateToken, ctrl.getPublishStatus);
 
 module.exports = router;

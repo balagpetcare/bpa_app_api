@@ -31,6 +31,20 @@ router.post(
 router.post("/organizations/:id/suspend", authenticateToken, adminOnly, ctrl.suspendOrgKyc);
 router.post("/organizations/:id/comment", authenticateToken, adminOnly, ctrl.commentOrgKyc);
 
+// Producer Orgs (Product Authenticity)
+router.get("/producer-orgs", authenticateToken, adminOnly, ctrl.listProducerOrgs);
+router.get("/producer-orgs/:id", authenticateToken, adminOnly, ctrl.getProducerOrg);
+router.post("/producer-orgs/:id/approve", authenticateToken, adminOnly, ctrl.approveProducerOrg);
+router.post("/producer-orgs/:id/reject", authenticateToken, adminOnly, ctrl.rejectProducerOrg);
+router.post(
+  "/producer-orgs/:id/request-changes",
+  authenticateToken,
+  adminOnly,
+  ctrl.requestChangesProducerOrg
+);
+router.post("/producer-orgs/:id/suspend", authenticateToken, adminOnly, ctrl.suspendProducerOrg);
+router.post("/producer-orgs/:id/comment", authenticateToken, adminOnly, ctrl.commentProducerOrg);
+
 // Backward-compatible alias (older UI used /orgs)
 router.get("/orgs", authenticateToken, adminOnly, ctrl.listOrgKycs);
 
@@ -47,6 +61,15 @@ router.post(
 );
 router.post("/branches/:id/suspend", authenticateToken, adminOnly, ctrl.suspendBranchKyc);
 router.post("/branches/:id/comment", authenticateToken, adminOnly, ctrl.commentBranchKyc);
+
+// Staff
+router.get("/staff", authenticateToken, adminOnly, ctrl.listStaffVerifications);
+router.get("/staff/:id", authenticateToken, adminOnly, ctrl.getStaffVerification);
+router.post("/staff/:id/approve", authenticateToken, adminOnly, ctrl.approveStaffVerification);
+router.post("/staff/:id/reject", authenticateToken, adminOnly, ctrl.rejectStaffVerification);
+router.post("/staff/:id/request-changes", authenticateToken, adminOnly, ctrl.requestChangesStaffVerification);
+router.post("/staff/:id/suspend", authenticateToken, adminOnly, ctrl.suspendStaffVerification);
+router.post("/staff/:id/comment", authenticateToken, adminOnly, ctrl.commentStaffVerification);
 
 module.exports = router;
 

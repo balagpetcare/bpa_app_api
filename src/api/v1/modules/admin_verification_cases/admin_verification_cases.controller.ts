@@ -23,9 +23,17 @@ async function resolveRecipientUserId(entityType, entityId) {
     if (entityType === "BRANCH") {
       const branch = await prisma.branch.findUnique({
         where: { id: Number(entityId) },
-        select: { org: { select: { ownerUserId: true } } }, // ✅ fixed
+        select: { org: { select: { ownerUserId: true } } },
       });
       return branch?.org?.ownerUserId ? Number(branch.org.ownerUserId) : null;
+    }
+
+    if (entityType === "PRODUCER_ORG") {
+      const po = await prisma.producerOrg.findUnique({
+        where: { id: Number(entityId) },
+        select: { ownerUserId: true },
+      });
+      return po?.ownerUserId ? Number(po.ownerUserId) : null;
     }
 
     return null;
@@ -173,6 +181,43 @@ exports.patchDocument = async (req, res) => {
   }
 };
 
+/** Sync entity status when VerificationCase is APPROVED (per platform policy) */
+async function syncEntityStatusOnApproval(entityType, entityId, adminUserId) {
+  try {
+    if (entityType === "PRODUCER_ORG") {
+      await prisma.producerOrg.update({
+        where: { id: Number(entityId) },
+        data: { status: "VERIFIED" },
+      });
+    } else if (entityType === "OWNER") {
+      await prisma.ownerKyc.updateMany({
+        where: { userId: Number(entityId) },
+        data: { verificationStatus: "VERIFIED", reviewedAt: new Date(), reviewedByAdminId: adminUserId },
+      });
+    } else if (entityType === "ORGANIZATION") {
+      const lp = await prisma.organizationLegalProfile.findFirst({ where: { orgId: Number(entityId) }, select: { id: true } });
+      if (lp) {
+        await prisma.organizationLegalProfile.update({
+          where: { id: lp.id },
+          data: { verificationStatus: "VERIFIED", reviewedAt: new Date() },
+        });
+        await prisma.organization.update({ where: { id: Number(entityId) }, data: { status: "APPROVED" } }).catch(() => null);
+      }
+    } else if (entityType === "BRANCH") {
+      const bp = await prisma.branchProfileDetails.findFirst({ where: { branchId: Number(entityId) }, select: { id: true } });
+      if (bp) {
+        await prisma.branchProfileDetails.update({
+          where: { id: bp.id },
+          data: { verificationStatus: "VERIFIED", reviewedAt: new Date() },
+        });
+        await prisma.branch.update({ where: { id: Number(entityId) }, data: { status: "DRAFT" } }).catch(() => null);
+      }
+    }
+  } catch (e) {
+    console.warn("syncEntityStatusOnApproval failed:", e?.message || e);
+  }
+}
+
 exports.decideCase = async (req, res) => {
   try {
     const id = Number(req.params.id);
@@ -195,6 +240,10 @@ exports.decideCase = async (req, res) => {
         reviewSummary: reviewSummary ?? null,
       },
     });
+
+    if (status === "APPROVED") {
+      await syncEntityStatusOnApproval(current.entityType, current.entityId, adminUserId);
+    }
 
     await addEvent({
       caseId: id,

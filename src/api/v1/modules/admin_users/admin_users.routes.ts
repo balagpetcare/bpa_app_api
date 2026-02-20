@@ -6,11 +6,17 @@ const ctrl = require("./admin_users.controller");
 // GET /api/v1/admin/users?q=...
 router.get("/", authenticateToken, requireAdmin, ctrl.list);
 
+// GET /api/v1/admin/users/:id
+router.get("/:id", authenticateToken, requireAdmin, ctrl.getById);
+
 // POST /api/v1/admin/users
 router.post("/", authenticateToken, requireAdmin, ctrl.create);
 
 // PATCH /api/v1/admin/users/:id  (status/displayName/email/phone)
 router.patch("/:id", authenticateToken, requireAdmin, ctrl.updateById);
+
+// POST /api/v1/admin/users/:id/force-logout
+router.post("/:id/force-logout", authenticateToken, requireAdmin, ctrl.forceLogout);
 
 // PATCH /api/v1/admin/users/:id/password
 router.patch("/:id/password", authenticateToken, requireAdmin, ctrl.resetPassword);

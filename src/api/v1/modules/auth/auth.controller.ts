@@ -2,6 +2,14 @@ const prisma = require("../../../../infrastructure/db/prismaClient");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const appConfig = require("../../../../config/appConfig");
+const { resolvePermissionsForUser } = require("../../utils/permissions");
+const { getPermissionsForOwnerPanel } = require("../../services/scopePermission.service");
+const crypto = require("crypto");
+const {
+  verifyCredentials,
+  resolveAuthContexts,
+  decideRedirect,
+} = require("../../services/authUnified.service");
 
 async function generateUniqueUsername({ emailNorm, phoneNorm, displayName }) {
   // base username
@@ -37,12 +45,84 @@ async function generateUniqueUsername({ emailNorm, phoneNorm, displayName }) {
 }
 
 /**
+ * Helper function to create notifications for pending staff invites
+ * Called after successful login to notify users of pending invitations
+ */
+async function createNotificationsForPendingInvites(userId, emailNorm, phoneNorm) {
+  try {
+    // Find pending invites matching user's email or phone
+    const pendingInvites = await prisma.staffInvite.findMany({
+      where: {
+        status: "PENDING",
+        OR: [
+          emailNorm ? { email: { equals: emailNorm, mode: "insensitive" } } : undefined,
+          phoneNorm ? { phone: phoneNorm } : undefined,
+        ].filter(Boolean),
+        expiresAt: {
+          gt: new Date(), // Not expired
+        },
+      },
+      include: {
+        branch: { select: { id: true, name: true } },
+        org: { select: { id: true, name: true } },
+      },
+    });
+
+    if (pendingInvites.length === 0) return;
+
+    // Check for existing notifications to avoid duplicates
+    const existingNotifications = await prisma.notification.findMany({
+      where: {
+        userId,
+        type: "STAFF_INVITE",
+        readAt: null, // Only check unread notifications
+      },
+      select: { meta: true },
+    });
+
+    const existingInviteIds = new Set(
+      existingNotifications
+        .map((n) => n.meta && typeof n.meta === "object" && "inviteId" in n.meta ? n.meta.inviteId : null)
+        .filter(Boolean)
+    );
+
+    // Create notifications for invites that don't already have notifications
+    const notificationsToCreate = pendingInvites
+      .filter((invite) => !existingInviteIds.has(invite.id))
+      .map((invite) => ({
+        userId,
+        type: "STAFF_INVITE",
+        title: "Staff Invitation",
+        message: `You have been invited to join ${invite.branch?.name || "a branch"} as ${invite.role}${invite.org?.name ? ` in ${invite.org.name}` : ""}.`,
+        meta: {
+          inviteId: invite.id,
+          branchId: invite.branchId,
+          branchName: invite.branch?.name || null,
+          orgId: invite.orgId,
+          orgName: invite.org?.name || null,
+          role: invite.role,
+          expiresAt: invite.expiresAt?.toISOString() || null,
+        },
+      }));
+
+    if (notificationsToCreate.length > 0) {
+      await prisma.notification.createMany({
+        data: notificationsToCreate,
+      });
+    }
+  } catch (error) {
+    // Log error but don't fail login
+    console.error("Error creating notifications for pending invites:", error);
+  }
+}
+
+/**
  * REGISTER
  * Body: { name?, email?, phone?, password, address? }
  */
 exports.register = async (req, res) => {
   try {
-    const { name, email, phone, password, address } = req.body;
+    const { name, email, phone, password, address, isOwner } = req.body;
 
     const emailNorm = (email || "").trim().toLowerCase();
     const phoneNormRaw = (phone || "").trim();
@@ -94,7 +174,7 @@ exports.register = async (req, res) => {
           create: {
             displayName, // REQUIRED
             username,    // REQUIRED
-            ...(address ? { address } : {}),
+            // Address removed as it does not exist in UserProfile
           },
         },
         wallet: {
@@ -109,7 +189,31 @@ exports.register = async (req, res) => {
       include: { auth: true, profile: true, wallet: true },
     });
 
-    const token = jwt.sign({ id: user.id }, appConfig.jwt.secret, { expiresIn: "7d" });
+    // ✅ If registering as Owner, create OwnerProfile
+    if (isOwner) {
+      await prisma.ownerProfile.create({
+        data: {
+          userId: user.id,
+          name: displayName,
+        },
+      });
+
+      // If address provided, create initial OwnerKyc record
+      if (address) {
+        await prisma.ownerKyc.create({
+          data: {
+            userId: user.id,
+            fullName: displayName,
+            presentAddressJson: { address },
+            verificationStatus: "UNSUBMITTED",
+          },
+        });
+      }
+    }
+
+    const perms = await resolvePermissionsForUser(user.id);
+
+    const token = jwt.sign({ id: user.id, perms }, appConfig.jwt.secret, { expiresIn: "7d" });
 
     return res.status(201).json({
       success: true,
@@ -136,51 +240,145 @@ exports.register = async (req, res) => {
 /**
  * LOGIN
  * Body: { email? or phone?, password }
+ * Uses shared authUnified.service for credentials + canonical contexts/redirect.
  */
 exports.login = async (req, res) => {
   try {
     const { email, phone, password } = req.body;
 
-    const emailNorm = (email || "").trim().toLowerCase();
-    const phoneNormRaw = (phone || "").trim();
-    // Normalize phone to digits-only for matching stored values consistently (e.g., "+880 17..." -> "88017...")
-    const phoneNorm = phoneNormRaw ? phoneNormRaw.replace(/\D/g, "") : "";
-
-    if (!emailNorm && !phoneNorm) {
-      return res.status(400).json({ success: false, message: "email or phone is required" });
+    // Shared credential verification
+    let authRow;
+    try {
+      const result = await verifyCredentials({
+        email: email || null,
+        phone: phone || null,
+        password: password || "",
+      });
+      authRow = result.authRow;
+    } catch (credErr) {
+      const code = credErr.statusCode || 400;
+      return res.status(code).json({ success: false, message: credErr.message || "Invalid credentials" });
     }
 
-    if (!password) {
-      return res.status(400).json({ success: false, message: "password is required" });
-    }
+    const perms = await resolvePermissionsForUser(authRow.user.id);
 
-    const authRow = await prisma.userAuth.findFirst({
-      where: {
-        OR: [
-          emailNorm ? { email: { equals: emailNorm, mode: "insensitive" } } : undefined,
-          phoneNorm ? { phone: phoneNorm } : undefined,
-        ].filter(Boolean),
-      },
-      include: {
-        user: { include: { profile: true, wallet: true } },
-      },
+    const emailNorm = (email || "").trim().toLowerCase() || null;
+    const phoneNorm = phone ? String(phone).replace(/\D/g, "") : null;
+
+    // Create notifications for pending staff invites (non-blocking)
+    createNotificationsForPendingInvites(authRow.user.id, emailNorm, phoneNorm).catch((err) => {
+      console.error("Failed to create invite notifications:", err);
     });
 
-    if (!authRow || !authRow.user) {
-      return res.status(400).json({ success: false, message: "User not found" });
+    // Get user roles and memberships for role-based redirect
+    const [orgMembers, branchMembers, countryRoles] = await Promise.all([
+      prisma.orgMember.findMany({
+        where: { userId: authRow.user.id, status: "ACTIVE" },
+        include: {
+          org: { select: { id: true, name: true } },
+          roles: { include: { role: true } },
+        },
+      }),
+      prisma.branchMember.findMany({
+        where: { userId: authRow.user.id, status: "ACTIVE" },
+        include: {
+          branch: {
+            select: {
+              id: true,
+              name: true,
+              types: {
+                select: {
+                  type: {
+                    select: {
+                      code: true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          roles: { include: { role: true } },
+        },
+      }),
+      prisma.userCountryRole.findMany({
+        where: { userId: authRow.user.id },
+        select: {
+          country: { select: { id: true, code: true, name: true } },
+          role: { select: { id: true, key: true, label: true, scope: true } },
+        },
+      }),
+    ]);
+
+    // Check branch access permissions for staff members
+    // For each branch membership, check/create access permission
+    const { requestBranchAccess } = require("../../services/branchAccessPermission.service");
+    const { notifyManagerOfAccessRequest } = require("../../services/branchAccessNotification.service");
+
+    const branchAccessInfo = [];
+    for (const branchMember of branchMembers) {
+      try {
+        // Check if permission exists
+        let permission = await prisma.branchAccessPermission.findUnique({
+          where: {
+            branchId_userId: {
+              branchId: branchMember.branchId,
+              userId: authRow.user.id,
+            },
+          },
+        });
+
+        // If no permission exists, create a pending request
+        if (!permission) {
+          permission = await requestBranchAccess(
+            authRow.user.id,
+            branchMember.branchId,
+            branchMember.role
+          );
+          // Notify manager (non-blocking)
+          notifyManagerOfAccessRequest(branchMember.branchId, authRow.user.id)
+            .catch((err) => {
+              console.error("Failed to notify manager of access request:", err);
+            });
+        } else if (permission.status === "APPROVED") {
+          // Check if expired
+          if (permission.expiresAt && new Date(permission.expiresAt) < new Date()) {
+            // Auto-expire
+            await prisma.branchAccessPermission.update({
+              where: { id: permission.id },
+              data: {
+                status: "EXPIRED",
+                updatedAt: new Date(),
+              },
+            });
+            permission.status = "EXPIRED";
+          }
+        }
+
+        branchAccessInfo.push({
+          branchId: branchMember.branchId,
+          permissionStatus: permission.status,
+          expiresAt: permission.expiresAt,
+        });
+      } catch (error) {
+        console.error(`Error checking access for branch ${branchMember.branchId}:`, error);
+        // Continue with other branches
+      }
     }
 
-    const storedHash = authRow.passwordHash || authRow.password;
-    if (!storedHash) {
-      return res.status(500).json({ success: false, message: "Password not set for this user" });
-    }
+    // Canonical redirect (backend is source of truth)
+    const contexts = await resolveAuthContexts(authRow.user.id);
+    const default_redirect = await decideRedirect(authRow.user.id, contexts, {});
+    // Legacy primaryRole for backward compatibility
+    const primaryRole =
+      orgMembers.length > 0
+        ? orgMembers[0].role || "ORG_OWNER"
+        : branchMembers.length > 0
+        ? branchMembers[0].role || "STAFF"
+        : countryRoles.length > 0
+        ? countryRoles[0]?.role?.key || "COUNTRY_ADMIN"
+        : "CUSTOMER";
 
-    const isMatch = await bcrypt.compare(password, storedHash);
-    if (!isMatch) {
-      return res.status(400).json({ success: false, message: "Invalid credentials" });
-    }
-
-    const token = jwt.sign({ id: authRow.user.id }, appConfig.jwt.secret, { expiresIn: "7d" });
+    const token = jwt.sign({ id: authRow.user.id, perms }, appConfig.jwt.secret, { expiresIn: "7d" });
 
     // ✅ Also set HttpOnly cookie (keeps old Bearer flow intact)
     res.cookie("access_token", token, {
@@ -189,6 +387,7 @@ exports.login = async (req, res) => {
       secure: process.env.NODE_ENV === "production",
       maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
       path: "/",
+      domain: process.env.COOKIE_DOMAIN || "localhost",
     });
 
     return res.status(200).json({
@@ -201,7 +400,31 @@ exports.login = async (req, res) => {
         phone: authRow.phone || null,
         displayName: authRow.user.profile?.displayName || null,
         username: authRow.user.profile?.username || null,
+        role: primaryRole,
+        redirectPath: default_redirect,
+        organizations: orgMembers.map((om) => ({
+          id: om.org.id,
+          name: om.org.name,
+          role: om.role,
+        })),
+        branches: branchMembers.map((bm) => {
+          const accessInfo = branchAccessInfo.find((ai) => ai.branchId === bm.branch.id);
+          return {
+            id: bm.branch.id,
+            name: bm.branch.name,
+            type: bm.branch.types?.[0]?.type?.code || null,
+            role: bm.role,
+            accessStatus: accessInfo?.permissionStatus || "PENDING",
+            accessExpiresAt: accessInfo?.expiresAt || null,
+          };
+        }),
+        countryRoles: countryRoles.map((cr) => ({
+          country: cr.country,
+          role: cr.role,
+        })),
       },
+      contexts,
+      default_redirect,
     });
   } catch (error) {
     console.error("Login Error:", error);
@@ -221,7 +444,12 @@ exports.getProfile = async (req, res) => {
       where: { id: userId },
       include: {
         auth: true,
-        profile: true,
+        profile: {
+          include: {
+            avatarMedia: true,
+            coverMedia: true,
+          },
+        },
         wallet: true,
         pets: true,
       },
@@ -270,22 +498,23 @@ exports.getProfile = async (req, res) => {
 
     const role = isAdmin ? "ADMIN" : "USER";
 
-    const permissions = role === "ADMIN"
-      ? [
-          "dashboard.read",
-          "branch.read",
-          "branch.write",
-          "staff.read",
-          "staff.write",
-          "wallet.read",
-          "wallet.withdraw_request.read",
-          "wallet.withdraw.approve",
-          "fundraising.read",
-          "fundraising.verify",
-          "users.read",
-          "settings.write",
-        ]
-      : [];
+    let permissions =
+      role === "ADMIN"
+        ? [
+            "dashboard.read",
+            "branch.read",
+            "branch.write",
+            "staff.read",
+            "staff.write",
+            "wallet.read",
+            "wallet.withdraw_request.read",
+            "wallet.withdraw.approve",
+            "fundraising.read",
+            "fundraising.verify",
+            "users.read",
+            "settings.write",
+          ]
+        : [];
 
     // OWNER CONTEXT (used by Owner Panel).
     // This is additive only — it won't break Flutter/public consumers.
@@ -300,15 +529,144 @@ exports.getProfile = async (req, res) => {
       orderBy: { id: "desc" },
     });
 
+    // Owner panel: scope-filtered permissions for delegates; full perms for actual owners.
+    const hasDelegations =
+      (await prisma.ownerDelegation.count({ where: { delegatedUserId: userId } })) > 0;
+    const hasTeamMember =
+      (await prisma.ownerTeamMember.count({ where: { userId } })) > 0;
+    if (role !== "ADMIN") {
+      if (ownerProfile || ownedOrgs.length > 0) {
+        permissions = await resolvePermissionsForUser(userId);
+      } else if (hasDelegations || hasTeamMember) {
+        const base = await resolvePermissionsForUser(userId);
+        const panelPerms = await getPermissionsForOwnerPanel(userId);
+        permissions = [...new Set([...base, ...panelPerms])];
+      } else {
+        permissions = await resolvePermissionsForUser(userId);
+      }
+    }
+
     const ownerKyc = await prisma.ownerKyc.findUnique({
       where: { userId: user.id },
       select: { verificationStatus: true, submittedAt: true, reviewedAt: true },
     });
 
+    const countryRoles = await prisma.userCountryRole.findMany({
+      where: { userId: user.id },
+      select: {
+        country: { select: { id: true, code: true, name: true } },
+        role: { select: { id: true, key: true, label: true, scope: true } },
+        createdAt: true,
+      },
+    });
+
+    const branchMemberCount = await prisma.branchMember.count({
+      where: { userId: user.id, status: "ACTIVE" },
+    });
+    const hasStaffAccess =
+      Boolean(ownerProfile || ownedOrgs.length > 0) || branchMemberCount > 0;
+
+    const kycApproved =
+      ownerKyc && ["VERIFIED", "APPROVED"].includes(String(ownerKyc.verificationStatus || "").toUpperCase());
+
     const panels = {
       admin: isAdmin,
-      owner: Boolean(ownerProfile || ownedOrgs.length > 0),
+      owner: Boolean(ownerProfile || ownedOrgs.length > 0 || kycApproved || hasDelegations || hasTeamMember),
       partner: Boolean(user?.partnerStatus && user.partnerStatus !== "NOT_APPLIED"),
+      country: countryRoles.length > 0,
+      staff: hasStaffAccess,
+    };
+
+    const userContextService = require("../../services/userContext.service");
+    const contexts = await userContextService.listContexts(userId);
+    const defaultContext = await userContextService.getDefaultContext(userId);
+    const contextCount = contexts.length;
+    const hasOrg = ownedOrgs.length > 0;
+    const hasBranch = branchMemberCount > 0;
+    const needsOnboarding =
+      panels.owner &&
+      !hasOrg &&
+      !hasBranch &&
+      contextCount === 0 &&
+      !ownerProfile;
+
+    const authContexts = await resolveAuthContexts(userId);
+    let default_redirect = await decideRedirect(userId, authContexts);
+    const needsActivitySelection = default_redirect === "/choose-activity";
+
+    // Routing decision payload for post-auth-landing
+    const hasBusinessContext = hasOrg || hasBranch || contextCount > 0;
+    const allowedPanels = Object.entries(panels)
+      .filter(([, v]) => v === true)
+      .map(([k]) => k);
+    const isCustomerOnly = allowedPanels.length === 0;
+
+    const lastLoginAt = user?.auth?.lastLoginAt ?? null;
+    const isFirstLogin = lastLoginAt == null;
+    const noContextsOrOrg = contextCount === 0 && !hasOrg && !hasBranch;
+    const unclassified = allowedPanels.length === 0;
+    const onboardingIntroRequired = noContextsOrOrg && unclassified;
+    const onboardingReason = onboardingIntroRequired
+      ? (isFirstLogin ? "intro_first_login_no_context_no_panels" : "intro_unclassified_no_context_no_panels")
+      : null;
+
+    if (onboardingIntroRequired) {
+      default_redirect = "/getting-started";
+    }
+
+    const recommendedNextPaths = {
+      owner: "/owner/onboarding",
+      producer: "/producer/kyc",
+      clinic: "/clinic",
+      shop: "/shop",
+      customer: "/mother",
+    };
+
+    const ownerKycStatus = ownerKyc?.verificationStatus
+      ? String(ownerKyc.verificationStatus).toUpperCase()
+      : "NONE";
+    const producerCtx = authContexts.find((c) => c.role === "PRODUCER");
+    const producerPending = producerCtx?.status === "PENDING";
+    const ownerNeedsKyc =
+      panels.owner &&
+      (ownerKycStatus === "UNSUBMITTED" || ownerKycStatus === "REJECTED" || ownerKycStatus === "SUBMITTED");
+    const verificationRequired = ownerNeedsKyc || producerPending;
+    const verificationStatus =
+      producerPending
+        ? "PENDING"
+        : ownerKycStatus === "VERIFIED" || ownerKycStatus === "APPROVED"
+          ? "APPROVED"
+          : ownerKycStatus === "SUBMITTED"
+            ? "PENDING"
+            : ownerKycStatus === "REJECTED"
+              ? "REJECTED"
+              : "NONE";
+    const verificationRedirect = producerPending
+      ? "/producer/kyc"
+      : ownerNeedsKyc
+        ? "/owner/kyc"
+        : null;
+
+    const debugReasons = [];
+    if (onboardingIntroRequired) debugReasons.push("onboardingIntroRequired");
+    if (verificationRequired) debugReasons.push(`verification: ${verificationStatus} -> ${verificationRedirect}`);
+    if (needsActivitySelection) debugReasons.push("needsActivitySelection");
+    if (isCustomerOnly) debugReasons.push("isCustomerOnly");
+    debugReasons.push(`default_redirect: ${default_redirect}`);
+
+    const routing = {
+      needsActivitySelection: onboardingIntroRequired ? false : needsActivitySelection,
+      default_redirect,
+      allowedPanels,
+      isCustomerOnly,
+      hasBusinessContext,
+      verificationRequired,
+      verificationStatus,
+      verificationRedirect: verificationRedirect || null,
+      onboardingIntroRequired,
+      ...(onboardingReason && { onboardingReason }),
+      recommendedNextPaths,
+      ...(process.env.NODE_ENV !== "production" && { debugReason: debugReasons.join("; ") }),
     };
 
     return res.status(200).json({
@@ -317,6 +675,50 @@ exports.getProfile = async (req, res) => {
       role,
       permissions,
       panels,
+      countryRoles,
+      contexts,
+      defaultContext: defaultContext
+        ? (() => {
+            const isOwnerContext = defaultContext.ownerUserId == null;
+            const isTeamContext = defaultContext.ownerUserId != null && defaultContext.teamId != null;
+            const type = isTeamContext ? "TEAM" : isOwnerContext ? "OWNER" : "BRANCH";
+            const recommendedPath =
+              type === "TEAM"
+                ? "/owner/workspace"
+                : type === "OWNER"
+                  ? (() => {
+                      const kyc = ownerKyc?.verificationStatus
+                        ? String(ownerKyc.verificationStatus).toUpperCase()
+                        : "";
+                      return kyc === "UNSUBMITTED" || kyc === "REJECTED" ? "/owner/kyc" : "/owner/dashboard";
+                    })()
+                  : "/owner/dashboard";
+            return {
+              id: defaultContext.id,
+              ownerUserId: defaultContext.ownerUserId,
+              branchId: defaultContext.branchId,
+              teamId: defaultContext.teamId,
+              roles: defaultContext.roles,
+              scopes: defaultContext.scopes,
+              defaultDashboard: defaultContext.defaultDashboard,
+              isDefault: defaultContext.isDefault,
+              type,
+              recommendedPath,
+              owner: defaultContext.owner ? { id: defaultContext.owner.id, displayName: defaultContext.owner.profile?.displayName } : null,
+              branch: defaultContext.branch ? { id: defaultContext.branch.id, name: defaultContext.branch.name } : null,
+              team: defaultContext.team ? { id: defaultContext.team.id, name: defaultContext.team.name } : null,
+            };
+          })()
+        : null,
+      onboarding: {
+        needsOnboarding,
+        hasOrg,
+        hasBranch,
+        contextCount,
+      },
+      default_redirect,
+      needsActivitySelection,
+      routing,
       owner: ownerProfile
         ? {
             ownerProfileId: ownerProfile.id,
@@ -349,6 +751,7 @@ exports.logout = async (req, res) => {
       sameSite: "lax",
       secure: isProd,
       path: "/",
+      domain: process.env.COOKIE_DOMAIN || "localhost",
     });
 
     return res.status(200).json({ success: true, message: "Logged out" });
@@ -358,81 +761,376 @@ exports.logout = async (req, res) => {
 };
 
 /**
+ * GET /api/v1/auth/invites/verify?token=...
+ * Public endpoint used by the Register page to validate an invite link.
+ */
+exports.verifyInvite = async (req, res) => {
+  try {
+    const token = String(req.query?.token || "").trim();
+    if (!token) {
+      return res.status(400).json({ success: false, message: "token is required" });
+    }
+
+    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+
+    // 1) Branch staff invite
+    const staffInvite = await prisma.staffInvite.findUnique({
+      where: { tokenHash },
+      include: {
+        branch: { select: { id: true, name: true } },
+        org: { select: { id: true, name: true } },
+      },
+    });
+
+    if (staffInvite) {
+      if (staffInvite.expiresAt && new Date(staffInvite.expiresAt).getTime() < Date.now()) {
+        if (staffInvite.status === "PENDING") {
+          await prisma.staffInvite.update({ where: { id: staffInvite.id }, data: { status: "EXPIRED" } });
+        }
+        return res.status(400).json({ success: false, message: "Invite expired" });
+      }
+      if (staffInvite.status !== "PENDING") {
+        return res
+          .status(400)
+          .json({ success: false, message: `Invite is not pending (${staffInvite.status})` });
+      }
+
+      const emailNorm = (staffInvite.email || "").trim().toLowerCase() || null;
+      const phoneNorm = (staffInvite.phone || "").trim().replace(/\D/g, "") || null;
+      let userExists = false;
+
+      if (emailNorm || phoneNorm) {
+        const existingAuth = await prisma.userAuth.findFirst({
+          where: {
+            OR: [
+              emailNorm ? { email: { equals: emailNorm, mode: "insensitive" } } : undefined,
+              phoneNorm ? { phone: phoneNorm } : undefined,
+            ].filter(Boolean),
+          },
+          select: { userId: true },
+        });
+        if (existingAuth) userExists = true;
+      }
+
+      return res.json({
+        success: true,
+        data: {
+          inviteType: "BRANCH_STAFF",
+          orgId: staffInvite.orgId,
+          branchId: staffInvite.branchId,
+          role: staffInvite.role,
+          email: staffInvite.email || null,
+          phone: staffInvite.phone || null,
+          displayName: staffInvite.displayName || null,
+          expiresAt: staffInvite.expiresAt,
+          org: staffInvite.org || null,
+          branch: staffInvite.branch || null,
+          userExists,
+          requiresRegistration: !userExists,
+        },
+      });
+    }
+
+    // 2) Team invitation (owner team, email-based)
+    const { verifyTeamInvitation } = require("../../services/teamInvitation.service");
+    const teamVerified = await verifyTeamInvitation(token);
+    if (teamVerified) {
+      if (!teamVerified.valid) {
+        return res.status(400).json({
+          success: false,
+          message: teamVerified.reason === "EXPIRED" ? "Invite expired" : `Invite is not pending (${teamVerified.reason})`,
+        });
+      }
+      const inv = teamVerified.invite;
+      return res.json({
+        success: true,
+        data: {
+          inviteType: "TEAM",
+          teamId: inv.teamId,
+          ownerUserId: inv.ownerUserId,
+          email: inv.email,
+          scopes: inv.scopes || [],
+          branchIds: inv.branchIds || [],
+          team: inv.team || null,
+          owner: inv.owner || null,
+          expiresAt: inv.expiresAt,
+          userExists: teamVerified.userExists,
+          requiresRegistration: teamVerified.requiresRegistration,
+        },
+      });
+    }
+
+    // 3) Country/State access invite
+    const accessInvite = await prisma.accessInvite.findUnique({
+      where: { tokenHash },
+      include: {
+        role: { select: { id: true, key: true, label: true, scope: true } },
+        country: { select: { id: true, code: true, name: true } },
+        state: { select: { id: true, code: true, name: true } },
+      },
+    });
+
+    if (!accessInvite) return res.status(404).json({ success: false, message: "Invalid invite token" });
+
+    if (accessInvite.expiresAt && new Date(accessInvite.expiresAt).getTime() < Date.now()) {
+      if (accessInvite.status === "PENDING") {
+        await prisma.accessInvite.update({ where: { id: accessInvite.id }, data: { status: "EXPIRED" } });
+      }
+      return res.status(400).json({ success: false, message: "Invite expired" });
+    }
+
+    if (accessInvite.status !== "PENDING") {
+      return res
+        .status(400)
+        .json({ success: false, message: `Invite is not pending (${accessInvite.status})` });
+    }
+
+    const emailNorm = (accessInvite.email || "").trim().toLowerCase();
+    const existingAuth = await prisma.userAuth.findFirst({
+      where: { email: { equals: emailNorm, mode: "insensitive" } },
+      select: { userId: true },
+    });
+    const userExists = Boolean(existingAuth);
+
+    return res.json({
+      success: true,
+      data: {
+        inviteType: accessInvite.scopeType === "STATE" ? "STATE_STAFF" : "COUNTRY_STAFF",
+        scopeType: accessInvite.scopeType,
+        role: accessInvite.role,
+        email: accessInvite.email,
+        displayName: accessInvite.displayName || null,
+        expiresAt: accessInvite.expiresAt,
+        country: accessInvite.country || null,
+        state: accessInvite.state || null,
+        userExists,
+        requiresRegistration: !userExists,
+      },
+    });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
+/**
  * POST /api/v1/auth/invites/accept
- * Body: { token, password, displayName? }
+ * Body: { token, password?, displayName? }
+ *
+ * ✅ Creates/updates the user, assigns role, consumes invite
+ * ✅ Auto-login: returns JWT token and sets HttpOnly cookie access_token
+ * ✅ Existing users must be authenticated (session) to accept
  */
 exports.acceptInvite = async (req, res) => {
   try {
     const { token, password, displayName } = req.body || {};
-    if (!token || !password) {
-      return res.status(400).json({ success: false, message: "token and password are required" });
-    }
-    if (String(password).length < 4) {
-      return res.status(400).json({ success: false, message: "password is required (min 4 chars)" });
+    if (!token) {
+      return res.status(400).json({ success: false, message: "token is required" });
     }
 
-    const crypto = require("crypto");
     const tokenHash = crypto.createHash("sha256").update(String(token)).digest("hex");
 
-    const invite = await prisma.staffInvite.findUnique({
+    // 1) Staff invite
+    const staffInvite = await prisma.staffInvite.findUnique({
       where: { tokenHash },
-      include: { branch: { select: { id: true, orgId: true } } },
+      include: { branch: { select: { id: true, orgId: true } }, org: { select: { id: true, name: true } } },
     });
 
-    if (!invite) return res.status(404).json({ success: false, message: "Invalid invite token" });
-    if (invite.status !== "PENDING") {
-      return res.status(400).json({ success: false, message: `Invite is not pending (${invite.status})` });
+    if (staffInvite) {
+      if (staffInvite.status !== "PENDING") {
+        return res.status(400).json({ success: false, message: `Invite is not pending (${staffInvite.status})` });
+      }
+      if (staffInvite.expiresAt && new Date(staffInvite.expiresAt).getTime() < Date.now()) {
+        await prisma.staffInvite.update({ where: { id: staffInvite.id }, data: { status: "EXPIRED" } });
+        return res.status(400).json({ success: false, message: "Invite expired" });
+      }
+
+      const emailNorm = (staffInvite.email || "").trim().toLowerCase() || null;
+      const phoneNorm = (staffInvite.phone || "").trim().replace(/\D/g, "") || null;
+      const existingAuth = await prisma.userAuth.findFirst({
+        where: {
+          OR: [
+            emailNorm ? { email: { equals: emailNorm, mode: "insensitive" } } : undefined,
+            phoneNorm ? { phone: phoneNorm } : undefined,
+          ].filter(Boolean),
+        },
+        select: { userId: true },
+      });
+
+      const userId = await prisma.$transaction(async (tx) => {
+        let uid = existingAuth?.userId || null;
+
+        if (uid) {
+          if (!req.user?.id || Number(req.user.id) !== Number(uid)) {
+            throw Object.assign(new Error("Please log in to accept this invitation"), { statusCode: 401 });
+          }
+        } else {
+          if (!password || String(password).length < 4) {
+            throw Object.assign(new Error("password is required (min 4 chars)"), { statusCode: 400 });
+          }
+          const name = String(displayName || staffInvite.displayName || "BPA Staff").trim() || "BPA Staff";
+          const username = await generateUniqueUsername({ emailNorm: emailNorm || "", phoneNorm: phoneNorm || "", displayName: name });
+          const passwordHash = await bcrypt.hash(String(password), 10);
+          const created = await tx.user.create({
+            data: {
+              status: "ACTIVE",
+              auth: {
+                create: {
+                  provider: "LOCAL",
+                  email: emailNorm,
+                  phone: phoneNorm,
+                  passwordHash,
+                },
+              },
+              profile: {
+                create: {
+                  displayName: name,
+                  username,
+                },
+              },
+            },
+            select: { id: true },
+          });
+          uid = created.id;
+        }
+
+        await tx.branchMember.upsert({
+          where: { branchId_userId: { branchId: staffInvite.branchId, userId: uid } },
+          update: { role: staffInvite.role, status: "ACTIVE" },
+          create: {
+            orgId: staffInvite.orgId,
+            branchId: staffInvite.branchId,
+            userId: uid,
+            role: staffInvite.role,
+            status: "ACTIVE",
+            invitedByUserId: staffInvite.invitedByUserId,
+          },
+        });
+
+        await tx.staffInvite.update({
+          where: { id: staffInvite.id },
+          data: { status: "ACCEPTED", acceptedByUserId: uid },
+        });
+
+        return uid;
+      });
+
+      const tokenJwt = jwt.sign({ id: userId }, appConfig.jwt.secret, { expiresIn: "7d" });
+      const isProd = String(process.env.NODE_ENV || "development") === "production";
+      res.cookie("access_token", tokenJwt, {
+        httpOnly: true,
+        sameSite: "lax",
+        secure: isProd,
+        maxAge: 30 * 24 * 60 * 60 * 1000,
+        path: "/",
+        domain: process.env.COOKIE_DOMAIN || "localhost",
+      });
+
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        include: { auth: true, profile: true },
+      });
+
+      const staffContexts = await resolveAuthContexts(userId);
+      const staffRedirect = await decideRedirect(userId, staffContexts, { forceStaffPanel: true });
+
+      return res.json({
+        success: true,
+        message: "Invite accepted",
+        token: tokenJwt,
+        user: {
+          id: userId,
+          email: user?.auth?.email || null,
+          phone: user?.auth?.phone || null,
+          displayName: user?.profile?.displayName || null,
+          username: user?.profile?.username || null,
+        },
+        data: { branchId: staffInvite.branchId, role: staffInvite.role },
+        default_redirect: staffRedirect,
+      });
     }
 
-    if (invite.expiresAt && new Date(invite.expiresAt).getTime() < Date.now()) {
-      await prisma.staffInvite.update({ where: { id: invite.id }, data: { status: "EXPIRED" } });
+    // 2) Team invitation
+    const teamInvitationService = require("../../services/teamInvitation.service");
+    const teamVerified = await teamInvitationService.verifyTeamInvitation(token);
+    if (teamVerified && teamVerified.valid) {
+      const existingUserId = req.user?.id ? Number(req.user.id) : null;
+      const { userId } = await teamInvitationService.acceptTeamInvitation(token, existingUserId, { password, displayName });
+      const tokenJwt = jwt.sign({ id: userId }, appConfig.jwt.secret, { expiresIn: "7d" });
+      const isProd = String(process.env.NODE_ENV || "development") === "production";
+      res.cookie("access_token", tokenJwt, {
+        httpOnly: true,
+        sameSite: "lax",
+        secure: isProd,
+        maxAge: 30 * 24 * 60 * 60 * 1000,
+        path: "/",
+        domain: process.env.COOKIE_DOMAIN || "localhost",
+      });
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        include: { auth: true, profile: true },
+      });
+      const userContextService = require("../../services/userContext.service");
+      const defaultCtx = await userContextService.getDefaultContext(userId);
+      const ctxType = defaultCtx?.ownerUserId != null && defaultCtx?.teamId != null ? "TEAM" : "OWNER";
+      const recommendedPath = ctxType === "TEAM" ? "/owner/workspace" : "/owner/dashboard";
+
+      return res.json({
+        success: true,
+        message: "Team invite accepted",
+        token: tokenJwt,
+        user: {
+          id: userId,
+          email: user?.auth?.email || null,
+          displayName: user?.profile?.displayName || null,
+          username: user?.profile?.username || null,
+        },
+        data: { inviteType: "TEAM", teamId: teamVerified.invite.teamId },
+        defaultContext: { type: ctxType, recommendedPath },
+        default_redirect: recommendedPath,
+      });
+    }
+    if (teamVerified && !teamVerified.valid) {
+      return res.status(400).json({
+        success: false,
+        message: teamVerified.reason === "EXPIRED" ? "Invite expired" : "Invalid or already used invite",
+      });
+    }
+
+    // 3) Access invite (country/state)
+    const accessInvite = await prisma.accessInvite.findUnique({
+      where: { tokenHash },
+      include: { role: { select: { id: true, key: true, label: true, scope: true } } },
+    });
+
+    if (!accessInvite) return res.status(404).json({ success: false, message: "Invalid invite token" });
+    if (accessInvite.status !== "PENDING") {
+      return res.status(400).json({ success: false, message: `Invite is not pending (${accessInvite.status})` });
+    }
+    if (accessInvite.expiresAt && new Date(accessInvite.expiresAt).getTime() < Date.now()) {
+      await prisma.accessInvite.update({ where: { id: accessInvite.id }, data: { status: "EXPIRED" } });
       return res.status(400).json({ success: false, message: "Invite expired" });
     }
 
-    const emailNorm = (invite.email || "").trim().toLowerCase() || null;
-    const phoneNorm = (invite.phone || "").trim().replace(/\D/g, "") || null;
-
+    const emailNorm = (accessInvite.email || "").trim().toLowerCase();
     const existingAuth = await prisma.userAuth.findFirst({
-      where: {
-        OR: [
-          emailNorm ? { email: { equals: emailNorm, mode: "insensitive" } } : undefined,
-          phoneNorm ? { phone: phoneNorm } : undefined,
-        ].filter(Boolean),
-      },
+      where: { email: { equals: emailNorm, mode: "insensitive" } },
       select: { userId: true },
     });
-
-    const bcrypt = require("bcrypt");
-    const passwordHash = await bcrypt.hash(String(password), 10);
 
     const userId = await prisma.$transaction(async (tx) => {
       let uid = existingAuth?.userId || null;
 
-      if (!uid) {
-        const name = String(displayName || invite.displayName || "BPA Staff").trim() || "BPA Staff";
-
-        async function generateUniqueUsername({ emailNorm, phoneNorm, displayName }) {
-          let base =
-            (emailNorm ? emailNorm.split("@")[0] : "") ||
-            (phoneNorm ? `user${String(phoneNorm).replace(/\D/g, "")}` : "") ||
-            (displayName ? displayName.toLowerCase().replace(/\s+/g, "") : "user");
-
-          base = base.toLowerCase().replace(/[^a-z0-9_]/g, "").slice(0, 18);
-          if (!base) base = "user";
-
-          let username = base;
-          let tries = 0;
-          while (tries < 30) {
-            const exists = await tx.userProfile.findUnique({ where: { username }, select: { id: true } });
-            if (!exists) return username;
-            tries += 1;
-            username = `${base}${Math.floor(Math.random() * 9999)}`.slice(0, 24);
-          }
-          return `${base}${Date.now()}`.slice(0, 24);
+      if (uid) {
+        if (!req.user?.id || Number(req.user.id) !== Number(uid)) {
+          throw Object.assign(new Error("Please log in to accept this invitation"), { statusCode: 401 });
         }
-
-        const username = await generateUniqueUsername({ emailNorm, phoneNorm, displayName: name });
-
+      } else {
+        if (!password || String(password).length < 4) {
+          throw Object.assign(new Error("password is required (min 4 chars)"), { statusCode: 400 });
+        }
+        const name = String(displayName || accessInvite.displayName || "BPA Staff").trim() || "BPA Staff";
+        const username = await generateUniqueUsername({ emailNorm, phoneNorm: "", displayName: name });
+        const passwordHash = await bcrypt.hash(String(password), 10);
         const created = await tx.user.create({
           data: {
             status: "ACTIVE",
@@ -440,7 +1138,7 @@ exports.acceptInvite = async (req, res) => {
               create: {
                 provider: "LOCAL",
                 email: emailNorm,
-                phone: phoneNorm,
+                phone: null,
                 passwordHash,
               },
             },
@@ -454,43 +1152,398 @@ exports.acceptInvite = async (req, res) => {
           select: { id: true },
         });
         uid = created.id;
-      } else {
-        await tx.userAuth.update({ where: { userId: uid }, data: { passwordHash } });
-
-        const prof = await tx.userProfile.findUnique({ where: { userId: uid }, select: { id: true } });
-        if (!prof) {
-          const name = String(displayName || invite.displayName || "BPA Staff").trim() || "BPA Staff";
-          await tx.userProfile.create({ data: { userId: uid, displayName: name, username: `user${uid}` } });
-        }
       }
 
-      await tx.branchMember.upsert({
-        where: { branchId_userId: { branchId: invite.branchId, userId: uid } },
-        update: { role: invite.role, status: "ACTIVE" },
-        create: {
-          orgId: invite.orgId,
-          branchId: invite.branchId,
-          userId: uid,
-          role: invite.role,
-          status: "ACTIVE",
-          invitedByUserId: invite.invitedByUserId,
-        },
-      });
+      if (accessInvite.scopeType === "COUNTRY") {
+        await tx.userCountryRole.upsert({
+          where: { userId_countryId_roleId: { userId: uid, countryId: accessInvite.countryId, roleId: accessInvite.roleId } },
+          update: {},
+          create: { userId: uid, countryId: accessInvite.countryId, roleId: accessInvite.roleId },
+        });
+      }
+      if (accessInvite.scopeType === "STATE") {
+        await tx.userStateRole.upsert({
+          where: { userId_stateId_roleId: { userId: uid, stateId: accessInvite.stateId, roleId: accessInvite.roleId } },
+          update: {},
+          create: { userId: uid, stateId: accessInvite.stateId, roleId: accessInvite.roleId },
+        });
+      }
 
-      await tx.staffInvite.update({
-        where: { id: invite.id },
+      await tx.accessInvite.update({
+        where: { id: accessInvite.id },
         data: { status: "ACCEPTED", acceptedByUserId: uid },
       });
 
       return uid;
     });
 
-    return res.json({ success: true, data: { userId, branchId: invite.branchId, role: invite.role } });
-  } catch (e) {
+    const tokenJwt = jwt.sign({ id: userId }, appConfig.jwt.secret, { expiresIn: "7d" });
+    const isProd = String(process.env.NODE_ENV || "development") === "production";
+    res.cookie("access_token", tokenJwt, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: isProd,
+      maxAge: 30 * 24 * 60 * 60 * 1000,
+      path: "/",
+      domain: process.env.COOKIE_DOMAIN || "localhost",
+    });
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      include: { auth: true, profile: true },
+    });
+
+    return res.json({
+      success: true,
+      message: "Invite accepted",
+      token: tokenJwt,
+      user: {
+        id: userId,
+        email: user?.auth?.email || null,
+        phone: user?.auth?.phone || null,
+        displayName: user?.profile?.displayName || null,
+        username: user?.profile?.username || null,
+      },
+      data: { scopeType: accessInvite.scopeType, roleId: accessInvite.roleId },
+    });
+  } catch (e: any) {
+    if (e?.statusCode) {
+      return res.status(e.statusCode).json({ success: false, message: e.message });
+    }
     if (String(e?.code) === "P2002") {
       return res.status(409).json({ success: false, message: "Conflict: unique constraint failed" });
     }
     return res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
+/**
+ * STAFF LOGIN
+ * Body: { email? or phone?, password }
+ * Only allows users with BranchMember or OrgMember records (staff members)
+ * Owners can also use this to access staff view of their branches
+ * Uses shared authUnified.service; returns canonical contexts + default_redirect.
+ */
+exports.staffLogin = async (req, res) => {
+  try {
+    const { email, phone, password } = req.body;
+
+    // Shared credential verification + staff-only gate
+    let authRow;
+    try {
+      const result = await verifyCredentials({
+        email: email || null,
+        phone: phone || null,
+        password: password || "",
+      });
+      authRow = result.authRow;
+    } catch (credErr) {
+      const code = credErr.statusCode || 400;
+      return res.status(code).json({ success: false, message: credErr.message || "Invalid credentials" });
+    }
+
+    // Check for staff memberships (BranchMember or OrgMember)
+    const [branchMembers, orgMembers] = await Promise.all([
+      prisma.branchMember.findMany({
+        where: { userId: authRow.user.id, status: "ACTIVE" },
+        include: {
+          branch: {
+            select: {
+              id: true,
+              name: true,
+              orgId: true,
+              types: {
+                select: {
+                  type: {
+                    select: {
+                      code: true,
+                      nameEn: true,
+                    },
+                  },
+                },
+              },
+            },
+          },
+          roles: { include: { role: true } },
+        },
+      }),
+      prisma.orgMember.findMany({
+        where: { userId: authRow.user.id, status: "ACTIVE" },
+        include: {
+          org: { select: { id: true, name: true } },
+          roles: { include: { role: true } },
+        },
+      }),
+    ]);
+
+    // Check if user is an owner (for implicit staff access)
+    const ownerProfile = await prisma.ownerProfile.findUnique({
+      where: { userId: authRow.user.id },
+      select: { id: true },
+    });
+
+    const ownedOrgs = await prisma.organization.findMany({
+      where: { ownerUserId: authRow.user.id },
+      select: { id: true, name: true },
+    });
+
+    const isOwner = Boolean(ownerProfile || ownedOrgs.length > 0);
+
+    // If user has no staff memberships and is not an owner, reject
+    if (branchMembers.length === 0 && orgMembers.length === 0 && !isOwner) {
+      return res.status(403).json({
+        success: false,
+        message: "This account does not have staff access. Please use owner login if you are an owner.",
+      });
+    }
+
+    // For owners, get all branches from their organizations (implicit staff access)
+    let accessibleBranches = branchMembers.map((bm) => ({
+      id: bm.branch.id,
+      name: bm.branch.name,
+      orgId: bm.branch.orgId,
+      type: bm.branch.types?.[0]?.type?.code || null,
+      typeName: bm.branch.types?.[0]?.type?.nameEn || null,
+      role: bm.role,
+      membershipType: "EXPLICIT",
+    }));
+
+    if (isOwner && ownedOrgs.length > 0) {
+      const ownerBranches = await prisma.branch.findMany({
+        where: {
+          orgId: { in: ownedOrgs.map((o) => o.id) },
+        },
+        select: {
+          id: true,
+          name: true,
+          orgId: true,
+          types: {
+            select: {
+              type: {
+                select: {
+                  code: true,
+                  nameEn: true,
+                },
+              },
+            },
+          },
+        },
+      });
+
+      // Add owner branches that aren't already in accessibleBranches
+      for (const branch of ownerBranches) {
+        if (!accessibleBranches.find((b) => b.id === branch.id)) {
+          accessibleBranches.push({
+            id: branch.id,
+            name: branch.name,
+            orgId: branch.orgId,
+            type: branch.types?.[0]?.type?.code || null,
+            typeName: branch.types?.[0]?.type?.nameEn || null,
+            role: "OWNER",
+            membershipType: "IMPLICIT",
+          });
+        }
+      }
+    }
+
+    // Canonical redirect (backend is source of truth)
+    const contexts = await resolveAuthContexts(authRow.user.id);
+    const default_redirect = await decideRedirect(authRow.user.id, contexts, { forceStaffPanel: true });
+
+    const perms = await resolvePermissionsForUser(authRow.user.id);
+
+    // Include userType in JWT payload
+    const token = jwt.sign(
+      { id: authRow.user.id, perms, userType: isOwner ? "OWNER" : "STAFF" },
+      appConfig.jwt.secret,
+      { expiresIn: "7d" }
+    );
+
+    // Set HttpOnly cookie
+    res.cookie("access_token", token, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+      path: "/",
+      domain: process.env.COOKIE_DOMAIN || "localhost",
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Staff login successful",
+      token,
+      user: {
+        id: authRow.user.id,
+        email: authRow.email || null,
+        phone: authRow.phone || null,
+        displayName: authRow.user.profile?.displayName || null,
+        username: authRow.user.profile?.username || null,
+        userType: isOwner ? "OWNER" : "STAFF",
+        redirectPath: default_redirect,
+        branches: accessibleBranches,
+      },
+      contexts,
+      default_redirect,
+    });
+  } catch (error) {
+    console.error("Staff Login Error:", error);
+    return res.status(500).json({ success: false, message: "Login failed", error: error.message });
+  }
+};
+
+/**
+ * GET /api/v1/auth/staff/context
+ * Returns all branches user has staff access to (including implicit owner access)
+ */
+exports.getStaffContext = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+
+    // Get explicit staff memberships
+    const [branchMembers, orgMembers] = await Promise.all([
+      prisma.branchMember.findMany({
+        where: { userId: userId, status: "ACTIVE" },
+        include: {
+          branch: {
+            select: {
+              id: true,
+              name: true,
+              orgId: true,
+              types: {
+                select: {
+                  type: {
+                    select: {
+                      code: true,
+                      nameEn: true,
+                    },
+                  },
+                },
+              },
+            },
+          },
+          roles: { include: { role: true } },
+        },
+      }),
+      prisma.orgMember.findMany({
+        where: { userId: userId, status: "ACTIVE" },
+        include: {
+          org: { select: { id: true, name: true } },
+          roles: { include: { role: true } },
+        },
+      }),
+    ]);
+
+    // Check if user is an owner
+    const ownerProfile = await prisma.ownerProfile.findUnique({
+      where: { userId: userId },
+      select: { id: true },
+    });
+
+    const ownedOrgs = await prisma.organization.findMany({
+      where: { ownerUserId: userId },
+      select: { id: true, name: true },
+    });
+
+    const isOwner = Boolean(ownerProfile || ownedOrgs.length > 0);
+
+    // Get branch access permissions for all branches
+    const branchIds = branchMembers.map((bm) => bm.branch.id);
+    const accessPermissions = branchIds.length > 0
+      ? await prisma.branchAccessPermission.findMany({
+          where: {
+            userId: userId,
+            branchId: { in: branchIds },
+          },
+          select: {
+            branchId: true,
+            status: true,
+            expiresAt: true,
+          },
+        })
+      : [];
+
+    const accessMap = new Map();
+    accessPermissions.forEach((ap) => {
+      // Check if expired
+      if (ap.status === "APPROVED" && ap.expiresAt && new Date(ap.expiresAt) < new Date()) {
+        accessMap.set(ap.branchId, "EXPIRED");
+      } else {
+        accessMap.set(ap.branchId, ap.status);
+      }
+    });
+
+    // Build accessible branches list with access status
+    let accessibleBranches = branchMembers.map((bm) => {
+      const accessStatus = accessMap.get(bm.branch.id) || "PENDING";
+      const permission = accessPermissions.find((ap) => ap.branchId === bm.branch.id);
+
+      return {
+        id: bm.branch.id,
+        name: bm.branch.name,
+        orgId: bm.branch.orgId,
+        type: bm.branch.types?.[0]?.type?.code || null,
+        typeName: bm.branch.types?.[0]?.type?.nameEn || null,
+        role: bm.role,
+        membershipType: "EXPLICIT",
+        accessStatus: accessStatus,
+        accessExpiresAt: permission?.expiresAt || null,
+      };
+    });
+
+    // Add owner branches (implicit access)
+    if (isOwner && ownedOrgs.length > 0) {
+      const ownerBranches = await prisma.branch.findMany({
+        where: {
+          orgId: { in: ownedOrgs.map((o) => o.id) },
+        },
+        select: {
+          id: true,
+          name: true,
+          orgId: true,
+          types: {
+            select: {
+              type: {
+                select: {
+                  code: true,
+                  nameEn: true,
+                },
+              },
+            },
+          },
+        },
+      });
+
+      for (const branch of ownerBranches) {
+        if (!accessibleBranches.find((b) => b.id === branch.id)) {
+          // Owners have implicit APPROVED access
+          accessibleBranches.push({
+            id: branch.id,
+            name: branch.name,
+            orgId: branch.orgId,
+            type: branch.types?.[0]?.type?.code || null,
+            typeName: branch.types?.[0]?.type?.nameEn || null,
+            role: "OWNER",
+            membershipType: "IMPLICIT",
+            accessStatus: "APPROVED", // Owners always have access
+            accessExpiresAt: null,
+          });
+        }
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        branches: accessibleBranches,
+        isOwner: isOwner,
+        userType: isOwner ? "OWNER" : "STAFF",
+      },
+    });
+  } catch (error) {
+    console.error("getStaffContext Error:", error);
+    return res.status(500).json({ success: false, message: "Server Error" });
   }
 };
 

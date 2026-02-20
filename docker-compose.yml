@@ -18,10 +18,26 @@ services:
     networks:
       - bpa_net
 
+  bpa-redis:
+    image: redis:7-alpine
+    container_name: bpa-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - bpa_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - bpa_net
+
   bpa-storage:
-    image: minio/minio:latest
+    image: quay.io/minio/aistor/minio:latest
     container_name: bpa-storage
-    command: server /data --console-address ":9001"
+    command: server /data --console-address ":9001" --license /minio.license
     environment:
       MINIO_ROOT_USER: admin
       MINIO_ROOT_PASSWORD: password123
@@ -30,6 +46,7 @@ services:
       - "9001:9001"
     volumes:
       - bpa_minio_data:/data
+      - ./minio.license:/minio.license:ro
     networks:
       - bpa_net
 
@@ -38,7 +55,8 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: bpa_api
-    command: npm run dev
+    # Ensure DB tables exist before starting API (prevents P2021: table does not exist)
+    command: sh -c "npx prisma generate && npx prisma migrate deploy && npm run minio:init && npm run dev"
     env_file:
       - .env.docker
     ports:
@@ -58,6 +76,7 @@ services:
 volumes:
   bpa_pg_data:
   bpa_minio_data:
+  bpa_redis_data:
 
 networks:
   bpa_net:
