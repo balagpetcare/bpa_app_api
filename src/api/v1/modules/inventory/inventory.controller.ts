@@ -1,6 +1,8 @@
 const service = require("./inventory.service");
 const ledgerService = require("./ledger.service");
+const directDispatchService = require("./directDispatch.service");
 const prisma = require("../../../../infrastructure/db/prismaClient");
+const { auditStockDispatch } = require("./auditHelper");
 const { INVENTORY_ERROR_CODES } = require("../../constants/inventoryErrors");
 
 /**
@@ -306,6 +308,15 @@ exports.createBulkReceipt = async (req, res) => {
       include: { branch: true },
     });
     if (!location) return res.status(404).json({ success: false, message: "Location not found" });
+    const allowedTypes = ["CENTRAL_WAREHOUSE"];
+    if (!allowedTypes.includes(location.type)) {
+      return res.status(400).json({
+        success: false,
+        code: "BRANCH_LOCATION_REQUIRES_DISPATCH",
+        message: "Branch locations require dispatch confirmation. Create dispatch instead?",
+        payload: { locationType: location.type, locationId: locId, suggestedAction: "CREATE_DISPATCH" },
+      });
+    }
     const orgId = location.branch.orgId;
     const member = await prisma.orgMember.findFirst({ where: { userId, orgId, status: "ACTIVE" } });
     const isOwner = await prisma.organization.findFirst({ where: { id: orgId, ownerUserId: userId } });
@@ -335,6 +346,65 @@ exports.createBulkReceipt = async (req, res) => {
       return res.status(400).json({ success: false, message: e.message || "Validation failed", errors: e.errors });
     }
     return res.status(400).json({ success: false, message: (e && e.message) || "Bulk receipt failed" });
+  }
+};
+
+/**
+ * POST /api/v1/inventory/direct-dispatch
+ * Owner direct dispatch: create StockRequest + StockDispatch from bulk receive lines.
+ */
+exports.createDirectDispatch = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const { fromLocationId, toLocationId, lines, reference, note } = req.body || {};
+    const fromId = fromLocationId != null ? parseInt(fromLocationId, 10) : NaN;
+    const toId = toLocationId != null ? parseInt(toLocationId, 10) : NaN;
+    if (!Number.isInteger(fromId) || !Number.isInteger(toId) || !Array.isArray(lines) || lines.length === 0) {
+      return res.status(400).json({ success: false, message: "fromLocationId, toLocationId, and non-empty lines required" });
+    }
+    const fromLocation = await prisma.inventoryLocation.findUnique({
+      where: { id: fromId },
+      include: { branch: true },
+    });
+    if (!fromLocation) return res.status(404).json({ success: false, message: "Source location not found" });
+    const orgId = fromLocation.branch.orgId;
+    const isOwner = await prisma.organization.findFirst({ where: { id: orgId, ownerUserId: userId } });
+    const member = await prisma.orgMember.findFirst({ where: { userId, orgId, status: "ACTIVE" } });
+    if (!isOwner && !member) return res.status(403).json({ success: false, message: "Not authorized for this org" });
+    const parsedLines = lines
+      .map((l: any) => ({ variantId: parseInt(l.variantId, 10), quantity: parseInt(l.quantity, 10) || 0 }))
+      .filter((l: { variantId: number; quantity: number }) => l.variantId && l.quantity > 0);
+    if (parsedLines.length === 0) {
+      return res.status(400).json({ success: false, message: "At least one valid line (variantId, quantity > 0) required" });
+    }
+    const result = await directDispatchService.createDirectDispatch({
+      orgId,
+      fromLocationId: fromId,
+      toLocationId: toId,
+      lines: parsedLines,
+      reference: reference != null ? String(reference).trim() || undefined : undefined,
+      note: note != null ? String(note).trim() || undefined : undefined,
+      actorUserId: userId,
+    });
+    await auditStockDispatch(req, "OWNER_DIRECT_DISPATCH_CREATED", result.dispatchId, null, {
+      status: result.dispatch?.status,
+      stockRequestId: result.stockRequestId,
+    });
+    const { notifyDispatchCreated } = require("../dispatches/dispatches.notifications");
+    await notifyDispatchCreated({
+      dispatchId: result.dispatchId,
+      dispatch: result.dispatch,
+      toBranchId: result.dispatch?.toLocation?.branchId ?? null,
+    });
+    return res.status(201).json({
+      success: true,
+      data: { dispatchId: result.dispatchId, stockRequestId: result.stockRequestId, dispatch: result.dispatch },
+      message: "Dispatch created. Waiting for branch confirmation.",
+    });
+  } catch (e: any) {
+    console.error("createDirectDispatch error:", e);
+    return res.status(400).json({ success: false, message: (e && e.message) || "Direct dispatch failed" });
   }
 };
 

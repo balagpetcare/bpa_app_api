@@ -140,6 +140,12 @@ router.get(
   requirePermission("inventory.read", "org.read"),
   controller.getBulkReceiveTemplate
 );
+// POST /api/v1/inventory/direct-dispatch - Owner direct dispatch (create StockRequest + Dispatch for branch)
+router.post(
+  "/direct-dispatch",
+  requirePermission("inventory.update", "org.write"),
+  controller.createDirectDispatch
+);
 // POST /api/v1/inventory/receipts/bulk - Bulk purchase receive (create GRN + receive atomically)
 router.post(
   "/receipts/bulk",

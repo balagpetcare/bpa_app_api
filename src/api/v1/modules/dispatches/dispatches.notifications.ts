@@ -1,9 +1,55 @@
 /**
- * Notifications for dispatch events (e.g. after receive).
+ * Notifications for dispatch events (e.g. after receive, on create).
  * Uses existing NotificationType.INVENTORY_TRANSFER; no schema change.
  */
 import prisma from "../../../../infrastructure/db/prismaClient";
 import { createNotification } from "../../services/notification.service";
+
+export type NotifyDispatchCreatedParams = {
+  dispatchId: number;
+  dispatch: {
+    orgId: number;
+    fromLocation?: { name?: string | null } | null;
+    toLocation?: { name?: string | null } | null;
+    items?: Array<{ variantId?: number; quantityDispatched?: number }>;
+  };
+  toBranchId: number | null;
+};
+
+export async function notifyDispatchCreated(params: NotifyDispatchCreatedParams): Promise<void> {
+  const { dispatchId, dispatch, toBranchId } = params;
+  if (!toBranchId) return;
+  const fromName = dispatch.fromLocation?.name ?? "Unknown";
+  const toName = dispatch.toLocation?.name ?? "Unknown";
+  const items = dispatch.items ?? [];
+  const lineCount = items.length;
+  const totalQty = items.reduce((s, i) => s + (i.quantityDispatched ?? 0), 0);
+  const message = `Dispatch #${dispatchId} created: ${fromName} → ${toName} (${lineCount} line(s), Qty ${totalQty}). Awaiting branch receive confirmation.`;
+  const actionUrl = `/staff/branch/${toBranchId}/inventory/incoming/${dispatchId}`;
+  const members = await prisma.branchMember.findMany({
+    where: { branchId: toBranchId, status: "ACTIVE" },
+    select: { userId: true },
+  });
+  const userIds = [...new Set(members.map((m) => m.userId))];
+  for (const userId of userIds) {
+    try {
+      await createNotification({
+        userId,
+        type: "INVENTORY_TRANSFER",
+        title: "Incoming dispatch",
+        message,
+        actionUrl,
+        source: "dispatches",
+        orgId: dispatch.orgId,
+        branchId: toBranchId,
+        dedupeKey: `dispatch-created-${dispatchId}-${userId}`,
+        panel: "staff",
+      });
+    } catch (e) {
+      console.warn("[notifyDispatchCreated] createNotification failed for user", userId, (e as Error)?.message);
+    }
+  }
+}
 
 export type NotifyDispatchReceivedParams = {
   dispatchId: number;
