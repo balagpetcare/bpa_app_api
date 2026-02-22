@@ -213,8 +213,19 @@ const MENU_REGISTRY = {
         items: [
           { href: "/admin/users", label: "Users", requires: ["admin.users.read"] },
           { href: "/admin/staff", label: "Staff", requires: ["admin.staff.read"] },
+          { href: "/admin/organizations", label: "Organizations", requires: ["admin.users.read"] },
           { href: "/admin/roles", label: "Roles", requires: ["admin.roles.read"] },
           { href: "/admin/permissions", label: "Permissions", requires: ["admin.permissions.read"] },
+          { href: "/admin/super-admin-whitelist", label: "Super Admin Whitelist", requires: ["admin.users.read"] },
+        ],
+      },
+      {
+        title: "Master Data",
+        icon: "solar:database-outline",
+        items: [
+          { href: "/admin/countries", label: "Countries", requires: ["admin.users.read"] },
+          { href: "/admin/states", label: "States", requires: ["admin.users.read"] },
+          { href: "/admin/branch-types", label: "Branch Types", requires: ["admin.users.read"] },
         ],
       },
     ],
