@@ -1,4 +1,5 @@
 const service = require("./producer.service");
+const inviteService = require("./producerStaffInvite.service");
 const jwt = require("jsonwebtoken");
 const appConfig = require("../../../../config/appConfig");
 const { resolvePermissionsForUser } = require("../../utils/permissions");
@@ -170,6 +171,95 @@ exports.getProduct = async (req, res) => {
   }
 };
 
+exports.updateProduct = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const data = await service.updateProduct(userId, req.params.id, req.body);
+    return res.status(200).json({ success: true, data });
+  } catch (e) {
+    const status = e?.statusCode || 500;
+    return res.status(status).json({ success: false, message: e?.message || "Failed to update product" });
+  }
+};
+
+exports.submitProduct = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const data = await service.submitProduct(userId, req.params.id, req.body || {});
+    return res.status(200).json({ success: true, data, message: "Product submitted for approval" });
+  } catch (e) {
+    const status = e?.statusCode || 500;
+    const payload = { success: false, message: e?.message || "Submit failed" };
+    if (e?.code) payload.code = e.code;
+    return res.status(status).json(payload);
+  }
+};
+
+exports.getProductStatus = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const data = await service.getProductStatus(userId, req.params.id);
+    if (!data) return res.status(404).json({ success: false, message: "Product not found" });
+    return res.status(200).json({ success: true, data });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e?.message || "Failed to get status" });
+  }
+};
+
+exports.listFactories = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const data = await service.listFactories(userId);
+    return res.status(200).json({ success: true, data });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e?.message || "Failed to list factories" });
+  }
+};
+
+exports.createFactory = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const data = await service.createFactory(userId, req.body);
+    return res.status(201).json({ success: true, data });
+  } catch (e) {
+    const status = e?.statusCode || 500;
+    return res.status(status).json({ success: false, message: e?.message || "Failed to create factory" });
+  }
+};
+
+exports.addProductProof = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const productId = req.params.id;
+    const file = req.file;
+    const proofType = req.body?.proofType || req.body?.proof_type;
+    if (!file?.buffer) return res.status(400).json({ success: false, message: "File is required" });
+    if (!proofType) return res.status(400).json({ success: false, message: "proofType is required" });
+    const mediaService = require("../media/media.service");
+    const media = await mediaService.uploadAndCreateMedia({
+      ownerUserId: userId,
+      file,
+      folder: "producer-product-proofs",
+      type: file.mimetype?.startsWith("image/") ? "IMAGE" : file.mimetype === "application/pdf" ? "FILE" : "FILE",
+    });
+    const data = await service.addProductProof(userId, productId, {
+      proofType,
+      mediaId: media.id,
+      metadataJson: req.body?.metadataJson ? JSON.parse(req.body.metadataJson) : undefined,
+    });
+    return res.status(201).json({ success: true, data });
+  } catch (e) {
+    const status = e?.statusCode || 500;
+    return res.status(status).json({ success: false, message: e?.message || "Failed to add proof" });
+  }
+};
+
 exports.createBatch = async (req, res) => {
   try {
     const userId = req.user?.id;
@@ -291,7 +381,8 @@ exports.updateStaffRole = async (req, res) => {
     const producerOrgId = req.producerOrgId;
     const { staffId } = req.params;
     const { roleKey } = req.body;
-    const data = await service.updateStaffRole(producerOrgId, Number(staffId), roleKey);
+    const auditContext = { actorId: req.user?.id, isProducerOwner: req.isProducerOwner };
+    const data = await service.updateStaffRole(producerOrgId, Number(staffId), roleKey, auditContext);
     return res.status(200).json({ success: true, data });
   } catch (e) {
     const status = e?.statusCode || 500;
@@ -299,15 +390,116 @@ exports.updateStaffRole = async (req, res) => {
   }
 };
 
+exports.updateStaffStatus = async (req, res) => {
+  try {
+    const producerOrgId = req.producerOrgId;
+    const { staffId } = req.params;
+    const { status } = req.body;
+    const auditContext = { actorId: req.user?.id, isProducerOwner: req.isProducerOwner };
+    const data = await service.updateStaffStatus(producerOrgId, Number(staffId), status, auditContext);
+    return res.status(200).json({ success: true, data });
+  } catch (e) {
+    const status = e?.statusCode || 500;
+    return res.status(status).json({ success: false, message: e?.message || "Failed to update staff status" });
+  }
+};
+
 exports.removeStaff = async (req, res) => {
   try {
     const producerOrgId = req.producerOrgId;
     const { staffId } = req.params;
-    await service.removeStaff(producerOrgId, Number(staffId));
+    const auditContext = { actorId: req.user?.id, isProducerOwner: req.isProducerOwner };
+    await service.removeStaff(producerOrgId, Number(staffId), auditContext);
     return res.status(200).json({ success: true, message: "Staff removed successfully" });
   } catch (e) {
     const status = e?.statusCode || 500;
     return res.status(status).json({ success: false, message: e?.message || "Failed to remove staff" });
+  }
+};
+
+// ==================== STAFF INVITES (new workflow: registered + unregistered) ====================
+
+exports.createStaffInvite = async (req, res) => {
+  try {
+    const producerOrgId = req.producerOrgId;
+    const invitedByUserId = req.user?.id;
+    if (!invitedByUserId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const data = await inviteService.createStaffInvite({
+      producerOrgId,
+      invitedByUserId,
+      email: req.body.email,
+      phone: req.body.phone,
+      roleKey: req.body.roleKey,
+    });
+    return res.status(201).json({ success: true, data });
+  } catch (e) {
+    const status = e?.statusCode || 500;
+    return res.status(status).json({ success: false, message: e?.message || "Failed to create invite" });
+  }
+};
+
+exports.listStaffInvites = async (req, res) => {
+  try {
+    const producerOrgId = req.producerOrgId;
+    const status = req.query.status as string | undefined;
+    const search = req.query.search as string | undefined;
+    const data = await inviteService.listStaffInvites(producerOrgId, { status, search });
+    return res.status(200).json({ success: true, data });
+  } catch (e) {
+    const status = e?.statusCode || 500;
+    return res.status(status).json({ success: false, message: e?.message || "Failed to list invites" });
+  }
+};
+
+exports.cancelStaffInvite = async (req, res) => {
+  try {
+    const producerOrgId = req.producerOrgId;
+    const inviteId = Number(req.params.id);
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    await inviteService.cancelStaffInvite(producerOrgId, inviteId, userId);
+    return res.status(200).json({ success: true, message: "Invite cancelled" });
+  } catch (e) {
+    const status = e?.statusCode || 500;
+    return res.status(status).json({ success: false, message: e?.message || "Failed to cancel invite" });
+  }
+};
+
+exports.acceptStaffInvite = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const { inviteId, token } = req.body || {};
+    const data = await inviteService.acceptStaffInvite({ userId, inviteId, token });
+    return res.status(200).json({ success: true, data });
+  } catch (e) {
+    const status = e?.statusCode || 500;
+    return res.status(status).json({ success: false, message: e?.message || "Failed to accept invite" });
+  }
+};
+
+exports.declineStaffInvite = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const { inviteId, token } = req.body || {};
+    await inviteService.declineStaffInvite({ userId, inviteId, token });
+    return res.status(200).json({ success: true, message: "Invite declined" });
+  } catch (e) {
+    const status = e?.statusCode || 500;
+    return res.status(status).json({ success: false, message: e?.message || "Failed to decline invite" });
+  }
+};
+
+exports.getPendingInvites = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const data = await inviteService.getPendingInvitesForUser(userId);
+    return res.status(200).json({ success: true, data });
+  } catch (e) {
+    const status = e?.statusCode || 500;
+    return res.status(status).json({ success: false, message: e?.message || "Failed to get pending invites" });
   }
 };
 
@@ -321,6 +513,12 @@ module.exports = {
   listProducts: exports.listProducts,
   createProduct: exports.createProduct,
   getProduct: exports.getProduct,
+  updateProduct: exports.updateProduct,
+  submitProduct: exports.submitProduct,
+  getProductStatus: exports.getProductStatus,
+  addProductProof: exports.addProductProof,
+  listFactories: exports.listFactories,
+  createFactory: exports.createFactory,
   createBatch: exports.createBatch,
   listBatches: exports.listBatches,
   getBatch: exports.getBatch,
@@ -331,7 +529,14 @@ module.exports = {
   inviteStaff: exports.inviteStaff,
   listStaff: exports.listStaff,
   updateStaffRole: exports.updateStaffRole,
+  updateStaffStatus: exports.updateStaffStatus,
   removeStaff: exports.removeStaff,
+  createStaffInvite: exports.createStaffInvite,
+  listStaffInvites: exports.listStaffInvites,
+  cancelStaffInvite: exports.cancelStaffInvite,
+  acceptStaffInvite: exports.acceptStaffInvite,
+  declineStaffInvite: exports.declineStaffInvite,
+  getPendingInvites: exports.getPendingInvites,
 };
 
 export {};

@@ -1,0 +1,409 @@
+/**
+ * Producer Staff Invite workflow: registered (notification + accept) and unregistered (token link → register → accept).
+ */
+
+const prisma = require("../../../../infrastructure/db/prismaClient");
+const crypto = require("crypto");
+const { createNotification } = require("../../services/notification.service");
+const { writeProducerAudit } = require("./producerAudit");
+
+const INVITE_EXPIRY_DAYS = 14;
+const TOKEN_BYTES = 32;
+
+type AppError = Error & { statusCode?: number };
+function createError(message: string, statusCode: number): AppError {
+  const err = new Error(message) as AppError;
+  err.statusCode = statusCode;
+  return err;
+}
+
+function normalizeEmail(v: string | null | undefined): string | null {
+  if (v === undefined || v === null) return null;
+  const s = String(v).trim().toLowerCase();
+  return s || null;
+}
+function normalizePhone(v: string | null | undefined): string | null {
+  if (v === undefined || v === null) return null;
+  return String(v).trim().replace(/\D/g, "") || null;
+}
+
+function hashToken(token: string): string {
+  return crypto.createHash("sha256").update(token, "utf8").digest("hex");
+}
+
+export async function createStaffInvite(params: {
+  producerOrgId: number;
+  invitedByUserId: number;
+  email?: string | null;
+  phone?: string | null;
+  roleKey: string;
+}) {
+  const emailNorm = normalizeEmail(params.email);
+  const phoneNorm = normalizePhone(params.phone);
+  if (!emailNorm && !phoneNorm) {
+    throw createError("email or phone is required", 400);
+  }
+
+  const role = await prisma.role.findUnique({
+    where: { key: params.roleKey || "PRODUCER_VIEWER" },
+    select: { id: true },
+  });
+  if (!role) throw createError("Invalid role", 400);
+
+  const producerOrg = await prisma.producerOrg.findUnique({
+    where: { id: params.producerOrgId },
+    select: { id: true, name: true },
+  });
+  if (!producerOrg) throw createError("Producer org not found", 404);
+
+  // Block inviting self (owner)
+  const orgOwner = await prisma.producerOrg.findUnique({
+    where: { id: params.producerOrgId },
+    select: { ownerUserId: true },
+  });
+  if (orgOwner?.ownerUserId === params.invitedByUserId) {
+    throw createError("You cannot invite yourself", 400);
+  }
+
+  // Check duplicate pending/sent invite for same email or phone
+  const pendingStatuses = ["PENDING", "SENT"];
+  if (emailNorm) {
+    const dup = await prisma.producerStaffInvite.findFirst({
+      where: {
+        producerOrgId: params.producerOrgId,
+        email: emailNorm,
+        status: { in: pendingStatuses },
+      },
+    });
+    if (dup) throw createError("An invitation for this email is already pending", 400);
+  }
+  if (phoneNorm) {
+    const dup = await prisma.producerStaffInvite.findFirst({
+      where: {
+        producerOrgId: params.producerOrgId,
+        phone: phoneNorm,
+        status: { in: pendingStatuses },
+      },
+    });
+    if (dup) throw createError("An invitation for this phone is already pending", 400);
+  }
+
+  const expiresAt = new Date(Date.now() + INVITE_EXPIRY_DAYS * 24 * 60 * 60 * 1000);
+
+  const auth = await prisma.userAuth.findFirst({
+    where: {
+      OR: [
+        emailNorm ? { email: { equals: emailNorm, mode: "insensitive" } } : undefined,
+        phoneNorm ? { phone: phoneNorm } : undefined,
+      ].filter(Boolean),
+    },
+    select: { userId: true },
+  });
+
+  if (auth) {
+    // CASE A: Registered user
+    const existingStaff = await prisma.producerOrgStaff.findUnique({
+      where: {
+        producerOrgId_userId: { producerOrgId: params.producerOrgId, userId: auth.userId },
+      },
+    });
+    if (existingStaff) throw createError("User is already a staff member", 400);
+
+    const invite = await prisma.producerStaffInvite.create({
+      data: {
+        producerOrgId: params.producerOrgId,
+        invitedByUserId: params.invitedByUserId,
+        email: emailNorm,
+        phone: phoneNorm,
+        roleId: role.id,
+        status: "PENDING",
+        tokenHash: null,
+        expiresAt,
+      },
+      include: {
+        role: { select: { key: true, label: true } },
+        producerOrg: { select: { name: true } },
+      },
+    });
+
+    try {
+      await createNotification({
+        userId: auth.userId,
+        type: "STAFF_INVITE",
+        title: "Producer Staff Invitation",
+        message: `You have been invited to join ${producerOrg.name} as staff.`,
+        meta: { inviteId: invite.id, producerOrgId: params.producerOrgId, producerName: producerOrg.name },
+        source: "producer",
+        actionUrl: `/producer/staff?inviteId=${invite.id}`,
+        dedupeKey: `producer-staff-invite-${invite.id}`,
+        senderId: params.invitedByUserId,
+      });
+    } catch (e) {
+      console.error("Producer staff invite notification error:", e);
+    }
+
+    writeProducerAudit({
+      producerOrgId: params.producerOrgId,
+      actorType: "OWNER",
+      actorId: params.invitedByUserId,
+      action: "STAFF_INVITE_CREATED",
+      entityType: "PRODUCER_STAFF_INVITE",
+      entityId: String(invite.id),
+    });
+
+    return {
+      mode: "REGISTERED" as const,
+      inviteId: invite.id,
+      invite,
+    };
+  }
+
+  // CASE B: Unregistered — create invite with token
+  const rawToken = crypto.randomBytes(TOKEN_BYTES).toString("hex");
+  const tokenHash = hashToken(rawToken);
+
+  const invite = await prisma.producerStaffInvite.create({
+    data: {
+      producerOrgId: params.producerOrgId,
+      invitedByUserId: params.invitedByUserId,
+      email: emailNorm,
+      phone: phoneNorm,
+      roleId: role.id,
+      status: "SENT",
+      tokenHash,
+      expiresAt,
+    },
+    include: {
+      role: { select: { key: true, label: true } },
+      producerOrg: { select: { name: true } },
+    },
+  });
+
+  const baseUrl = process.env.PRODUCER_PANEL_URL || process.env.NEXT_PUBLIC_APP_URL || "";
+  const invitePath = `/producer/invites/accept?token=${rawToken}`;
+  const inviteLink = baseUrl ? `${baseUrl.replace(/\/$/, "")}${invitePath}` : invitePath;
+
+  writeProducerAudit({
+    producerOrgId: params.producerOrgId,
+    actorType: "OWNER",
+    actorId: params.invitedByUserId,
+    action: "STAFF_INVITE_SENT",
+    entityType: "PRODUCER_STAFF_INVITE",
+    entityId: String(invite.id),
+  });
+
+  return {
+    mode: "UNREGISTERED" as const,
+    inviteId: invite.id,
+    inviteLink,
+    invite,
+  };
+}
+
+export async function listStaffInvites(producerOrgId: number, filters?: { status?: string; search?: string }) {
+  const where: any = { producerOrgId };
+  if (filters?.status) {
+    where.status = filters.status;
+  }
+  if (filters?.search && filters.search.trim()) {
+    const q = filters.search.trim().toLowerCase();
+    where.OR = [
+      { email: { contains: q, mode: "insensitive" } },
+      { phone: { contains: q } },
+    ];
+  }
+  return prisma.producerStaffInvite.findMany({
+    where,
+    include: {
+      role: { select: { key: true, label: true } },
+      invitedBy: { select: { id: true, profile: { select: { displayName: true } } } },
+      producerOrg: { select: { name: true } },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+}
+
+export async function cancelStaffInvite(producerOrgId: number, inviteId: number, userId: number) {
+  const invite = await prisma.producerStaffInvite.findFirst({
+    where: { id: inviteId, producerOrgId },
+  });
+  if (!invite) throw createError("Invite not found", 404);
+  if (invite.status !== "PENDING" && invite.status !== "SENT") {
+    throw createError("Only pending or sent invites can be cancelled", 400);
+  }
+  await prisma.producerStaffInvite.update({
+    where: { id: inviteId },
+    data: { status: "CANCELLED", updatedAt: new Date() },
+  });
+  writeProducerAudit({
+    producerOrgId,
+    actorType: "OWNER",
+    actorId: userId,
+    action: "STAFF_INVITE_CANCELLED",
+    entityType: "PRODUCER_STAFF_INVITE",
+    entityId: String(inviteId),
+  });
+  return { success: true };
+}
+
+function userMatchesInvite(userAuth: { email?: string | null; phone?: string | null }, invite: { email?: string | null; phone?: string | null }): boolean {
+  const emailNorm = normalizeEmail(invite.email);
+  const phoneNorm = normalizePhone(invite.phone);
+  if (emailNorm && normalizeEmail(userAuth.email) === emailNorm) return true;
+  if (phoneNorm && normalizePhone(userAuth.phone) === phoneNorm) return true;
+  return false;
+}
+
+export async function acceptStaffInvite(params: { userId: number; inviteId?: number; token?: string }) {
+  let invite: any = null;
+
+  if (params.token) {
+    const tokenHash = hashToken(params.token);
+    invite = await prisma.producerStaffInvite.findFirst({
+      where: { tokenHash, status: { in: ["PENDING", "SENT"] } },
+      include: { role: true, producerOrg: true },
+    });
+    if (!invite) throw createError("Invalid or expired invite token", 404);
+  } else if (params.inviteId) {
+    invite = await prisma.producerStaffInvite.findUnique({
+      where: { id: params.inviteId },
+      include: { role: true, producerOrg: true },
+    });
+    if (!invite) throw createError("Invite not found", 404);
+    if (invite.status !== "PENDING" && invite.status !== "SENT") {
+      throw createError("This invite is no longer valid", 400);
+    }
+  } else {
+    throw createError("inviteId or token is required", 400);
+  }
+
+  if (new Date() > invite.expiresAt) {
+    await prisma.producerStaffInvite.update({
+      where: { id: invite.id },
+      data: { status: "EXPIRED", updatedAt: new Date() },
+    });
+    throw createError("This invite has expired", 400);
+  }
+
+  const userAuth = await prisma.userAuth.findUnique({
+    where: { userId: params.userId },
+    select: { email: true, phone: true },
+  });
+  if (!userAuth) throw createError("User auth not found", 404);
+
+  if (!userMatchesInvite(userAuth, invite)) {
+    throw createError("This invite was sent to a different email or phone", 403);
+  }
+
+  const existingStaff = await prisma.producerOrgStaff.findUnique({
+    where: {
+      producerOrgId_userId: { producerOrgId: invite.producerOrgId, userId: params.userId },
+    },
+  });
+  if (existingStaff) throw createError("You are already a staff member", 400);
+
+  await prisma.$transaction([
+    prisma.producerOrgStaff.create({
+      data: {
+        producerOrgId: invite.producerOrgId,
+        userId: params.userId,
+        roleId: invite.roleId,
+        invitedBy: invite.invitedByUserId,
+        status: "ACTIVE",
+      },
+    }),
+    prisma.producerStaffInvite.update({
+      where: { id: invite.id },
+      data: { status: "ACCEPTED", acceptedByUserId: params.userId, updatedAt: new Date() },
+    }),
+  ]);
+
+  writeProducerAudit({
+    producerOrgId: invite.producerOrgId,
+    actorType: "OWNER",
+    actorId: invite.invitedByUserId,
+    action: "STAFF_INVITE_ACCEPTED",
+    entityType: "PRODUCER_STAFF_INVITE",
+    entityId: String(invite.id),
+  });
+
+  return { success: true, producerOrgId: invite.producerOrgId, producerName: invite.producerOrg?.name };
+}
+
+export async function declineStaffInvite(params: { userId: number; inviteId?: number; token?: string }) {
+  let invite: any = null;
+
+  if (params.token) {
+    const tokenHash = hashToken(params.token);
+    invite = await prisma.producerStaffInvite.findFirst({
+      where: { tokenHash, status: { in: ["PENDING", "SENT"] } },
+      include: { producerOrg: true },
+    });
+  } else if (params.inviteId) {
+    invite = await prisma.producerStaffInvite.findUnique({
+      where: { id: params.inviteId },
+      include: { producerOrg: true },
+    });
+  }
+  if (!invite || (invite.status !== "PENDING" && invite.status !== "SENT")) {
+    throw createError("Invite not found or no longer valid", 404);
+  }
+
+  const userAuth = await prisma.userAuth.findUnique({
+    where: { userId: params.userId },
+    select: { email: true, phone: true },
+  });
+  if (!userAuth) throw createError("User auth not found", 404);
+  if (!userMatchesInvite(userAuth, invite)) {
+    throw createError("This invite was sent to a different email or phone", 403);
+  }
+
+  await prisma.producerStaffInvite.update({
+    where: { id: invite.id },
+    data: { status: "DECLINED", updatedAt: new Date() },
+  });
+
+  return { success: true };
+}
+
+export async function getPendingInvitesForUser(userId: number) {
+  const userAuth = await prisma.userAuth.findUnique({
+    where: { userId },
+    select: { email: true, phone: true },
+  });
+  if (!userAuth) return [];
+
+  const emailNorm = normalizeEmail(userAuth.email);
+  const phoneNorm = normalizePhone(userAuth.phone);
+  const or: any[] = [];
+  if (emailNorm) or.push({ email: { equals: emailNorm, mode: "insensitive" } });
+  if (phoneNorm) or.push({ phone: phoneNorm });
+  if (or.length === 0) return [];
+
+  const invites = await prisma.producerStaffInvite.findMany({
+    where: {
+      OR: or,
+      status: { in: ["PENDING", "SENT"] },
+      expiresAt: { gt: new Date() },
+    },
+    include: {
+      producerOrg: { select: { id: true, name: true } },
+      role: { select: { key: true, label: true } },
+      invitedBy: { select: { id: true, profile: { select: { displayName: true } } } },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
+  return invites;
+}
+
+export async function getInviteByIdForProducer(producerOrgId: number, inviteId: number) {
+  const invite = await prisma.producerStaffInvite.findFirst({
+    where: { id: inviteId, producerOrgId },
+    include: {
+      role: { select: { key: true, label: true } },
+      invitedBy: { select: { id: true, profile: { select: { displayName: true } } } },
+    },
+  });
+  return invite;
+}
