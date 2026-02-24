@@ -2,7 +2,32 @@
 
 Base URL: `http://localhost:3000/api/v1/producer`
 
-Auth: Producer panel uses cookies. For API testing you need a valid session cookie or Bearer token from producer login. Replace `<token>` or use `-b cookies.txt` after logging in via browser/curl.
+Auth: Producer panel may use cookies; API may accept `Authorization: Bearer <token>`. Replace `<token>` with a valid producer JWT or use `-b cookies.txt` after logging in.
+
+## Windows (cmd) — use ^ for line continuation
+
+```cmd
+curl -i -X POST "http://localhost:3000/api/v1/producer/staff/invite" ^
+  -H "Content-Type: application/json" ^
+  -H "Authorization: Bearer <token>" ^
+  -d "{\"email\":\"someone@example.com\",\"role\":\"STAFF\"}"
+```
+
+```cmd
+curl -i -X POST "http://localhost:3000/api/v1/producer/staff/invite" ^
+  -H "Content-Type: application/json" ^
+  -H "Authorization: Bearer <token>" ^
+  -d "{\"phone\":\"+8801XXXXXXXXX\",\"role\":\"STAFF\"}"
+```
+
+```cmd
+curl -i -X POST "http://localhost:3000/api/v1/producer/staff/invite" ^
+  -H "Content-Type: application/json" ^
+  -H "Authorization: Bearer <token>" ^
+  -d "{\"email\":\"someone@example.com\",\"phone\":\"+8801XXXXXXXXX\",\"role\":\"STAFF\"}"
+```
+
+## Bash / Unix
 
 ## 1. Email only
 

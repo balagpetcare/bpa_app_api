@@ -447,13 +447,18 @@ exports.createStaffInvite = async (req, res) => {
     });
     return res.status(201).json({ success: true, data });
   } catch (e: any) {
-    const status = e?.statusCode || 500;
+    let status = e?.statusCode || 500;
     const payload: { success: false; message: string; code?: string; fields?: Record<string, string> } = {
       success: false,
       message: e?.message || "Failed to create invite",
     };
     if (e?.code) payload.code = e.code;
     if (e?.fields) payload.fields = e.fields;
+    if (e?.code === "P2002") {
+      status = 409;
+      payload.code = "INVITE_ALREADY_PENDING";
+      payload.message = "An invitation for this email or phone is already pending.";
+    }
     return res.status(status).json(payload);
   }
 };

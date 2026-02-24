@@ -50,17 +50,61 @@ Producer staff can be invited in two ways:
 
 - **POST /api/v1/producer/staff** is unchanged: still accepts email/phone and creates `ProducerOrgStaff` directly when the user exists. The new producer UI uses **POST /staff/invite** only, so both flows are supported without breaking existing callers.
 
-### POST /staff/invite — request body and validation
+### POST /staff/invite — request schema
 
-- **Body (JSON):**
-  - `email` (optional): string, trimmed and lowercased. At least one of `email` or `phone` is required.
-  - `phone` (optional): string, digits only after trimming. At least one of `email` or `phone` is required.
-  - `roleKey` or `role` (optional): string. Default `PRODUCER_VIEWER`. Accepted values (or shorthand): `PRODUCER_OWNER`/`OWNER`, `PRODUCER_MANAGER`/`MANAGER`, `PRODUCER_STAFF`/`STAFF`, `PRODUCER_AUDITOR`/`AUDITOR`, `PRODUCER_VIEWER`/`VIEWER`.
-- **Validation errors (400):**
-  - Missing both email and phone: `{ code: "VALIDATION_ERROR", message: "At least one of email or phone is required", fields: { email: "...", phone: "..." } }`.
-  - Invalid role: `{ code: "INVALID_ROLE", message: "Invalid role. Use one of: ...", fields: { role: "..." } }`.
-  - Other business 400s include `USER_ALREADY_STAFF`, `INVITE_ALREADY_PENDING`, `SELF_INVITE_FORBIDDEN`.
-- **Auth:** Not authenticated → 401. Not producer owner → 403. Producer suspended → 403.
+| Field   | Type   | Required | Description |
+|--------|--------|----------|-------------|
+| email  | string | no*      | Trimmed, lowercased. *At least one of email or phone required.* |
+| phone  | string | no*      | Trimmed; non-digits stripped (E.164-style). *At least one of email or phone required.* |
+| roleKey | string | no       | Role key. Default `PRODUCER_VIEWER`. Also accepts `role` (alias). |
+| role   | string | no       | Alias for roleKey. Shorthand accepted: `OWNER`, `MANAGER`, `STAFF`, `AUDITOR`, `VIEWER` (mapped to `PRODUCER_*`). |
+
+Backend uses the `Role` table (no hardcoded UUIDs); role string is resolved to a role key and then to `roleId`.
+
+### POST /staff/invite — success responses
+
+**Registered user (invitee already has an account):** 201 Created
+
+```json
+{
+  "success": true,
+  "data": {
+    "mode": "REGISTERED",
+    "inviteId": 1,
+    "invite": { "id": 1, "email": "...", "role": { "key": "PRODUCER_STAFF", "label": "..." }, "producerOrg": { "name": "..." }, ... }
+  }
+}
+```
+
+**Unregistered user (invitee will get link to register then accept):** 201 Created
+
+```json
+{
+  "success": true,
+  "data": {
+    "mode": "UNREGISTERED",
+    "inviteId": 1,
+    "inviteLink": "http://localhost:3105/producer/invites/accept?token=...",
+    "invite": { "id": 1, "email": "...", "role": { "key": "PRODUCER_VIEWER", "label": "..." }, ... }
+  }
+}
+```
+
+### POST /staff/invite — error responses
+
+| Status | code                  | When |
+|--------|------------------------|------|
+| 400    | VALIDATION_ERROR       | Missing both email and phone. Body includes `fields: { email?, phone? }`. |
+| 400    | INVALID_ROLE           | Role string not in allowed set. Body may include `fields: { role }`. |
+| 400    | USER_ALREADY_STAFF     | Invitee is already a staff member. |
+| 400    | INVITE_ALREADY_PENDING | A pending/sent invite already exists for this email or phone. |
+| 400    | SELF_INVITE_FORBIDDEN  | Owner cannot invite themselves. |
+| 401    | UNAUTHORIZED           | Not authenticated (missing or invalid token/session). |
+| 403    | —                      | Not producer owner, or producer org suspended. |
+| 404    | —                      | Producer org not found (internal). |
+| 409    | INVITE_ALREADY_PENDING | Prisma unique constraint (duplicate invite). |
+
+Auth: unauthenticated → 401; forbidden (not owner / suspended) → 403. Never 400 for auth.
 
 ### Security
 
