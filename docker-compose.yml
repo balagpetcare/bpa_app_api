@@ -55,8 +55,9 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: bpa_api
-    # Ensure DB tables exist before starting API (prevents P2021: table does not exist)
-    command: sh -c "npx prisma generate && npx prisma migrate deploy && npm run minio:init && npm run dev"
+    # Ensure DB tables exist before starting API (prevents P2021: table does not exist).
+    # With volumes (.:/app + /app/node_modules), node_modules can be empty; install deps so socket.io etc. are available.
+    command: sh -c "npm ci && npx prisma generate && npx prisma migrate deploy && npm run minio:init && npm run dev"
     env_file:
       - .env.docker
     ports:
@@ -69,6 +70,29 @@ services:
     networks:
       - bpa_net
     # Dev-friendly: hot reload (optional). If you don't want bind-mount, comment these lines.
+    volumes:
+      - .:/app
+      - /app/node_modules
+
+  bpa_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: bpa_app_api
+    container_name: bpa_worker
+    command: sh -c "npm ci && npx prisma generate && npm run worker:email"
+    env_file:
+      - .env.docker
+    environment:
+      REDIS_HOST: bpa-redis
+      REDIS_PORT: "6379"
+    depends_on:
+      bpa_db:
+        condition: service_healthy
+      bpa-redis:
+        condition: service_healthy
+    networks:
+      - bpa_net
     volumes:
       - .:/app
       - /app/node_modules
