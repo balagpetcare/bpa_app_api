@@ -435,6 +435,8 @@ model User {
   producerOrgsOwned      ProducerOrg[]         @relation("ProducerOrgOwner")
   producerStaffRoles     ProducerOrgStaff[]    @relation("ProducerStaffUser")
   producerStaffInvited   ProducerOrgStaff[]    @relation("ProducerStaffInviter")
+  producerStaffInvitesSent    ProducerStaffInvite[] @relation("ProducerStaffInviteInvitedBy")
+  producerStaffInvitesAccepted ProducerStaffInvite[] @relation("ProducerStaffInviteAcceptedBy")
   authProductsCreated    AuthProduct[]         @relation("AuthProductCreatedBy")
   authBatchesCreated     AuthBatch[]           @relation("AuthBatchCreatedBy")
   authCodesGenerated     AuthCode[]            @relation("AuthCodeGeneratedBy")
@@ -1307,6 +1309,9 @@ model Media {
   // Producer KYC (ProducerOrgDocument)
   producerOrgDocuments ProducerOrgDocument[]
 
+  // Producer product proof (AuthProductProof)
+  authProductProofs AuthProductProof[]
+
   // === Products Module: Product Media ===
   productMedia ProductMedia[]
 
@@ -2147,6 +2152,7 @@ enum AuditEntityType {
   STOCK_REQUEST
   STOCK_DISPATCH
   GRN
+  COUNTRY
 }
 
 enum AuditActorRole {
@@ -2387,6 +2393,7 @@ enum VerificationEntityType {
   ORGANIZATION
   BRANCH
   PRODUCER_ORG
+  PRODUCER_PRODUCT
 }
 
 enum VerificationAction {
@@ -2435,6 +2442,19 @@ enum DocumentType {
   SIGNBOARD_PHOTO
   VET_LICENSE
   DRUG_LICENSE
+
+  // Producer product proof (verification & anti-copy)
+  LABEL_FRONT
+  LABEL_BACK
+  LABEL_SIDE
+  PACKAGING_PHOTO_FRONT
+  PACKAGING_PHOTO_BACK
+  PACKAGING_PHOTO_SIDE
+  SEALED_PACKAGE_PHOTO
+  BRAND_LOGO
+  MANUFACTURING_LICENSE
+  REGULATORY_APPROVAL
+  VAT_TIN_CERT
 
   OTHER
 }
@@ -2485,6 +2505,8 @@ model Organization {
   status      PartnerStatus @default(PENDING_REVIEW)
   // Global-Ready Phase 1: country binding for org scope
   countryId   Int?
+  // Country controller: org acting as country chapter (set when assigned as Country.controllerOrg)
+  orgType     OrgType?      @default(PARTNER)
 
   // Payout: NOT_CONFIGURED until banking is set up on /owner/organizations/[id]/payouts
   payoutStatus OrganizationPayoutStatus @default(NOT_CONFIGURED)
@@ -2502,9 +2524,10 @@ model Organization {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  owner    User     @relation(fields: [ownerUserId], references: [id], onDelete: Restrict)
-  country  Country? @relation(fields: [countryId], references: [id], onDelete: Restrict)
-  branches Branch[]
+  owner                User     @relation(fields: [ownerUserId], references: [id], onDelete: Restrict)
+  country              Country? @relation(fields: [countryId], references: [id], onDelete: Restrict)
+  controllerForCountry Country? @relation("CountryController")
+  branches             Branch[]
 
   // PHASE-1 KYC / Verification
   legalProfile OrganizationLegalProfile?
@@ -2569,7 +2592,13 @@ model Organization {
   @@index([ownerUserId])
   @@index([countryId])
   @@index([deletedAt, deletionScheduledAt])
+  @@index([orgType])
   @@map("organizations")
+}
+
+enum OrgType {
+  PARTNER
+  COUNTRY_CHAPTER
 }
 
 model Branch {
@@ -3360,6 +3389,7 @@ model Role {
   stateRoleAssignments   UserStateRole[]
   accessInvites          AccessInvite[]
   producerStaffRoles     ProducerOrgStaff[] @relation("ProducerStaffRole")
+  producerStaffInvites   ProducerStaffInvite[]
 
   @@index([scope])
   @@map("roles")
@@ -3686,18 +3716,20 @@ model Company {
 // === Global-Ready Phase 1: Country + Policy (BPA) ===
 // Reference: docs/GLOBAL_READY_FULL_PLANNING.md
 model Country {
-  id              Int      @id @default(autoincrement())
-  code            String   @unique // ISO 3166-1 alpha-2: BD, IN, US, LK, MY, SG
-  name            String
-  currencyCode    String?  @default("USD")
-  timezoneDefault String?  @default("UTC")
-  phoneCode       String?  // E.164 prefix e.g. +880
-  latitude        Decimal? @db.Decimal(10, 8)
-  longitude       Decimal? @db.Decimal(11, 8)
-  isActive        Boolean  @default(true)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id               Int      @id @default(autoincrement())
+  code             String   @unique // ISO 3166-1 alpha-2: BD, IN, US, LK, MY, SG
+  name             String
+  currencyCode     String?  @default("USD")
+  timezoneDefault  String?  @default("UTC")
+  phoneCode        String?  // E.164 prefix e.g. +880
+  latitude         Decimal? @db.Decimal(10, 8)
+  longitude        Decimal? @db.Decimal(11, 8)
+  isActive         Boolean  @default(true)
+  controllerOrgId  Int?     @unique // Optional: org designated as country controller (chapter)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
+  controllerOrg    Organization? @relation("CountryController", fields: [controllerOrgId], references: [id], onDelete: SetNull)
   policies         CountryPolicy[]
   ads              Ad[]
   userCountryRoles UserCountryRole[]
@@ -3705,6 +3737,7 @@ model Country {
   states           State[]
   accessInvites    AccessInvite[]
 
+  @@index([controllerOrgId])
   @@map("countries")
 }
 
@@ -4945,6 +4978,10 @@ enum ProducerOrgStatus {
 
 enum AuthProductStatus {
   DRAFT
+  SUBMITTED
+  UNDER_REVIEW
+  APPROVED
+  REJECTED
   ACTIVE
   INACTIVE
 }
@@ -4981,13 +5018,34 @@ model ProducerOrg {
   createdAt   DateTime          @default(now())
   updatedAt   DateTime          @updatedAt
 
-  owner     User                    @relation("ProducerOrgOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
-  products  AuthProduct[]
-  staff     ProducerOrgStaff[]
-  documents ProducerOrgDocument[]
+  owner      User                    @relation("ProducerOrgOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  products   AuthProduct[]
+  factories  ProducerFactory[]
+  staff      ProducerOrgStaff[]
+  staffInvites ProducerStaffInvite[]
+  documents  ProducerOrgDocument[]
+  auditLogs  ProducerAuditLog[]
 
   @@index([ownerUserId])
   @@map("producer_orgs")
+}
+
+// Producer-scoped factory (verified manufacturing facility for product approval)
+model ProducerFactory {
+  id            Int      @id @default(autoincrement())
+  producerOrgId Int
+  name          String
+  addressJson   Json?
+  countryCode   String?
+  isVerified    Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  producerOrg ProducerOrg @relation(fields: [producerOrgId], references: [id], onDelete: Cascade)
+  authProducts AuthProduct[]
+
+  @@index([producerOrgId])
+  @@map("producer_factories")
 }
 
 // Producer KYC: formal document model (unified with VerificationCase + VerificationDocument)
@@ -5010,14 +5068,22 @@ model ProducerOrgDocument {
   @@map("producer_org_documents")
 }
 
+enum ProducerOrgStaffStatus {
+  INVITED
+  ACTIVE
+  SUSPENDED
+  REMOVED
+}
+
 model ProducerOrgStaff {
-  id            Int      @id @default(autoincrement())
+  id            Int                   @id @default(autoincrement())
   producerOrgId Int
   userId        Int
   roleId        Int
   invitedBy     Int?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  status        ProducerOrgStaffStatus @default(ACTIVE)
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
 
   producerOrg ProducerOrg @relation(fields: [producerOrgId], references: [id], onDelete: Cascade)
   user        User        @relation("ProducerStaffUser", fields: [userId], references: [id], onDelete: Cascade)
@@ -5027,29 +5093,118 @@ model ProducerOrgStaff {
   @@unique([producerOrgId, userId])
   @@index([userId])
   @@index([roleId])
+  @@index([status])
   @@map("producer_org_staff")
+}
+
+// Producer staff invitation (email/phone; registered → notification accept, unregistered → token link → register → accept)
+enum ProducerStaffInviteStatus {
+  PENDING
+  SENT
+  ACCEPTED
+  DECLINED
+  EXPIRED
+  CANCELLED
+}
+
+model ProducerStaffInvite {
+  id              Int                      @id @default(autoincrement())
+  producerOrgId    Int
+  invitedByUserId  Int
+  email            String?
+  phone            String?
+  roleId           Int
+  status           ProducerStaffInviteStatus @default(PENDING)
+  tokenHash        String?                  @db.VarChar(255)
+  expiresAt        DateTime
+  acceptedByUserId Int?
+  createdAt        DateTime                 @default(now())
+  updatedAt        DateTime                 @updatedAt
+
+  producerOrg   ProducerOrg @relation(fields: [producerOrgId], references: [id], onDelete: Cascade)
+  invitedBy     User        @relation("ProducerStaffInviteInvitedBy", fields: [invitedByUserId], references: [id], onDelete: Restrict)
+  role         Role        @relation(fields: [roleId], references: [id], onDelete: Restrict)
+  acceptedBy   User?       @relation("ProducerStaffInviteAcceptedBy", fields: [acceptedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([producerOrgId, email], map: "producer_staff_invite_producer_org_email_unique")
+  @@unique([producerOrgId, phone], map: "producer_staff_invite_producer_org_phone_unique")
+  @@index([producerOrgId, status])
+  @@index([email])
+  @@index([phone])
+  @@index([expiresAt])
+  @@map("producer_staff_invites")
+}
+
+model ProducerAuditLog {
+  id          Int      @id @default(autoincrement())
+  producerOrgId Int
+  actorType   String   // OWNER | STAFF
+  actorId     Int
+  action      String
+  entityType  String
+  entityId    String?
+  createdAt   DateTime @default(now())
+
+  producerOrg ProducerOrg @relation(fields: [producerOrgId], references: [id], onDelete: Cascade)
+
+  @@index([producerOrgId])
+  @@index([actorId])
+  @@index([createdAt])
+  @@map("producer_audit_logs")
 }
 
 model AuthProduct {
   id              Int               @id @default(autoincrement())
   producerOrgId   Int
+  factoryId       Int?
   brandName       String
   productName     String
+  productType     String?           // PET_FOOD, MEDICINE, SUPPLEMENT, ACCESSORY, LIVE_ANIMAL, OTHER
   sku             String
   packSize        String?
   description     String?
+  specJson        Json?             // net weight/volume, ingredients, shelf-life, country of origin, HS code, etc.
   status          AuthProductStatus @default(DRAFT)
+  submittedAt     DateTime?
+  reviewedAt      DateTime?
+  reviewedByAdminId Int?
+  reviewNotes     String?           @db.Text  // rejection reason / admin notes
+  ownershipDeclarationAcceptedAt DateTime?
   createdByUserId Int?
   createdAt       DateTime          @default(now())
   updatedAt       DateTime          @updatedAt
 
-  producerOrg ProducerOrg @relation(fields: [producerOrgId], references: [id], onDelete: Cascade)
-  createdBy   User?       @relation("AuthProductCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  producerOrg ProducerOrg     @relation(fields: [producerOrgId], references: [id], onDelete: Cascade)
+  factory     ProducerFactory? @relation(fields: [factoryId], references: [id], onDelete: SetNull)
+  createdBy   User?            @relation("AuthProductCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   batches     AuthBatch[]
+  proofs      AuthProductProof[]
 
   @@unique([producerOrgId, sku])
   @@index([producerOrgId])
+  @@index([factoryId])
+  @@index([status])
   @@map("auth_products")
+}
+
+// Proof pack and fingerprints for verification & anti-copy
+model AuthProductProof {
+  id             Int      @id @default(autoincrement())
+  authProductId  Int
+  proofType      String   // LABEL_FRONT, LABEL_BACK, MANUFACTURING_LICENSE, etc. (align with DocumentType or freeform)
+  mediaId        Int
+  metadataJson   Json?    // docNumber, issueDate, expiryDate, issuing authority
+  labelHash      String?  // image/content hash for duplicate detection
+  textFingerprint String? @db.Text
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  authProduct AuthProduct @relation(fields: [authProductId], references: [id], onDelete: Cascade)
+  media      Media        @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+
+  @@index([authProductId])
+  @@index([proofType])
+  @@map("auth_product_proofs")
 }
 
 model AuthBatch {
