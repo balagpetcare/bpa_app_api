@@ -31,7 +31,7 @@ Producer staff can be invited in two ways:
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| POST | `/staff/invite` | Owner, verified | Create invite. Body: `{ email?, phone?, roleKey }`. Returns `{ mode: "REGISTERED"|"UNREGISTERED", inviteId, inviteLink? }`. |
+| POST | `/staff/invite` | Owner, verified | Create invite. Body: `{ email?, phone?, roleKey? }` (or `role`; at least one of email/phone required). Returns `{ mode: "REGISTERED"|"UNREGISTERED", inviteId, inviteLink? }`. |
 | GET | `/staff/invites` | Owner | List invites (query: `status`, `search`). |
 | POST | `/staff/invites/:id/cancel` | Owner | Cancel a pending/sent invite. |
 | POST | `/staff/invites/accept` | Any auth | Accept invite. Body: `{ inviteId? }` or `{ token? }`. |
@@ -49,6 +49,18 @@ Producer staff can be invited in two ways:
 ### Backwards compatibility
 
 - **POST /api/v1/producer/staff** is unchanged: still accepts email/phone and creates `ProducerOrgStaff` directly when the user exists. The new producer UI uses **POST /staff/invite** only, so both flows are supported without breaking existing callers.
+
+### POST /staff/invite — request body and validation
+
+- **Body (JSON):**
+  - `email` (optional): string, trimmed and lowercased. At least one of `email` or `phone` is required.
+  - `phone` (optional): string, digits only after trimming. At least one of `email` or `phone` is required.
+  - `roleKey` or `role` (optional): string. Default `PRODUCER_VIEWER`. Accepted values (or shorthand): `PRODUCER_OWNER`/`OWNER`, `PRODUCER_MANAGER`/`MANAGER`, `PRODUCER_STAFF`/`STAFF`, `PRODUCER_AUDITOR`/`AUDITOR`, `PRODUCER_VIEWER`/`VIEWER`.
+- **Validation errors (400):**
+  - Missing both email and phone: `{ code: "VALIDATION_ERROR", message: "At least one of email or phone is required", fields: { email: "...", phone: "..." } }`.
+  - Invalid role: `{ code: "INVALID_ROLE", message: "Invalid role. Use one of: ...", fields: { role: "..." } }`.
+  - Other business 400s include `USER_ALREADY_STAFF`, `INVITE_ALREADY_PENDING`, `SELF_INVITE_FORBIDDEN`.
+- **Auth:** Not authenticated → 401. Not producer owner → 403. Producer suspended → 403.
 
 ### Security
 

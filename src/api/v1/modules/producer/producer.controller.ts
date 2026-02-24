@@ -189,9 +189,9 @@ exports.submitProduct = async (req, res) => {
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
     const data = await service.submitProduct(userId, req.params.id, req.body || {});
     return res.status(200).json({ success: true, data, message: "Product submitted for approval" });
-  } catch (e) {
+  } catch (e: any) {
     const status = e?.statusCode || 500;
-    const payload = { success: false, message: e?.message || "Submit failed" };
+    const payload: { success: false; message: string; code?: string } = { success: false, message: e?.message || "Submit failed" };
     if (e?.code) payload.code = e.code;
     return res.status(status).json(payload);
   }
@@ -423,18 +423,38 @@ exports.createStaffInvite = async (req, res) => {
   try {
     const producerOrgId = req.producerOrgId;
     const invitedByUserId = req.user?.id;
-    if (!invitedByUserId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    if (!invitedByUserId) {
+      return res.status(401).json({ success: false, code: "UNAUTHORIZED", message: "Authentication required" });
+    }
+    const body = req.body || {};
+    const email = body.email != null ? String(body.email).trim() : "";
+    const phone = body.phone != null ? String(body.phone).trim() : "";
+    const roleKey = body.roleKey != null ? body.roleKey : body.role;
+    if (!email && !phone) {
+      return res.status(400).json({
+        success: false,
+        code: "VALIDATION_ERROR",
+        message: "At least one of email or phone is required",
+        fields: { email: "Provide an email address", phone: "Or provide a phone number" },
+      });
+    }
     const data = await inviteService.createStaffInvite({
       producerOrgId,
       invitedByUserId,
-      email: req.body.email,
-      phone: req.body.phone,
-      roleKey: req.body.roleKey,
+      email: email || undefined,
+      phone: phone || undefined,
+      roleKey: roleKey != null ? String(roleKey) : undefined,
     });
     return res.status(201).json({ success: true, data });
-  } catch (e) {
+  } catch (e: any) {
     const status = e?.statusCode || 500;
-    return res.status(status).json({ success: false, message: e?.message || "Failed to create invite" });
+    const payload: { success: false; message: string; code?: string; fields?: Record<string, string> } = {
+      success: false,
+      message: e?.message || "Failed to create invite",
+    };
+    if (e?.code) payload.code = e.code;
+    if (e?.fields) payload.fields = e.fields;
+    return res.status(status).json(payload);
   }
 };
 

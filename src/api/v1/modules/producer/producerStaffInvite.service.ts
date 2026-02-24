@@ -10,10 +10,12 @@ const { writeProducerAudit } = require("./producerAudit");
 const INVITE_EXPIRY_DAYS = 14;
 const TOKEN_BYTES = 32;
 
-type AppError = Error & { statusCode?: number };
-function createError(message: string, statusCode: number): AppError {
+type AppError = Error & { statusCode?: number; code?: string; fields?: Record<string, string> };
+function createError(message: string, statusCode: number, code?: string, fields?: Record<string, string>): AppError {
   const err = new Error(message) as AppError;
   err.statusCode = statusCode;
+  if (code) err.code = code;
+  if (fields) err.fields = fields;
   return err;
 }
 
@@ -27,6 +29,23 @@ function normalizePhone(v: string | null | undefined): string | null {
   return String(v).trim().replace(/\D/g, "") || null;
 }
 
+/** Producer role keys in DB. Accept shorthand (e.g. STAFF -> PRODUCER_STAFF). */
+const PRODUCER_ROLE_KEYS = ["PRODUCER_OWNER", "PRODUCER_MANAGER", "PRODUCER_STAFF", "PRODUCER_AUDITOR", "PRODUCER_VIEWER"] as const;
+const ROLE_ALIASES: Record<string, string> = {
+  OWNER: "PRODUCER_OWNER",
+  MANAGER: "PRODUCER_MANAGER",
+  STAFF: "PRODUCER_STAFF",
+  AUDITOR: "PRODUCER_AUDITOR",
+  VIEWER: "PRODUCER_VIEWER",
+};
+
+function resolveRoleKey(roleOrKey: string | null | undefined): string {
+  const raw = (roleOrKey != null ? String(roleOrKey).trim() : "") || "PRODUCER_VIEWER";
+  if (PRODUCER_ROLE_KEYS.includes(raw as any)) return raw;
+  const upper = raw.toUpperCase().replace(/^PRODUCER_/, "");
+  return ROLE_ALIASES[upper] || raw;
+}
+
 function hashToken(token: string): string {
   return crypto.createHash("sha256").update(token, "utf8").digest("hex");
 }
@@ -36,19 +55,30 @@ export async function createStaffInvite(params: {
   invitedByUserId: number;
   email?: string | null;
   phone?: string | null;
-  roleKey: string;
+  roleKey?: string | null;
 }) {
   const emailNorm = normalizeEmail(params.email);
   const phoneNorm = normalizePhone(params.phone);
   if (!emailNorm && !phoneNorm) {
-    throw createError("email or phone is required", 400);
+    throw createError("At least one of email or phone is required", 400, "VALIDATION_ERROR", {
+      email: "Provide an email address",
+      phone: "Or provide a phone number",
+    });
   }
 
+  const roleKey = resolveRoleKey(params.roleKey);
   const role = await prisma.role.findUnique({
-    where: { key: params.roleKey || "PRODUCER_VIEWER" },
-    select: { id: true },
+    where: { key: roleKey },
+    select: { id: true, key: true },
   });
-  if (!role) throw createError("Invalid role", 400);
+  if (!role) {
+    throw createError(
+      `Invalid role. Use one of: ${PRODUCER_ROLE_KEYS.join(", ")}`,
+      400,
+      "INVALID_ROLE",
+      { role: roleKey }
+    );
+  }
 
   const producerOrg = await prisma.producerOrg.findUnique({
     where: { id: params.producerOrgId },
@@ -62,7 +92,7 @@ export async function createStaffInvite(params: {
     select: { ownerUserId: true },
   });
   if (orgOwner?.ownerUserId === params.invitedByUserId) {
-    throw createError("You cannot invite yourself", 400);
+    throw createError("You cannot invite yourself", 400, "SELF_INVITE_FORBIDDEN");
   }
 
   // Check duplicate pending/sent invite for same email or phone
@@ -75,7 +105,7 @@ export async function createStaffInvite(params: {
         status: { in: pendingStatuses },
       },
     });
-    if (dup) throw createError("An invitation for this email is already pending", 400);
+    if (dup) throw createError("An invitation for this email is already pending", 400, "INVITE_ALREADY_PENDING");
   }
   if (phoneNorm) {
     const dup = await prisma.producerStaffInvite.findFirst({
@@ -85,7 +115,7 @@ export async function createStaffInvite(params: {
         status: { in: pendingStatuses },
       },
     });
-    if (dup) throw createError("An invitation for this phone is already pending", 400);
+    if (dup) throw createError("An invitation for this phone is already pending", 400, "INVITE_ALREADY_PENDING");
   }
 
   const expiresAt = new Date(Date.now() + INVITE_EXPIRY_DAYS * 24 * 60 * 60 * 1000);
@@ -107,7 +137,7 @@ export async function createStaffInvite(params: {
         producerOrgId_userId: { producerOrgId: params.producerOrgId, userId: auth.userId },
       },
     });
-    if (existingStaff) throw createError("User is already a staff member", 400);
+    if (existingStaff) throw createError("User is already a staff member", 400, "USER_ALREADY_STAFF");
 
     const invite = await prisma.producerStaffInvite.create({
       data: {
