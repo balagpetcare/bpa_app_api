@@ -1,0 +1,12 @@
+-- Stock dispatch: AuditEntityType, GrnLine quantityDamaged/quantityShort, StockRequestStatus REJECTED/PARTIALLY_RECEIVED/RECEIVED
+
+ALTER TYPE "AuditEntityType" ADD VALUE 'STOCK_REQUEST';
+ALTER TYPE "AuditEntityType" ADD VALUE 'STOCK_DISPATCH';
+ALTER TYPE "AuditEntityType" ADD VALUE 'GRN';
+
+ALTER TYPE "StockRequestStatus" ADD VALUE 'REJECTED';
+ALTER TYPE "StockRequestStatus" ADD VALUE 'PARTIALLY_RECEIVED';
+ALTER TYPE "StockRequestStatus" ADD VALUE 'RECEIVED';
+
+ALTER TABLE "grn_lines" ADD COLUMN IF NOT EXISTS "quantityDamaged" INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE "grn_lines" ADD COLUMN IF NOT EXISTS "quantityShort" INTEGER NOT NULL DEFAULT 0;

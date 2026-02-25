@@ -1,0 +1,2 @@
+-- Unique constraint on owner_delegations already exists from earlier migration (20260206200147).
+-- No-op to align migration history.

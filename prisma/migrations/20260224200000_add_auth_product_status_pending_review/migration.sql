@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "AuthProductStatus" ADD VALUE 'PENDING_REVIEW' BEFORE 'SUBMITTED';
