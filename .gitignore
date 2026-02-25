@@ -6,6 +6,6 @@ coverage
 .env*
 !.env.example
 *.zip
-prisma/migrations
+prisma/migrations/*/migration_lock.toml
 prisma/.prisma
 **/.prisma
