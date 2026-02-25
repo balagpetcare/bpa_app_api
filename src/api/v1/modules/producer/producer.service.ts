@@ -262,7 +262,7 @@ async function createProduct(userId, producerOrgId, data) {
       sku: data.sku,
       packSize: data.packSize || null,
       description: data.description || null,
-      status: "ACTIVE",
+      status: "DRAFT",
       createdByUserId: userId,
     },
   });
@@ -382,6 +382,9 @@ async function createBatch(userId, producerOrgId, productId, data) {
   if (!product) {
     throw createError("Product not found", 404);
   }
+  if (product.status !== "APPROVED" && product.status !== "ACTIVE") {
+    throw createError("Product is not approved", 403);
+  }
   if (!data.batchNo || !data.qtyPlanned) {
     throw createError("batchNo and qtyPlanned are required", 400);
   }
@@ -392,7 +395,7 @@ async function createBatch(userId, producerOrgId, productId, data) {
       mfgDate: data.mfgDate ? new Date(data.mfgDate) : null,
       expDate: data.expDate ? new Date(data.expDate) : null,
       qtyPlanned: Number(data.qtyPlanned),
-      status: "APPROVED",
+      status: "DRAFT",
       createdByUserId: userId,
     },
   });
@@ -470,6 +473,9 @@ async function generateCodes(userId, producerOrgId, batchId, quantity, options =
   });
   if (!batch) {
     throw createError("Batch not found", 404);
+  }
+  if (batch.status !== "APPROVED" && batch.status !== "GENERATED") {
+    throw createError("Batch is not approved", 403);
   }
   const qty = Number(quantity);
   if (!qty || qty <= 0) {

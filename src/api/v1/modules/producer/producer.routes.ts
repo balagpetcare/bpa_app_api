@@ -43,6 +43,7 @@ router.post("/products/:id/batches", auth, requireProducerPermission(["producer.
 // Batches (permission-based)
 router.get("/batches", auth, requireProducerPermission(["producer.batches.read"]), ctrl.listBatches);
 router.get("/batches/:id", auth, requireProducerPermission(["producer.batches.read"]), ctrl.getBatch);
+router.post("/batches/:id/submit", auth, requireProducerPermission(["producer.batches.write"]), ctrl.submitBatch);
 router.post("/batches/:batchId/codes/generate", auth, requireProducerPermission(["producer.codes.generate"]), ctrl.generateCodes);
 router.get("/batches/:batchId/codes/export", auth, requireProducerPermission(["producer.codes.export"]), ctrl.exportCodes);
 
@@ -50,6 +51,9 @@ router.get("/batches/:batchId/codes/export", auth, requireProducerPermission(["p
 router.get("/codes/search", auth, requireProducerPermission(["producer.codes.generate"]), ctrl.searchCode);
 
 router.get("/audit-logs", auth, requireProducerPermission(["producer.org.read"]), ctrl.listAuditLogs);
+router.get("/approvals", auth, requireProducerOwner, ctrl.listApprovals);
+router.post("/approvals/:id/approve", auth, requireProducerOwner, ctrl.approveApproval);
+router.post("/approvals/:id/reject", auth, requireProducerOwner, ctrl.rejectApproval);
 
 // Staff Management (owner only for invite/role/status/remove; requires verified producer for invite)
 router.post("/staff", auth, requireProducerOwner, requireProducerVerified, ctrl.inviteStaff);

@@ -1,5 +1,6 @@
 const service = require("./producer.service");
 const inviteService = require("./producerStaffInvite.service");
+const approvalService = require("./producerApproval.service");
 const jwt = require("jsonwebtoken");
 const appConfig = require("../../../../config/appConfig");
 const prisma = require("../../../../infrastructure/db/prismaClient");
@@ -219,6 +220,7 @@ exports.submitProduct = async (req, res) => {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
     const data = await service.submitProduct(userId, req.producerOrgId, req.params.id);
+    const approval = await approvalService.submitProductForApproval(req.producerOrgId, data.id, userId);
     void writeProducerAudit({
       producerOrgId: req.producerOrgId,
       actorType: req.isProducerOwner ? "OWNER" : "STAFF",
@@ -227,7 +229,7 @@ exports.submitProduct = async (req, res) => {
       entityType: "AUTH_PRODUCT",
       entityId: String(data.id),
     });
-    return res.status(200).json({ success: true, data, message: "Product submitted for approval" });
+    return res.status(200).json({ success: true, data: { product: data, approval }, message: "Product submitted for approval" });
   } catch (e: any) {
     const status = e?.statusCode || 500;
     const payload: { success: false; message: string; code?: string } = { success: false, message: e?.message || "Submit failed" };
@@ -324,6 +326,26 @@ exports.createBatch = async (req, res) => {
   } catch (e) {
     const status = e?.statusCode || 500;
     return res.status(status).json({ success: false, message: e?.message || "Failed to create batch" });
+  }
+};
+
+exports.submitBatch = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const approval = await approvalService.submitBatchForApproval(req.producerOrgId, req.params.id, userId);
+    void writeProducerAudit({
+      producerOrgId: req.producerOrgId,
+      actorType: req.isProducerOwner ? "OWNER" : "STAFF",
+      actorId: userId,
+      action: "BATCH_SUBMITTED",
+      entityType: "AUTH_BATCH",
+      entityId: String(req.params.id),
+    });
+    return res.status(200).json({ success: true, data: { approval }, message: "Batch submitted for approval" });
+  } catch (e) {
+    const status = e?.statusCode || 500;
+    return res.status(status).json({ success: false, message: e?.message || "Failed to submit batch" });
   }
 };
 
@@ -743,6 +765,97 @@ exports.listAuditLogs = async (req, res) => {
   }
 };
 
+exports.listApprovals = async (req, res) => {
+  try {
+    const producerOrgId = req.producerOrgId;
+    const items = await approvalService.listApprovals(producerOrgId, req.query || {});
+
+    const productIds = items.filter((a) => a.entityType === "PRODUCT").map((a) => a.entityId);
+    const batchIds = items.filter((a) => a.entityType === "BATCH").map((a) => a.entityId);
+
+    const [products, batches] = await Promise.all([
+      productIds.length
+        ? prisma.authProduct.findMany({
+            where: { id: { in: productIds }, producerOrgId },
+            select: { id: true, productName: true, sku: true, status: true },
+          })
+        : [],
+      batchIds.length
+        ? prisma.authBatch.findMany({
+            where: { id: { in: batchIds }, authProduct: { producerOrgId } },
+            select: { id: true, batchNo: true, status: true, authProductId: true },
+          })
+        : [],
+    ]);
+
+    const productById = new Map(products.map((p) => [p.id, p]));
+    const batchById = new Map(batches.map((b) => [b.id, b]));
+
+    const data = items.map((a) => {
+      const entity =
+        a.entityType === "PRODUCT"
+          ? productById.get(a.entityId) || null
+          : a.entityType === "BATCH"
+            ? batchById.get(a.entityId) || null
+            : null;
+      return { ...a, entity };
+    });
+
+    return res.status(200).json({ success: true, data });
+  } catch (e) {
+    const status = e?.statusCode || 500;
+    return res.status(status).json({ success: false, message: e?.message || "Failed to list approvals" });
+  }
+};
+
+exports.approveApproval = async (req, res) => {
+  try {
+    const producerOrgId = req.producerOrgId;
+    const reviewedByUserId = req.user?.id;
+    if (!reviewedByUserId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const note = req.body?.note || null;
+
+    const data = await approvalService.approveApproval(producerOrgId, req.params.id, reviewedByUserId, note);
+    void writeProducerAudit({
+      producerOrgId,
+      actorType: "OWNER",
+      actorId: reviewedByUserId,
+      action: "APPROVAL_APPROVED",
+      entityType: "PRODUCER_APPROVAL",
+      entityId: String(data.id),
+    });
+
+    return res.status(200).json({ success: true, data });
+  } catch (e) {
+    const status = e?.statusCode || 500;
+    return res.status(status).json({ success: false, message: e?.message || "Failed to approve" });
+  }
+};
+
+exports.rejectApproval = async (req, res) => {
+  try {
+    const producerOrgId = req.producerOrgId;
+    const reviewedByUserId = req.user?.id;
+    if (!reviewedByUserId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const note = req.body?.note || null;
+
+    const data = await approvalService.rejectApproval(producerOrgId, req.params.id, reviewedByUserId, note);
+    void writeProducerAudit({
+      producerOrgId,
+      actorType: "OWNER",
+      actorId: reviewedByUserId,
+      action: "APPROVAL_REJECTED",
+      entityType: "PRODUCER_APPROVAL",
+      entityId: String(data.id),
+    });
+
+    return res.status(200).json({ success: true, data });
+  } catch (e) {
+    const status = e?.statusCode || 500;
+    return res.status(status).json({ success: false, message: e?.message || "Failed to reject" });
+  }
+};
+
 module.exports = {
   register: exports.register,
   login: exports.login,
@@ -760,6 +873,7 @@ module.exports = {
   listFactories: exports.listFactories,
   createFactory: exports.createFactory,
   createBatch: exports.createBatch,
+  submitBatch: exports.submitBatch,
   listBatches: exports.listBatches,
   getBatch: exports.getBatch,
   generateCodes: exports.generateCodes,
@@ -779,6 +893,9 @@ module.exports = {
   declineStaffInvite: exports.declineStaffInvite,
   getPendingInvites: exports.getPendingInvites,
   listAuditLogs: exports.listAuditLogs,
+  listApprovals: exports.listApprovals,
+  approveApproval: exports.approveApproval,
+  rejectApproval: exports.rejectApproval,
 };
 
 export {};

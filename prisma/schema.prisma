@@ -4990,6 +4990,7 @@ enum AuthProductStatus {
 enum AuthBatchStatus {
   DRAFT
   APPROVED
+  REJECTED
   GENERATED
 }
 
@@ -5026,6 +5027,7 @@ model ProducerOrg {
   staffInvites ProducerStaffInvite[]
   documents  ProducerOrgDocument[]
   auditLogs  ProducerAuditLog[]
+  approvals  ProducerApproval[]
 
   @@index([ownerUserId])
   @@map("producer_orgs")
@@ -5153,6 +5155,38 @@ model ProducerAuditLog {
   @@index([actorId])
   @@index([createdAt])
   @@map("producer_audit_logs")
+}
+
+enum ProducerApprovalEntityType {
+  PRODUCT
+  BATCH
+}
+
+enum ProducerApprovalStatus {
+  SUBMITTED
+  APPROVED
+  REJECTED
+}
+
+model ProducerApproval {
+  id              Int                      @id @default(autoincrement())
+  producerOrgId   Int
+  entityType      ProducerApprovalEntityType
+  entityId        Int
+  status          ProducerApprovalStatus   @default(SUBMITTED)
+  submittedByUserId Int
+  reviewedByUserId  Int?
+  note            String?                  @db.Text
+  reviewedAt      DateTime?
+  createdAt       DateTime                 @default(now())
+  updatedAt       DateTime                 @updatedAt
+
+  producerOrg ProducerOrg @relation(fields: [producerOrgId], references: [id], onDelete: Cascade)
+
+  @@unique([producerOrgId, entityType, entityId], map: "producer_approvals_unique_entity")
+  @@index([producerOrgId, status])
+  @@index([producerOrgId, entityType])
+  @@map("producer_approvals")
 }
 
 model AuthProduct {
