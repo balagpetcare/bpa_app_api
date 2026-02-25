@@ -3,6 +3,7 @@ const inviteService = require("./producerStaffInvite.service");
 const jwt = require("jsonwebtoken");
 const appConfig = require("../../../../config/appConfig");
 const prisma = require("../../../../infrastructure/db/prismaClient");
+const { writeProducerAudit } = require("./producerAudit");
 const { resolvePermissionsForUser } = require("../../utils/permissions");
 const { performUnifiedLogin } = require("../../services/authUnified.service");
 
@@ -166,6 +167,14 @@ exports.createProduct = async (req, res) => {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
     const data = await service.createProduct(userId, req.producerOrgId, req.body);
+    void writeProducerAudit({
+      producerOrgId: req.producerOrgId,
+      actorType: req.isProducerOwner ? "OWNER" : "STAFF",
+      actorId: userId,
+      action: "PRODUCT_CREATED",
+      entityType: "AUTH_PRODUCT",
+      entityId: String(data.id),
+    });
     return res.status(201).json({ success: true, data });
   } catch (e) {
     const status = e?.statusCode || 500;
@@ -190,6 +199,14 @@ exports.updateProduct = async (req, res) => {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
     const data = await service.updateProduct(userId, req.producerOrgId, req.params.id, req.body);
+    void writeProducerAudit({
+      producerOrgId: req.producerOrgId,
+      actorType: req.isProducerOwner ? "OWNER" : "STAFF",
+      actorId: userId,
+      action: "PRODUCT_UPDATED",
+      entityType: "AUTH_PRODUCT",
+      entityId: String(data.id),
+    });
     return res.status(200).json({ success: true, data });
   } catch (e) {
     const status = e?.statusCode || 500;
@@ -202,6 +219,14 @@ exports.submitProduct = async (req, res) => {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
     const data = await service.submitProduct(userId, req.producerOrgId, req.params.id);
+    void writeProducerAudit({
+      producerOrgId: req.producerOrgId,
+      actorType: req.isProducerOwner ? "OWNER" : "STAFF",
+      actorId: userId,
+      action: "PRODUCT_SUBMITTED",
+      entityType: "AUTH_PRODUCT",
+      entityId: String(data.id),
+    });
     return res.status(200).json({ success: true, data, message: "Product submitted for approval" });
   } catch (e: any) {
     const status = e?.statusCode || 500;
@@ -267,6 +292,14 @@ exports.addProductProof = async (req, res) => {
       mediaId: media.id,
       metadataJson: req.body?.metadataJson ? JSON.parse(req.body.metadataJson) : undefined,
     });
+    void writeProducerAudit({
+      producerOrgId: req.producerOrgId,
+      actorType: req.isProducerOwner ? "OWNER" : "STAFF",
+      actorId: userId,
+      action: "PRODUCT_PROOF_ADDED",
+      entityType: "AUTH_PRODUCT",
+      entityId: String(productId),
+    });
     return res.status(201).json({ success: true, data });
   } catch (e) {
     const status = e?.statusCode || 500;
@@ -279,6 +312,14 @@ exports.createBatch = async (req, res) => {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
     const data = await service.createBatch(userId, req.producerOrgId, req.params.id, req.body);
+    void writeProducerAudit({
+      producerOrgId: req.producerOrgId,
+      actorType: req.isProducerOwner ? "OWNER" : "STAFF",
+      actorId: userId,
+      action: "BATCH_CREATED",
+      entityType: "AUTH_BATCH",
+      entityId: String(data.id),
+    });
     return res.status(201).json({ success: true, data });
   } catch (e) {
     const status = e?.statusCode || 500;
@@ -321,6 +362,14 @@ exports.generateCodes = async (req, res) => {
       prefix: req.body.prefix,
       suffix: req.body.suffix,
     });
+    void writeProducerAudit({
+      producerOrgId: req.producerOrgId,
+      actorType: req.isProducerOwner ? "OWNER" : "STAFF",
+      actorId: userId,
+      action: "CODES_GENERATED",
+      entityType: "AUTH_BATCH",
+      entityId: String(req.params.batchId),
+    });
     return res.status(200).json({ success: true, data });
   } catch (e) {
     const status = e?.statusCode || 500;
@@ -333,6 +382,14 @@ exports.exportCodes = async (req, res) => {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
     const data = await service.exportCodes(req.producerOrgId, req.params.batchId);
+    void writeProducerAudit({
+      producerOrgId: req.producerOrgId,
+      actorType: req.isProducerOwner ? "OWNER" : "STAFF",
+      actorId: userId,
+      action: "CODES_EXPORTED",
+      entityType: "AUTH_BATCH",
+      entityId: String(req.params.batchId),
+    });
     return res.status(200).json({ success: true, data });
   } catch (e) {
     const status = e?.statusCode || 500;
@@ -397,6 +454,14 @@ exports.updateStaffRole = async (req, res) => {
     const { roleKey } = req.body;
     const auditContext = { actorId: req.user?.id, isProducerOwner: req.isProducerOwner };
     const data = await service.updateStaffRole(producerOrgId, Number(staffId), roleKey, auditContext);
+    void writeProducerAudit({
+      producerOrgId,
+      actorType: req.isProducerOwner ? "OWNER" : "STAFF",
+      actorId: req.user?.id,
+      action: "STAFF_ROLE_UPDATED",
+      entityType: "PRODUCER_ORG_STAFF",
+      entityId: String(staffId),
+    });
     return res.status(200).json({ success: true, data });
   } catch (e) {
     const status = e?.statusCode || 500;
@@ -411,6 +476,14 @@ exports.updateStaffStatus = async (req, res) => {
     const { status } = req.body;
     const auditContext = { actorId: req.user?.id, isProducerOwner: req.isProducerOwner };
     const data = await service.updateStaffStatus(producerOrgId, Number(staffId), status, auditContext);
+    void writeProducerAudit({
+      producerOrgId,
+      actorType: req.isProducerOwner ? "OWNER" : "STAFF",
+      actorId: req.user?.id,
+      action: "STAFF_STATUS_UPDATED",
+      entityType: "PRODUCER_ORG_STAFF",
+      entityId: String(staffId),
+    });
     return res.status(200).json({ success: true, data });
   } catch (e) {
     const status = e?.statusCode || 500;
@@ -424,6 +497,14 @@ exports.removeStaff = async (req, res) => {
     const { staffId } = req.params;
     const auditContext = { actorId: req.user?.id, isProducerOwner: req.isProducerOwner };
     await service.removeStaff(producerOrgId, Number(staffId), auditContext);
+    void writeProducerAudit({
+      producerOrgId,
+      actorType: req.isProducerOwner ? "OWNER" : "STAFF",
+      actorId: req.user?.id,
+      action: "STAFF_REMOVED",
+      entityType: "PRODUCER_ORG_STAFF",
+      entityId: String(staffId),
+    });
     return res.status(200).json({ success: true, message: "Staff removed successfully" });
   } catch (e) {
     const status = e?.statusCode || 500;
@@ -590,6 +671,78 @@ exports.getPendingInvites = async (req, res) => {
   }
 };
 
+exports.listAuditLogs = async (req, res) => {
+  try {
+    const producerOrgId = req.producerOrgId;
+    const actorId = req.query?.actorId ? Number(req.query.actorId) : null;
+    const action = req.query?.action ? String(req.query.action) : null;
+    const from = req.query?.from ? new Date(String(req.query.from)) : null;
+    const to = req.query?.to ? new Date(String(req.query.to)) : null;
+    const take = Math.min(Number(req.query?.limit) || 50, 200);
+    const skip = (Number(req.query?.page || 1) - 1) * take;
+
+    const where = {
+      producerOrgId,
+      ...(actorId ? { actorId } : {}),
+      ...(action ? { action } : {}),
+      ...(from || to
+        ? {
+            createdAt: {
+              ...(from ? { gte: from } : {}),
+              ...(to ? { lte: to } : {}),
+            },
+          }
+        : {}),
+    };
+
+    const logs = await prisma.producerAuditLog.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      take,
+      skip,
+    });
+
+    const actorIds = Array.from(new Set(logs.map((l) => l.actorId).filter(Boolean)));
+    const actors = actorIds.length
+      ? await prisma.user.findMany({
+          where: { id: { in: actorIds } },
+          select: {
+            id: true,
+            profile: { select: { displayName: true } },
+            auth: { select: { email: true, phone: true } },
+          },
+        })
+      : [];
+    const actorById = new Map(actors.map((a) => [a.id, a]));
+
+    const data = logs.map((l) => {
+      const actor = actorById.get(l.actorId);
+      return {
+        id: l.id,
+        actorType: l.actorType,
+        actorId: l.actorId,
+        actor: actor
+          ? {
+              id: actor.id,
+              displayName: actor.profile?.displayName || null,
+              email: actor.auth?.email || null,
+              phone: actor.auth?.phone || null,
+            }
+          : null,
+        action: l.action,
+        entityType: l.entityType,
+        entityId: l.entityId,
+        createdAt: l.createdAt,
+      };
+    });
+
+    return res.status(200).json({ success: true, data });
+  } catch (e) {
+    const status = e?.statusCode || 500;
+    return res.status(status).json({ success: false, message: e?.message || "Failed to list audit logs" });
+  }
+};
+
 module.exports = {
   register: exports.register,
   login: exports.login,
@@ -625,6 +778,7 @@ module.exports = {
   acceptStaffInvitePublic: exports.acceptStaffInvitePublic,
   declineStaffInvite: exports.declineStaffInvite,
   getPendingInvites: exports.getPendingInvites,
+  listAuditLogs: exports.listAuditLogs,
 };
 
 export {};

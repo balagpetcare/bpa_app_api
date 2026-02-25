@@ -49,6 +49,8 @@ router.get("/batches/:batchId/codes/export", auth, requireProducerPermission(["p
 // Code search
 router.get("/codes/search", auth, requireProducerPermission(["producer.codes.generate"]), ctrl.searchCode);
 
+router.get("/audit-logs", auth, requireProducerPermission(["producer.org.read"]), ctrl.listAuditLogs);
+
 // Staff Management (owner only for invite/role/status/remove; requires verified producer for invite)
 router.post("/staff", auth, requireProducerOwner, requireProducerVerified, ctrl.inviteStaff);
 router.get("/staff", auth, requireProducerPermission(["producer.org.read"]), ctrl.listStaff);
