@@ -81,7 +81,7 @@ exports.me = async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
-    const data = await service.getMe(userId);
+    const data = await service.getMe(userId, req.producerOrgId);
     return res.status(200).json({ success: true, data });
   } catch (e) {
     return res.status(500).json({ success: false, message: e?.message || "Failed to load" });
@@ -140,7 +140,7 @@ exports.listProducts = async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
-    const data = await service.listProducts(userId);
+    const data = await service.listProducts(req.producerOrgId);
     return res.status(200).json({ success: true, data });
   } catch (e) {
     return res.status(500).json({ success: false, message: e?.message || "Failed to list products" });
@@ -151,7 +151,7 @@ exports.createProduct = async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
-    const data = await service.createProduct(userId, req.body);
+    const data = await service.createProduct(userId, req.producerOrgId, req.body);
     return res.status(201).json({ success: true, data });
   } catch (e) {
     const status = e?.statusCode || 500;
@@ -163,7 +163,7 @@ exports.getProduct = async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
-    const data = await service.getProduct(userId, req.params.id);
+    const data = await service.getProduct(req.producerOrgId, req.params.id);
     if (!data) return res.status(404).json({ success: false, message: "Product not found" });
     return res.status(200).json({ success: true, data });
   } catch (e) {
@@ -175,7 +175,7 @@ exports.updateProduct = async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
-    const data = await service.updateProduct(userId, req.params.id, req.body);
+    const data = await service.updateProduct(userId, req.producerOrgId, req.params.id, req.body);
     return res.status(200).json({ success: true, data });
   } catch (e) {
     const status = e?.statusCode || 500;
@@ -187,7 +187,7 @@ exports.submitProduct = async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
-    const data = await service.submitProduct(userId, req.params.id, req.body || {});
+    const data = await service.submitProduct(userId, req.producerOrgId, req.params.id);
     return res.status(200).json({ success: true, data, message: "Product submitted for approval" });
   } catch (e: any) {
     const status = e?.statusCode || 500;
@@ -201,7 +201,7 @@ exports.getProductStatus = async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
-    const data = await service.getProductStatus(userId, req.params.id);
+    const data = await service.getProductStatus(req.producerOrgId, req.params.id);
     if (!data) return res.status(404).json({ success: false, message: "Product not found" });
     return res.status(200).json({ success: true, data });
   } catch (e) {
@@ -213,7 +213,7 @@ exports.listFactories = async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
-    const data = await service.listFactories(userId);
+    const data = await service.listFactories(req.producerOrgId);
     return res.status(200).json({ success: true, data });
   } catch (e) {
     return res.status(500).json({ success: false, message: e?.message || "Failed to list factories" });
@@ -224,7 +224,7 @@ exports.createFactory = async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
-    const data = await service.createFactory(userId, req.body);
+    const data = await service.createFactory(req.producerOrgId, req.body);
     return res.status(201).json({ success: true, data });
   } catch (e) {
     const status = e?.statusCode || 500;
@@ -248,7 +248,7 @@ exports.addProductProof = async (req, res) => {
       folder: "producer-product-proofs",
       type: file.mimetype?.startsWith("image/") ? "IMAGE" : file.mimetype === "application/pdf" ? "FILE" : "FILE",
     });
-    const data = await service.addProductProof(userId, productId, {
+    const data = await service.addProductProof(req.producerOrgId, userId, productId, {
       proofType,
       mediaId: media.id,
       metadataJson: req.body?.metadataJson ? JSON.parse(req.body.metadataJson) : undefined,
@@ -264,7 +264,7 @@ exports.createBatch = async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
-    const data = await service.createBatch(userId, req.params.id, req.body);
+    const data = await service.createBatch(userId, req.producerOrgId, req.params.id, req.body);
     return res.status(201).json({ success: true, data });
   } catch (e) {
     const status = e?.statusCode || 500;
@@ -276,7 +276,7 @@ exports.listBatches = async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
-    const data = await service.listBatches(userId, req.query);
+    const data = await service.listBatches(req.producerOrgId, req.query);
     return res.status(200).json({ success: true, data });
   } catch (e) {
     return res.status(500).json({ success: false, message: e?.message || "Failed to list batches" });
@@ -287,7 +287,7 @@ exports.getBatch = async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
-    const data = await service.getBatchWithCodes(userId, req.params.id, {
+    const data = await service.getBatchWithCodes(req.producerOrgId, req.params.id, {
       page: req.query?.codesPage,
       limit: req.query?.codesLimit,
     });
@@ -302,7 +302,7 @@ exports.generateCodes = async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
-    const data = await service.generateCodes(userId, req.params.batchId, req.body.quantity, {
+    const data = await service.generateCodes(userId, req.producerOrgId, req.params.batchId, req.body.quantity, {
       length: req.body.length,
       prefix: req.body.prefix,
       suffix: req.body.suffix,
@@ -318,7 +318,7 @@ exports.exportCodes = async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
-    const data = await service.exportCodes(userId, req.params.batchId);
+    const data = await service.exportCodes(req.producerOrgId, req.params.batchId);
     return res.status(200).json({ success: true, data });
   } catch (e) {
     const status = e?.statusCode || 500;
@@ -345,7 +345,7 @@ exports.searchCode = async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
-    const data = await service.searchCode(userId, req.query?.code);
+    const data = await service.searchCode(req.producerOrgId, req.query?.code);
     return res.status(200).json({ success: true, data });
   } catch (e) {
     const status = e?.statusCode || 500;

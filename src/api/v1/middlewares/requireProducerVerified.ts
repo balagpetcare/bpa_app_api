@@ -33,3 +33,4 @@ async function requireProducerVerified(req: any, res: any, next: any) {
 }
 
 module.exports = requireProducerVerified;
+export {};

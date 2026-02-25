@@ -75,6 +75,13 @@ export const requireProducerPermission = (requiredPermissions: string[]) => {
         });
       }
 
+      if (staffMembership.status !== "ACTIVE") {
+        return res.status(403).json({
+          success: false,
+          message: "Producer staff access is not active",
+        });
+      }
+
       // Check if producer org is active
       if (staffMembership.producerOrg.status === "SUSPENDED") {
         return res.status(403).json({
@@ -111,6 +118,7 @@ export const requireProducerPermission = (requiredPermissions: string[]) => {
       // Attach producer org info to request
       req.producerOrgId = staffMembership.producerOrgId;
       req.isProducerOwner = false;
+      req.producerStaffId = staffMembership.id;
       req.producerPermissions = userPermissions;
 
       next();

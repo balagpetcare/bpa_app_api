@@ -226,32 +226,33 @@ async function getKycStatus(userId) {
   return getProducerOrgByUser(userId);
 }
 
-async function getMe(userId) {
+async function getMe(userId, producerOrgId) {
   const user = await prisma.user.findUnique({
     where: { id: userId },
     include: { profile: true, auth: true },
   });
-  const org = await getProducerOrgByUser(userId);
+  const org = producerOrgId
+    ? await prisma.producerOrg.findUnique({ where: { id: Number(producerOrgId) } })
+    : await getProducerOrgByUser(userId);
   return { user, org };
 }
 
-async function listProducts(userId) {
-  const org = await getProducerOrgByUser(userId);
-  if (!org) return [];
-  return prisma.authProduct.findMany({ where: { producerOrgId: org.id }, orderBy: { createdAt: "desc" } });
+async function listProducts(producerOrgId) {
+  if (!producerOrgId) return [];
+  return prisma.authProduct.findMany({
+    where: { producerOrgId: Number(producerOrgId) },
+    orderBy: { createdAt: "desc" },
+  });
 }
 
-async function createProduct(userId, data) {
-  const org = await getProducerOrgByUser(userId);
-  if (!org) {
-    throw createError("Producer org not found", 404);
-  }
+async function createProduct(userId, producerOrgId, data) {
+  if (!producerOrgId) throw createError("Producer org not found", 404);
   if (!data.productName || !data.sku) {
     throw createError("productName and sku are required", 400);
   }
   return prisma.authProduct.create({
     data: {
-      producerOrgId: org.id,
+      producerOrgId: Number(producerOrgId),
       brandName: data.brandName || "",
       productName: data.productName,
       sku: data.sku,
@@ -263,18 +264,117 @@ async function createProduct(userId, data) {
   });
 }
 
-async function getProduct(userId, id) {
-  const org = await getProducerOrgByUser(userId);
-  if (!org) return null;
-  return prisma.authProduct.findFirst({ where: { id: Number(id), producerOrgId: org.id } });
+async function getProduct(producerOrgId, id) {
+  if (!producerOrgId) return null;
+  return prisma.authProduct.findFirst({ where: { id: Number(id), producerOrgId: Number(producerOrgId) } });
 }
 
-async function createBatch(userId, productId, data) {
-  const org = await getProducerOrgByUser(userId);
-  if (!org) {
-    throw createError("Producer org not found", 404);
-  }
-  const product = await prisma.authProduct.findFirst({ where: { id: Number(productId), producerOrgId: org.id } });
+async function updateProduct(userId, producerOrgId, id, data) {
+  if (!producerOrgId) throw createError("Producer org not found", 404);
+  const product = await prisma.authProduct.findFirst({
+    where: { id: Number(id), producerOrgId: Number(producerOrgId) },
+  });
+  if (!product) throw createError("Product not found", 404);
+
+  return prisma.authProduct.update({
+    where: { id: product.id },
+    data: {
+      ...(data.brandName !== undefined ? { brandName: String(data.brandName || "") } : {}),
+      ...(data.productName !== undefined ? { productName: String(data.productName || "") } : {}),
+      ...(data.sku !== undefined ? { sku: String(data.sku || "") } : {}),
+      ...(data.packSize !== undefined ? { packSize: data.packSize ? String(data.packSize) : null } : {}),
+      ...(data.description !== undefined ? { description: data.description ? String(data.description) : null } : {}),
+      ...(data.specJson !== undefined ? { specJson: data.specJson } : {}),
+      ...(data.factoryId !== undefined ? { factoryId: data.factoryId ? Number(data.factoryId) : null } : {}),
+      ...(data.ownershipDeclarationAcceptedAt !== undefined
+        ? {
+            ownershipDeclarationAcceptedAt: data.ownershipDeclarationAcceptedAt
+              ? new Date(data.ownershipDeclarationAcceptedAt)
+              : null,
+          }
+        : {}),
+      ...(userId ? { createdByUserId: product.createdByUserId || userId } : {}),
+    },
+  });
+}
+
+async function submitProduct(userId, producerOrgId, id) {
+  if (!producerOrgId) throw createError("Producer org not found", 404);
+  const product = await prisma.authProduct.findFirst({
+    where: { id: Number(id), producerOrgId: Number(producerOrgId) },
+  });
+  if (!product) throw createError("Product not found", 404);
+
+  return prisma.authProduct.update({
+    where: { id: product.id },
+    data: { status: "SUBMITTED", submittedAt: new Date(), createdByUserId: product.createdByUserId || userId },
+  });
+}
+
+async function getProductStatus(producerOrgId, id) {
+  if (!producerOrgId) return null;
+  return prisma.authProduct.findFirst({
+    where: { id: Number(id), producerOrgId: Number(producerOrgId) },
+    select: {
+      id: true,
+      status: true,
+      submittedAt: true,
+      reviewedAt: true,
+      reviewedByAdminId: true,
+      reviewNotes: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+  });
+}
+
+async function addProductProof(producerOrgId, userId, productId, data) {
+  if (!producerOrgId) throw createError("Producer org not found", 404);
+  const product = await prisma.authProduct.findFirst({
+    where: { id: Number(productId), producerOrgId: Number(producerOrgId) },
+  });
+  if (!product) throw createError("Product not found", 404);
+
+  return prisma.authProductProof.create({
+    data: {
+      authProductId: product.id,
+      proofType: String(data.proofType),
+      mediaId: Number(data.mediaId),
+      metadataJson: data.metadataJson || null,
+      labelHash: null,
+      textFingerprint: null,
+      ...(userId ? { createdAt: new Date() } : {}),
+    },
+  });
+}
+
+async function listFactories(producerOrgId) {
+  if (!producerOrgId) return [];
+  return prisma.producerFactory.findMany({
+    where: { producerOrgId: Number(producerOrgId) },
+    orderBy: { createdAt: "desc" },
+  });
+}
+
+async function createFactory(producerOrgId, data) {
+  if (!producerOrgId) throw createError("Producer org not found", 404);
+  if (!data?.name) throw createError("name is required", 400);
+  return prisma.producerFactory.create({
+    data: {
+      producerOrgId: Number(producerOrgId),
+      name: String(data.name),
+      addressJson: data.addressJson || null,
+      countryCode: data.countryCode || null,
+      isVerified: false,
+    },
+  });
+}
+
+async function createBatch(userId, producerOrgId, productId, data) {
+  if (!producerOrgId) throw createError("Producer org not found", 404);
+  const product = await prisma.authProduct.findFirst({
+    where: { id: Number(productId), producerOrgId: Number(producerOrgId) },
+  });
   if (!product) {
     throw createError("Product not found", 404);
   }
@@ -294,12 +394,11 @@ async function createBatch(userId, productId, data) {
   });
 }
 
-async function listBatches(userId, params: PaginationParams = {}) {
-  const org = await getProducerOrgByUser(userId);
-  if (!org) return { items: [], pagination: { page: 1, limit: 20, total: 0 } };
+async function listBatches(producerOrgId, params: PaginationParams = {}) {
+  if (!producerOrgId) return { items: [], pagination: { page: 1, limit: 20, total: 0 } };
   const take = Math.min(Number(params.limit) || 20, 100);
   const skip = (Number(params.page || 1) - 1) * take;
-  const where = { authProduct: { producerOrgId: org.id } };
+  const where = { authProduct: { producerOrgId: Number(producerOrgId) } };
   const [items, total] = await Promise.all([
     prisma.authBatch.findMany({ where, take, skip, orderBy: { createdAt: "desc" } }),
     prisma.authBatch.count({ where }),
@@ -307,20 +406,18 @@ async function listBatches(userId, params: PaginationParams = {}) {
   return { items, pagination: { page: Number(params.page || 1), limit: take, total } };
 }
 
-async function getBatch(userId, id) {
-  const org = await getProducerOrgByUser(userId);
-  if (!org) return null;
+async function getBatch(producerOrgId, id) {
+  if (!producerOrgId) return null;
   return prisma.authBatch.findFirst({
-    where: { id: Number(id), authProduct: { producerOrgId: org.id } },
+    where: { id: Number(id), authProduct: { producerOrgId: Number(producerOrgId) } },
   });
 }
 
-async function getBatchWithCodes(userId, id, params: PaginationParams = {}) {
-  const org = await getProducerOrgByUser(userId);
-  if (!org) return null;
+async function getBatchWithCodes(producerOrgId, id, params: PaginationParams = {}) {
+  if (!producerOrgId) return null;
 
   const batch = await prisma.authBatch.findFirst({
-    where: { id: Number(id), authProduct: { producerOrgId: org.id } },
+    where: { id: Number(id), authProduct: { producerOrgId: Number(producerOrgId) } },
     include: { authProduct: true },
   });
   if (!batch) return null;
@@ -362,8 +459,11 @@ async function getBatchWithCodes(userId, id, params: PaginationParams = {}) {
   };
 }
 
-async function generateCodes(userId, batchId, quantity, options = {}) {
-  const batch = await prisma.authBatch.findUnique({ where: { id: Number(batchId) } });
+async function generateCodes(userId, producerOrgId, batchId, quantity, options = {}) {
+  if (!producerOrgId) throw createError("Producer org not found", 404);
+  const batch = await prisma.authBatch.findFirst({
+    where: { id: Number(batchId), authProduct: { producerOrgId: Number(producerOrgId) } },
+  });
   if (!batch) {
     throw createError("Batch not found", 404);
   }
@@ -452,8 +552,11 @@ async function generateCodes(userId, batchId, quantity, options = {}) {
   return { codes };
 }
 
-async function exportCodes(userId, batchId) {
-  const batch = await prisma.authBatch.findUnique({ where: { id: Number(batchId) } });
+async function exportCodes(producerOrgId, batchId) {
+  if (!producerOrgId) throw createError("Producer org not found", 404);
+  const batch = await prisma.authBatch.findFirst({
+    where: { id: Number(batchId), authProduct: { producerOrgId: Number(producerOrgId) } },
+  });
   if (!batch) {
     throw createError("Batch not found", 404);
   }
@@ -524,7 +627,7 @@ async function verifyCode({ publicCode, ip, country, deviceId, userId }) {
   };
 }
 
-async function searchCode(userId, publicCode) {
+async function searchCode(producerOrgId, publicCode) {
   const code = String(publicCode || "").trim().toUpperCase();
   if (!code) {
     throw createError("code is required", 400);
@@ -536,14 +639,11 @@ async function searchCode(userId, publicCode) {
     throw createError("code must contain only A-Z and 0-9", 400);
   }
 
-  const org = await getProducerOrgByUser(userId);
-  if (!org) {
-    throw createError("Producer org not found", 404);
-  }
+  if (!producerOrgId) throw createError("Producer org not found", 404);
 
   const codeHash = hmacHash(code);
   const row = await prisma.authCode.findFirst({
-    where: { codeHash, batch: { authProduct: { producerOrgId: org.id } } },
+    where: { codeHash, batch: { authProduct: { producerOrgId: Number(producerOrgId) } } },
     include: { batch: { include: { authProduct: true } } },
   });
   if (!row) {
@@ -721,13 +821,19 @@ module.exports = {
   listProducts,
   createProduct,
   getProduct,
+  updateProduct,
+  submitProduct,
+  getProductStatus,
+  addProductProof,
+  listFactories,
+  createFactory,
   createBatch,
   listBatches,
   getBatch,
+  getBatchWithCodes,
   generateCodes,
   exportCodes,
   verifyCode,
-  getBatchWithCodes,
   searchCode,
   inviteStaff,
   listStaff,
