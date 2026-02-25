@@ -150,7 +150,7 @@ async function registerProducer({ name, email, phone, password }) {
   }
 
   const perms = await resolvePermissionsForUser(user.id);
-  const token = jwt.sign({ id: user.id, perms }, appConfig.jwt.secret, { expiresIn: "7d" });
+  const token = jwt.sign({ id: user.id, perms, tv: user.tokenVersion || 0 }, appConfig.jwt.secret, { expiresIn: "7d" });
 
   return { user, token };
 }
@@ -184,7 +184,11 @@ async function loginProducer({ email, phone, password }) {
   }
 
   const perms = await resolvePermissionsForUser(auth.userId);
-  const token = jwt.sign({ id: auth.userId, perms }, appConfig.jwt.secret, { expiresIn: "7d" });
+  const token = jwt.sign(
+    { id: auth.userId, perms, tv: auth.user?.tokenVersion || 0 },
+    appConfig.jwt.secret,
+    { expiresIn: "7d" }
+  );
   return { user: auth.user, token };
 }
 
@@ -798,6 +802,49 @@ async function updateStaffRole(producerOrgId, staffId, roleKey) {
   });
 }
 
+async function updateStaffStatus(producerOrgId, staffId, status) {
+  const nextStatus = String(status || "").toUpperCase();
+  const allowed = ["ACTIVE", "SUSPENDED", "DISABLED", "REMOVED"];
+  if (!allowed.includes(nextStatus)) {
+    throw createError("Invalid status", 400);
+  }
+
+  const staff = await prisma.producerOrgStaff.findUnique({
+    where: { id: staffId },
+  });
+  if (!staff || staff.producerOrgId !== producerOrgId) {
+    throw createError("Staff not found", 404);
+  }
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const row = await tx.producerOrgStaff.update({
+      where: { id: staffId },
+      data: { status: nextStatus },
+      include: {
+        user: {
+          include: {
+            profile: true,
+            auth: { select: { email: true, phone: true } },
+          },
+        },
+        role: true,
+        inviter: { include: { profile: { select: { displayName: true } } } },
+      },
+    });
+
+    if (nextStatus !== "ACTIVE") {
+      await tx.user.update({
+        where: { id: row.userId },
+        data: { tokenVersion: { increment: 1 } },
+      });
+    }
+
+    return row;
+  });
+
+  return updated;
+}
+
 async function removeStaff(producerOrgId, staffId) {
   const staff = await prisma.producerOrgStaff.findUnique({
     where: { id: staffId },
@@ -807,8 +854,12 @@ async function removeStaff(producerOrgId, staffId) {
     throw createError("Staff not found", 404);
   }
 
-  await prisma.producerOrgStaff.delete({
-    where: { id: staffId },
+  await prisma.$transaction(async (tx) => {
+    await tx.user.update({
+      where: { id: staff.userId },
+      data: { tokenVersion: { increment: 1 } },
+    });
+    await tx.producerOrgStaff.delete({ where: { id: staffId } });
   });
 }
 
@@ -838,6 +889,7 @@ module.exports = {
   inviteStaff,
   listStaff,
   updateStaffRole,
+  updateStaffStatus,
   removeStaff,
 };
 export {};

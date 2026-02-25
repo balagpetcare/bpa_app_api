@@ -305,6 +305,7 @@ model UserGalleryItem {
 model User {
   id        Int        @id @default(autoincrement())
   status    UserStatus @default(ACTIVE)
+  tokenVersion Int     @default(0)
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt
 
@@ -5072,6 +5073,7 @@ enum ProducerOrgStaffStatus {
   INVITED
   ACTIVE
   SUSPENDED
+  DISABLED
   REMOVED
 }
 

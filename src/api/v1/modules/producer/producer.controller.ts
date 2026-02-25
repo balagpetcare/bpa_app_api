@@ -2,6 +2,7 @@ const service = require("./producer.service");
 const inviteService = require("./producerStaffInvite.service");
 const jwt = require("jsonwebtoken");
 const appConfig = require("../../../../config/appConfig");
+const prisma = require("../../../../infrastructure/db/prismaClient");
 const { resolvePermissionsForUser } = require("../../utils/permissions");
 const { performUnifiedLogin } = require("../../services/authUnified.service");
 
@@ -44,8 +45,21 @@ exports.login = async (req, res) => {
     }
 
     const { user, contexts, default_redirect } = result;
+    const ownerOrg = await prisma.producerOrg.findFirst({
+      where: { ownerUserId: user.id },
+      select: { id: true },
+    });
+    if (!ownerOrg) {
+      const activeMembership = await prisma.producerOrgStaff.findFirst({
+        where: { userId: user.id, status: "ACTIVE" },
+        select: { id: true },
+      });
+      if (!activeMembership) {
+        return res.status(403).json({ success: false, message: "Producer staff access is not active" });
+      }
+    }
     const perms = await resolvePermissionsForUser(user.id);
-    const token = jwt.sign({ id: user.id, perms }, appConfig.jwt.secret, { expiresIn: "7d" });
+    const token = jwt.sign({ id: user.id, perms, tv: user.tokenVersion || 0 }, appConfig.jwt.secret, { expiresIn: "7d" });
 
     const isProd = String(process.env.NODE_ENV || "development") === "production";
     res.cookie("access_token", token, {

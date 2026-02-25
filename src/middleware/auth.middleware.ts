@@ -1,5 +1,6 @@
 const jwt = require("jsonwebtoken");
 const appConfig = require("../config/appConfig");
+const prisma = require("../infrastructure/db/prismaClient");
 const { resolvePermissionsForUser } = require("../api/v1/utils/permissions");
 const { attachAuthContexts } = require("../api/v1/services/authUnified.service");
 const { getPermissionsForOwnerPanel } = require("../api/v1/services/scopePermission.service");
@@ -29,6 +30,18 @@ module.exports = async function authenticateToken(req, res, next) {
 
     req.user = { ...(payload || {}), id: userId };
     if (payload && payload.userType) req.user.userType = payload.userType;
+
+    if (payload && payload.tv !== undefined && payload.tv !== null) {
+      const row = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { tokenVersion: true },
+      });
+      const current = Number(row?.tokenVersion || 0);
+      const tokenVersion = Number(payload.tv || 0);
+      if (current !== tokenVersion) {
+        return res.status(401).json({ success: false, message: "Unauthorized: token revoked" });
+      }
+    }
 
     const permsFromToken = (payload && (payload.perms || payload.permissions)) || null;
     if (Array.isArray(permsFromToken)) {
