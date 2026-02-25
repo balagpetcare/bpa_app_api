@@ -273,7 +273,7 @@ async function resolveAuthContexts(userId: number): Promise<AuthContext[]> {
   }
 
   const producerStaff = await db.producerOrgStaff.findMany({
-    where: { userId },
+    where: { userId, status: "ACTIVE" },
     select: { producerOrgId: true },
   });
   for (const ps of producerStaff) {
@@ -344,9 +344,9 @@ async function decideRedirect(
     return "/admin";
   }
   if (options?.forceProducerPanel) {
-    const producerCtx = contexts.find((c) => c.role === "PRODUCER");
-    if (producerCtx?.status === "PENDING") return "/producer/kyc";
-    return "/producer";
+    const producerOwnerCtx = contexts.find((c) => c.role === "PRODUCER" && c.scopeType === "OWNER");
+    if (producerOwnerCtx?.status === "PENDING") return "/producer/kyc";
+    return "/producer/dashboard";
   }
   if (options?.forceStaffPanel) {
     const staffBranch = contexts.find((c) => c.role === "STAFF" && c.scopeType === "BRANCH" && c.status === "APPROVED");

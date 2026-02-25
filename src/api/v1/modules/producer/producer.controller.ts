@@ -517,6 +517,54 @@ exports.acceptStaffInvite = async (req, res) => {
   }
 };
 
+exports.acceptStaffInvitePublic = async (req, res) => {
+  try {
+    const { token, password, name } = req.body || {};
+    const data = await inviteService.acceptStaffInvitePublic({
+      token,
+      password,
+      name: name != null ? String(name) : null,
+    });
+
+    const perms = await resolvePermissionsForUser(data.user.id);
+    const jwtToken = jwt.sign(
+      { id: data.user.id, perms, tv: data.user.tokenVersion || 0 },
+      appConfig.jwt.secret,
+      { expiresIn: "7d" }
+    );
+
+    const isProd = String(process.env.NODE_ENV || "development") === "production";
+    res.cookie("access_token", jwtToken, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: isProd,
+      maxAge: 30 * 24 * 60 * 60 * 1000,
+      path: "/",
+      domain: process.env.COOKIE_DOMAIN || "localhost",
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        token: jwtToken,
+        producerOrgId: data.producerOrgId,
+        producerName: data.producerName,
+        user: {
+          id: data.user.id,
+          email: data.user.auth?.email ?? null,
+          phone: data.user.auth?.phone ?? null,
+          displayName: data.user.profile?.displayName || null,
+          username: data.user.profile?.username || null,
+        },
+        default_redirect: "/producer/dashboard",
+      },
+    });
+  } catch (e) {
+    const status = e?.statusCode || 500;
+    return res.status(status).json({ success: false, message: e?.message || "Failed to accept invite" });
+  }
+};
+
 exports.declineStaffInvite = async (req, res) => {
   try {
     const userId = req.user?.id;
@@ -574,6 +622,7 @@ module.exports = {
   listStaffInvites: exports.listStaffInvites,
   cancelStaffInvite: exports.cancelStaffInvite,
   acceptStaffInvite: exports.acceptStaffInvite,
+  acceptStaffInvitePublic: exports.acceptStaffInvitePublic,
   declineStaffInvite: exports.declineStaffInvite,
   getPendingInvites: exports.getPendingInvites,
 };

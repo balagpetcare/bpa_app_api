@@ -4,6 +4,7 @@
 
 const prisma = require("../../../../infrastructure/db/prismaClient");
 const crypto = require("crypto");
+const bcrypt = require("bcrypt");
 const { createNotification } = require("../../services/notification.service");
 const { writeProducerAudit } = require("./producerAudit");
 
@@ -443,4 +444,107 @@ export async function getInviteByIdForProducer(producerOrgId: number, inviteId: 
     },
   });
   return invite;
+}
+
+export async function acceptStaffInvitePublic(params: { token: string; password: string; name?: string | null }) {
+  const token = String(params.token || "").trim();
+  if (!token) throw createError("token is required", 400);
+  if (!params.password || String(params.password).length < 4) {
+    throw createError("password is required (min 4 chars)", 400);
+  }
+
+  const tokenHash = hashToken(token);
+  const invite = await prisma.producerStaffInvite.findFirst({
+    where: { tokenHash, status: { in: ["PENDING", "SENT"] } },
+    include: { role: true, producerOrg: true },
+  });
+  if (!invite) throw createError("Invalid or expired invite token", 404);
+
+  if (new Date() > invite.expiresAt) {
+    await prisma.producerStaffInvite.update({
+      where: { id: invite.id },
+      data: { status: "EXPIRED", updatedAt: new Date() },
+    });
+    throw createError("This invite has expired", 400);
+  }
+
+  const emailNorm = normalizeEmail(invite.email);
+  const phoneNorm = normalizePhone(invite.phone);
+  if (!emailNorm && !phoneNorm) throw createError("Invite is missing recipient identity", 400);
+
+  const existingAuth = await prisma.userAuth.findFirst({
+    where: {
+      OR: [
+        emailNorm ? { email: { equals: emailNorm, mode: "insensitive" } } : undefined,
+        phoneNorm ? { phone: phoneNorm } : undefined,
+      ].filter(Boolean),
+    },
+    include: { user: { include: { profile: true } } },
+  });
+
+  const passwordHash = await bcrypt.hash(String(params.password), 10);
+
+  const user = await prisma.$transaction(async (tx) => {
+    let userId: number;
+
+    if (existingAuth) {
+      if (existingAuth.passwordHash) {
+        throw createError("User already has an account. Please login and accept the invite.", 409, "USER_ALREADY_REGISTERED");
+      }
+      await tx.userAuth.update({
+        where: { id: existingAuth.id },
+        data: { passwordHash },
+      });
+      userId = existingAuth.userId;
+    } else {
+      const displayName =
+        (params.name && String(params.name).trim()) ||
+        (emailNorm ? emailNorm.split("@")[0] : phoneNorm ? `User_${phoneNorm.slice(-4)}` : "Producer Staff");
+      const username = `${String(displayName).toLowerCase().replace(/\s+/g, "")}_${Date.now()}`.slice(0, 30);
+      const created = await tx.user.create({
+        data: {
+          auth: { create: { email: emailNorm, phone: phoneNorm, passwordHash } },
+          profile: { create: { displayName: String(displayName).trim(), username } },
+          wallet: { create: { balance: 0.0, points: 0, tier: "Bronze", currency: "BDT" } },
+        },
+        include: { auth: true, profile: true },
+      });
+      userId = created.id;
+    }
+
+    await tx.producerOrgStaff.upsert({
+      where: { producerOrgId_userId: { producerOrgId: invite.producerOrgId, userId } },
+      update: { status: "ACTIVE", roleId: invite.roleId },
+      create: {
+        producerOrgId: invite.producerOrgId,
+        userId,
+        roleId: invite.roleId,
+        invitedBy: invite.invitedByUserId,
+        status: "ACTIVE",
+      },
+    });
+
+    await tx.producerStaffInvite.update({
+      where: { id: invite.id },
+      data: { status: "ACCEPTED", acceptedByUserId: userId, updatedAt: new Date() },
+    });
+
+    return tx.user.findUnique({
+      where: { id: userId },
+      include: { auth: true, profile: true },
+    });
+  });
+
+  if (!user) throw createError("User not found", 404);
+
+  void writeProducerAudit({
+    producerOrgId: invite.producerOrgId,
+    actorType: "OWNER",
+    actorId: invite.invitedByUserId,
+    action: "STAFF_INVITE_ACCEPTED",
+    entityType: "PRODUCER_STAFF_INVITE",
+    entityId: String(invite.id),
+  });
+
+  return { user, producerOrgId: invite.producerOrgId, producerName: invite.producerOrg?.name };
 }

@@ -59,6 +59,7 @@ router.delete("/staff/:staffId", auth, requireProducerOwner, ctrl.removeStaff);
 // Staff Invites (new workflow: registered → notification accept; unregistered → token link)
 router.post("/staff/invite", auth, requireProducerOwner, requireProducerVerified, ctrl.createStaffInvite);
 router.get("/staff/invites", auth, requireProducerOwner, ctrl.listStaffInvites);
+router.post("/staff/invites/accept-public", ctrl.acceptStaffInvitePublic);
 // Accept/decline first (static path before :id)
 router.post("/staff/invites/accept", auth, ctrl.acceptStaffInvite);
 router.post("/staff/invites/decline", auth, ctrl.declineStaffInvite);
