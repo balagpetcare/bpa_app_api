@@ -86,12 +86,14 @@ export async function createStaffInvite(params: {
   });
   if (!producerOrg) throw createError("Producer org not found", 404);
 
-  // Block inviting self (owner)
-  const orgOwner = await prisma.producerOrg.findUnique({
-    where: { id: params.producerOrgId },
-    select: { ownerUserId: true },
+  const inviterAuth = await prisma.userAuth.findUnique({
+    where: { userId: params.invitedByUserId },
+    select: { email: true, phone: true },
   });
-  if (orgOwner?.ownerUserId === params.invitedByUserId) {
+  if (emailNorm && normalizeEmail(inviterAuth?.email) === emailNorm) {
+    throw createError("You cannot invite yourself", 400, "SELF_INVITE_FORBIDDEN");
+  }
+  if (phoneNorm && normalizePhone(inviterAuth?.phone) === phoneNorm) {
     throw createError("You cannot invite yourself", 400, "SELF_INVITE_FORBIDDEN");
   }
 
@@ -172,7 +174,7 @@ export async function createStaffInvite(params: {
       console.error("Producer staff invite notification error:", e);
     }
 
-    writeProducerAudit({
+    void writeProducerAudit({
       producerOrgId: params.producerOrgId,
       actorType: "OWNER",
       actorId: params.invitedByUserId,
@@ -181,9 +183,14 @@ export async function createStaffInvite(params: {
       entityId: String(invite.id),
     });
 
+    const baseUrl = process.env.PRODUCER_PANEL_URL || process.env.NEXT_PUBLIC_APP_URL || "";
+    const invitePath = `/producer/staff?inviteId=${invite.id}`;
+    const inviteLink = baseUrl ? `${baseUrl.replace(/\/$/, "")}${invitePath}` : invitePath;
+
     return {
       mode: "REGISTERED" as const,
       inviteId: invite.id,
+      inviteLink,
       invite,
     };
   }
@@ -213,7 +220,7 @@ export async function createStaffInvite(params: {
   const invitePath = `/producer/invites/accept?token=${rawToken}`;
   const inviteLink = baseUrl ? `${baseUrl.replace(/\/$/, "")}${invitePath}` : invitePath;
 
-  writeProducerAudit({
+  void writeProducerAudit({
     producerOrgId: params.producerOrgId,
     actorType: "OWNER",
     actorId: params.invitedByUserId,
@@ -265,7 +272,7 @@ export async function cancelStaffInvite(producerOrgId: number, inviteId: number,
     where: { id: inviteId },
     data: { status: "CANCELLED", updatedAt: new Date() },
   });
-  writeProducerAudit({
+  void writeProducerAudit({
     producerOrgId,
     actorType: "OWNER",
     actorId: userId,
@@ -348,7 +355,7 @@ export async function acceptStaffInvite(params: { userId: number; inviteId?: num
     }),
   ]);
 
-  writeProducerAudit({
+  void writeProducerAudit({
     producerOrgId: invite.producerOrgId,
     actorType: "OWNER",
     actorId: invite.invitedByUserId,
