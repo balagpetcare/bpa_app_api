@@ -167,7 +167,19 @@ exports.createProduct = async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
-    const data = await service.createProduct(userId, req.producerOrgId, req.body);
+    const producerOrgId =
+      req.producerOrgId ??
+      (req.body?.producerOrgId != null ? Number(req.body.producerOrgId) : null) ??
+      (req.user?.defaultProducerOrgId != null ? Number(req.user.defaultProducerOrgId) : null);
+    if (!producerOrgId) {
+      return res.status(400).json({
+        success: false,
+        message: "Producer organization is required",
+        code: "PRODUCER_ORG_REQUIRED",
+      });
+    }
+    const data = await service.createProduct(userId, producerOrgId, req.body);
+    req.producerOrgId = producerOrgId;
     void writeProducerAudit({
       producerOrgId: req.producerOrgId,
       actorType: req.isProducerOwner ? "OWNER" : "STAFF",
@@ -219,11 +231,32 @@ exports.submitProduct = async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
-    const data = await service.submitProduct(userId, req.producerOrgId, req.params.id);
-    const approval = await approvalService.submitProductForApproval(req.producerOrgId, data.id, userId);
+    const producerOrgId = req.producerOrgId;
+    const productId = req.params.id;
+
+    if (req.isProducerOwner) {
+      const { product, approval, previousStatus } = await approvalService.autoApproveProductAsOwner(producerOrgId, productId, userId);
+      const entityIdEnrich = `${product.id}|oldStatus:${previousStatus || "DRAFT"}|newStatus:UNDER_REVIEW`;
+      void writeProducerAudit({
+        producerOrgId,
+        actorType: "OWNER",
+        actorId: userId,
+        action: "PRODUCT_AUTO_APPROVED",
+        entityType: "AUTH_PRODUCT",
+        entityId: entityIdEnrich,
+      });
+      return res.status(200).json({
+        success: true,
+        data: { product, approval, autoApproved: true },
+        message: "Approved (owner). Sent for platform review.",
+      });
+    }
+
+    const data = await service.submitProduct(userId, producerOrgId, productId);
+    const approval = await approvalService.submitProductForApproval(producerOrgId, data.id, userId);
     void writeProducerAudit({
-      producerOrgId: req.producerOrgId,
-      actorType: req.isProducerOwner ? "OWNER" : "STAFF",
+      producerOrgId,
+      actorType: "STAFF",
       actorId: userId,
       action: "PRODUCT_SUBMITTED",
       entityType: "AUTH_PRODUCT",
@@ -289,10 +322,18 @@ exports.addProductProof = async (req, res) => {
       folder: "producer-product-proofs",
       type: file.mimetype?.startsWith("image/") ? "IMAGE" : file.mimetype === "application/pdf" ? "FILE" : "FILE",
     });
+    let metadataJson;
+    if (req.body?.metadataJson != null && req.body.metadataJson !== "") {
+      try {
+        metadataJson = typeof req.body.metadataJson === "string" ? JSON.parse(req.body.metadataJson) : req.body.metadataJson;
+      } catch {
+        metadataJson = undefined;
+      }
+    }
     const data = await service.addProductProof(req.producerOrgId, userId, productId, {
       proofType,
       mediaId: media.id,
-      metadataJson: req.body?.metadataJson ? JSON.parse(req.body.metadataJson) : undefined,
+      metadataJson,
     });
     void writeProducerAudit({
       producerOrgId: req.producerOrgId,
@@ -333,14 +374,34 @@ exports.submitBatch = async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
-    const approval = await approvalService.submitBatchForApproval(req.producerOrgId, req.params.id, userId);
+    const producerOrgId = req.producerOrgId;
+    const batchId = req.params.id;
+
+    if (req.isProducerOwner) {
+      const { approval } = await approvalService.autoApproveBatchAsOwner(producerOrgId, batchId, userId);
+      void writeProducerAudit({
+        producerOrgId,
+        actorType: "OWNER",
+        actorId: userId,
+        action: "BATCH_AUTO_APPROVED",
+        entityType: "AUTH_BATCH",
+        entityId: String(batchId),
+      });
+      return res.status(200).json({
+        success: true,
+        data: { approval, autoApproved: true },
+        message: "Approved (owner).",
+      });
+    }
+
+    const approval = await approvalService.submitBatchForApproval(producerOrgId, batchId, userId);
     void writeProducerAudit({
-      producerOrgId: req.producerOrgId,
-      actorType: req.isProducerOwner ? "OWNER" : "STAFF",
+      producerOrgId,
+      actorType: "STAFF",
       actorId: userId,
       action: "BATCH_SUBMITTED",
       entityType: "AUTH_BATCH",
-      entityId: String(req.params.id),
+      entityId: String(batchId),
     });
     return res.status(200).json({ success: true, data: { approval }, message: "Batch submitted for approval" });
   } catch (e) {
@@ -360,6 +421,105 @@ exports.listBatches = async (req, res) => {
   }
 };
 
+exports.listPrintEmailRecipients = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const data = await service.listPrintEmailRecipients(req.producerOrgId);
+    return res.status(200).json({ success: true, data: Array.isArray(data) ? data : [] });
+  } catch (e) {
+    const status = e?.statusCode || 500;
+    return res.status(status).json({
+      success: false,
+      message: e?.message || "Failed to list email recipients",
+      code: e?.code,
+    });
+  }
+};
+
+exports.createPrintEmailRecipient = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const data = await service.createPrintEmailRecipient(req.producerOrgId, userId, req.body);
+    return res.status(201).json({ success: true, data });
+  } catch (e) {
+    const status = e?.statusCode || 500;
+    return res.status(status).json({
+      success: false,
+      message: e?.message || "Failed to create email recipient",
+      code: e?.code,
+    });
+  }
+};
+
+exports.listPrintBatches = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const data = await service.listPrintBatches(req.producerOrgId);
+    return res.status(200).json({ success: true, data });
+  } catch (e) {
+    const status = e?.statusCode || 500;
+    return res.status(status).json({ success: false, message: e?.message || "Failed to list print batches" });
+  }
+};
+
+exports.getPrintBatchDetail = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const data = await service.getPrintBatchDetail(req.producerOrgId, req.params.id);
+    if (!data) return res.status(404).json({ success: false, message: "Batch not found" });
+    return res.status(200).json({ success: true, data });
+  } catch (e) {
+    const status = e?.statusCode || 500;
+    return res.status(status).json({ success: false, message: e?.message || "Failed to get print batch detail" });
+  }
+};
+
+exports.allocatePrintBatch = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const result = await service.allocatePrintBatch(req.producerOrgId, req.params.id, userId, req.body);
+    if (result.download) {
+      res.setHeader("Content-Type", result.download.contentType);
+      res.setHeader("Content-Disposition", `attachment; filename="${result.download.filename}"`);
+      return res.send(result.download.buffer);
+    }
+    return res.status(200).json({ success: true, data: result });
+  } catch (e) {
+    const status = e?.statusCode || 500;
+    const body: { success: false; message: string; code?: string } = {
+      success: false,
+      message: e?.message || "Allocation failed",
+    };
+    if (e?.code) body.code = e.code;
+    return res.status(status).json(body);
+  }
+};
+
+exports.revokePrintAllocation = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const data = await service.revokePrintAllocation(
+      req.producerOrgId,
+      req.params.batchId,
+      req.params.allocationId,
+      userId,
+      req.body
+    );
+    return res.status(200).json({ success: true, data });
+  } catch (e) {
+    const status = e?.statusCode || 500;
+    const body = { success: false, message: e?.message || "Revoke failed" };
+    if (e?.code) body.code = e.code;
+    return res.status(status).json(body);
+  }
+};
+
 exports.getBatch = async (req, res) => {
   try {
     const userId = req.user?.id;
@@ -372,6 +532,22 @@ exports.getBatch = async (req, res) => {
     return res.status(200).json({ success: true, data });
   } catch (e) {
     return res.status(500).json({ success: false, message: e?.message || "Failed to get batch" });
+  }
+};
+
+exports.markBatchPrinted = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const batchId = req.params.id;
+    const actorType = req.isProducerOwner ? "OWNER" : "STAFF";
+    const data = await service.recordBatchPrint(req.producerOrgId, batchId, userId, actorType);
+    return res.status(200).json({ success: true, data });
+  } catch (e) {
+    const status = e?.statusCode || 500;
+    const body = { success: false, message: e?.message || "Failed to mark batch as printed" };
+    if (e?.code) body.code = e.code;
+    return res.status(status).json(body);
   }
 };
 
@@ -419,6 +595,55 @@ exports.exportCodes = async (req, res) => {
   }
 };
 
+exports.exportSummaryCsv = async (req, res) => {
+  try {
+    const filters = service.parseSummaryExportFilters(req.query || {});
+    const { csv, filename } = await service.getBatchesSummaryForCsv(req.producerOrgId, filters);
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    return res.status(200).send(csv);
+  } catch (e) {
+    const status = e?.statusCode || 500;
+    const code = e?.code || null;
+    const body = { success: false, message: e?.message || "Failed to export summary CSV" };
+    if (code) body.code = code;
+    return res.status(status).json(body);
+  }
+};
+
+exports.exportBatchCodesCsv = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    await service.streamBatchCodesCsvToResponse(req.producerOrgId, req.params.batchId, res);
+    void writeProducerAudit({
+      producerOrgId: req.producerOrgId,
+      actorType: req.isProducerOwner ? "OWNER" : "STAFF",
+      actorId: userId,
+      action: "CODES_EXPORTED",
+      entityType: "AUTH_BATCH",
+      entityId: String(req.params.batchId),
+    });
+  } catch (e) {
+    if (!res.headersSent) {
+      const status = e?.statusCode || 500;
+      return res.status(status).json({ success: false, message: e?.message || "Failed to export codes CSV" });
+    }
+  }
+};
+
+exports.exportBatchEventsCsv = async (req, res) => {
+  try {
+    const { csv, filename } = await service.getBatchEventsForCsv(req.producerOrgId, req.params.batchId);
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    return res.status(200).send(csv);
+  } catch (e) {
+    const status = e?.statusCode || 500;
+    return res.status(status).json({ success: false, message: e?.message || "Failed to export timeline CSV" });
+  }
+};
+
 exports.verify = async (req, res) => {
   try {
     const data = await service.verifyCode({
@@ -462,7 +687,8 @@ exports.inviteStaff = async (req, res) => {
 exports.listStaff = async (req, res) => {
   try {
     const producerOrgId = req.producerOrgId;
-    const data = await service.listStaff(producerOrgId);
+    const includeRemoved = req.query?.includeRemoved === "true" || req.query?.includeRemoved === true;
+    const data = await service.listStaff(producerOrgId, { includeRemoved });
     return res.status(200).json({ success: true, data });
   } catch (e) {
     return res.status(500).json({ success: false, message: e?.message || "Failed to list staff" });
@@ -472,17 +698,18 @@ exports.listStaff = async (req, res) => {
 exports.updateStaffRole = async (req, res) => {
   try {
     const producerOrgId = req.producerOrgId;
-    const { staffId } = req.params;
-    const { roleKey } = req.body;
-    const auditContext = { actorId: req.user?.id, isProducerOwner: req.isProducerOwner };
-    const data = await service.updateStaffRole(producerOrgId, Number(staffId), roleKey, auditContext);
+    const staffId = Number(req.params.staffId);
+    const roleKey = req.body?.roleKey;
+    const prev = await service.getStaffMember(producerOrgId, staffId);
+    const data = await service.updateStaffRole(producerOrgId, staffId, roleKey);
+    const entityId = prev ? `${staffId}|oldRole:${prev.role?.key ?? ""}|newRole:${roleKey ?? ""}` : String(staffId);
     void writeProducerAudit({
       producerOrgId,
       actorType: req.isProducerOwner ? "OWNER" : "STAFF",
       actorId: req.user?.id,
       action: "STAFF_ROLE_UPDATED",
       entityType: "PRODUCER_ORG_STAFF",
-      entityId: String(staffId),
+      entityId,
     });
     return res.status(200).json({ success: true, data });
   } catch (e) {
@@ -494,17 +721,18 @@ exports.updateStaffRole = async (req, res) => {
 exports.updateStaffStatus = async (req, res) => {
   try {
     const producerOrgId = req.producerOrgId;
-    const { staffId } = req.params;
-    const { status } = req.body;
-    const auditContext = { actorId: req.user?.id, isProducerOwner: req.isProducerOwner };
-    const data = await service.updateStaffStatus(producerOrgId, Number(staffId), status, auditContext);
+    const staffId = Number(req.params.staffId);
+    const status = req.body?.status;
+    const prev = await service.getStaffMember(producerOrgId, staffId);
+    const data = await service.updateStaffStatus(producerOrgId, staffId, status);
+    const entityId = prev ? `${staffId}|oldStatus:${prev.status ?? ""}|newStatus:${status ?? ""}` : String(staffId);
     void writeProducerAudit({
       producerOrgId,
       actorType: req.isProducerOwner ? "OWNER" : "STAFF",
       actorId: req.user?.id,
       action: "STAFF_STATUS_UPDATED",
       entityType: "PRODUCER_ORG_STAFF",
-      entityId: String(staffId),
+      entityId,
     });
     return res.status(200).json({ success: true, data });
   } catch (e) {
@@ -547,6 +775,7 @@ exports.createStaffInvite = async (req, res) => {
     const email = body.email != null ? String(body.email).trim() : "";
     const phone = body.phone != null ? String(body.phone).trim() : "";
     const roleKey = body.roleKey != null ? body.roleKey : body.role;
+    const message = body.message != null ? String(body.message).trim() : null;
     if (!email && !phone) {
       return res.status(400).json({
         success: false,
@@ -561,6 +790,7 @@ exports.createStaffInvite = async (req, res) => {
       email: email || undefined,
       phone: phone || undefined,
       roleKey: roleKey != null ? String(roleKey) : undefined,
+      message: message || undefined,
     });
     return res.status(201).json({ success: true, data });
   } catch (e: any) {
@@ -604,6 +834,20 @@ exports.cancelStaffInvite = async (req, res) => {
   } catch (e) {
     const status = e?.statusCode || 500;
     return res.status(status).json({ success: false, message: e?.message || "Failed to cancel invite" });
+  }
+};
+
+exports.resendStaffInvite = async (req, res) => {
+  try {
+    const producerOrgId = req.producerOrgId;
+    const inviteId = Number(req.params.id);
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const data = await inviteService.resendStaffInvite(producerOrgId, inviteId, userId);
+    return res.status(200).json({ success: true, data: { inviteLink: data.inviteLink, invite: data.invite }, message: "Invite resent" });
+  } catch (e) {
+    const status = e?.statusCode || 500;
+    return res.status(status).json({ success: false, message: e?.message || "Failed to resend invite" });
   }
 };
 
@@ -681,6 +925,17 @@ exports.declineStaffInvite = async (req, res) => {
   }
 };
 
+exports.getStaffInvitePreview = async (req, res) => {
+  try {
+    const token = (req.query.token as string) || "";
+    const data = await inviteService.getStaffInvitePreviewByToken(token);
+    return res.status(200).json({ success: true, data });
+  } catch (e) {
+    const status = e?.statusCode || 500;
+    return res.status(status).json({ success: false, message: e?.message || "Invalid or expired invite" });
+  }
+};
+
 exports.getPendingInvites = async (req, res) => {
   try {
     const userId = req.user?.id;
@@ -739,16 +994,17 @@ exports.listAuditLogs = async (req, res) => {
 
     const data = logs.map((l) => {
       const actor = actorById.get(l.actorId);
+      const a = actor != null ? (actor as { id?: number; profile?: { displayName?: string }; auth?: { email?: string; phone?: string } }) : null;
       return {
         id: l.id,
         actorType: l.actorType,
         actorId: l.actorId,
-        actor: actor
+        actor: a
           ? {
-              id: actor.id,
-              displayName: actor.profile?.displayName || null,
-              email: actor.auth?.email || null,
-              phone: actor.auth?.phone || null,
+              id: a.id,
+              displayName: a.profile?.displayName || null,
+              email: a.auth?.email || null,
+              phone: a.auth?.phone || null,
             }
           : null,
         action: l.action,
@@ -876,8 +1132,18 @@ module.exports = {
   submitBatch: exports.submitBatch,
   listBatches: exports.listBatches,
   getBatch: exports.getBatch,
+  listPrintEmailRecipients: exports.listPrintEmailRecipients,
+  createPrintEmailRecipient: exports.createPrintEmailRecipient,
+  listPrintBatches: exports.listPrintBatches,
+  getPrintBatchDetail: exports.getPrintBatchDetail,
+  allocatePrintBatch: exports.allocatePrintBatch,
+  revokePrintAllocation: exports.revokePrintAllocation,
+  markBatchPrinted: exports.markBatchPrinted,
   generateCodes: exports.generateCodes,
   exportCodes: exports.exportCodes,
+  exportSummaryCsv: exports.exportSummaryCsv,
+  exportBatchCodesCsv: exports.exportBatchCodesCsv,
+  exportBatchEventsCsv: exports.exportBatchEventsCsv,
   verify: exports.verify,
   searchCode: exports.searchCode,
   inviteStaff: exports.inviteStaff,
@@ -887,7 +1153,9 @@ module.exports = {
   removeStaff: exports.removeStaff,
   createStaffInvite: exports.createStaffInvite,
   listStaffInvites: exports.listStaffInvites,
+  getStaffInvitePreview: exports.getStaffInvitePreview,
   cancelStaffInvite: exports.cancelStaffInvite,
+  resendStaffInvite: exports.resendStaffInvite,
   acceptStaffInvite: exports.acceptStaffInvite,
   acceptStaffInvitePublic: exports.acceptStaffInvitePublic,
   declineStaffInvite: exports.declineStaffInvite,

@@ -4,19 +4,107 @@ const jwt = require("jsonwebtoken");
 const appConfig = require("../../../../config/appConfig");
 const { resolvePermissionsForUser } = require("../../utils/permissions");
 const { hmacHash, encryptCode, decryptCode } = require("../../utils/authCodeHasher");
+const { UTF8_BOM, escapeCell, formatDate, formatIso, buildCsv, rowToCsvLine, slugify, filenameTimestamp } = require("../../utils/csvExportHelper");
 const crypto = require("crypto");
 
-type AppError = Error & { statusCode?: number };
+type AppError = Error & { statusCode?: number; code?: string };
 
 type PaginationParams = {
   page?: string | number;
   limit?: string | number;
 };
 
-function createError(message: string, statusCode: number): AppError {
+function createError(message: string, statusCode: number, code?: string): AppError {
   const err = new Error(message) as AppError;
   err.statusCode = statusCode;
+  if (code) err.code = code;
   return err;
+}
+
+const VALID_BATCH_STATUSES = ["DRAFT", "APPROVED", "REJECTED", "GENERATED"];
+
+/**
+ * Parse and validate summary export filters from query. Throws createError(..., 400) with code on invalid.
+ * @param {{ status?: string, factoryId?: string, productId?: string, search?: string, createdFrom?: string, createdTo?: string, mfgFrom?: string, mfgTo?: string }} raw
+ * @returns {{ status?: string[], factoryId?: number, productId?: number, search?: string, createdFrom?: Date, createdTo?: Date, mfgFrom?: Date, mfgTo?: Date }}
+ */
+function parseSummaryExportFilters(raw) {
+  const out = {};
+  if (raw.status != null && String(raw.status).trim() !== "") {
+    const list = String(raw.status)
+      .split(",")
+      .map((s) => s.trim().toUpperCase())
+      .filter(Boolean);
+    const invalid = list.filter((s) => !VALID_BATCH_STATUSES.includes(s));
+    if (invalid.length) {
+      const e = createError(`Invalid status value(s): ${invalid.join(", ")}. Allowed: ${VALID_BATCH_STATUSES.join(", ")}`, 400);
+      (e as any).code = "INVALID_FILTER";
+      throw e;
+    }
+    out.status = list;
+  }
+  if (raw.factoryId != null && String(raw.factoryId).trim() !== "") {
+    const n = Number(raw.factoryId);
+    if (!Number.isInteger(n) || n < 1) {
+      const e = createError("factoryId must be a positive integer", 400);
+      (e as any).code = "INVALID_FILTER";
+      throw e;
+    }
+    out.factoryId = n;
+  }
+  if (raw.productId != null && String(raw.productId).trim() !== "") {
+    const n = Number(raw.productId);
+    if (!Number.isInteger(n) || n < 1) {
+      const e = createError("productId must be a positive integer", 400);
+      (e as any).code = "INVALID_FILTER";
+      throw e;
+    }
+    out.productId = n;
+  }
+  if (raw.search != null && String(raw.search).trim() !== "") {
+    out.search = String(raw.search).trim().slice(0, 200);
+  }
+  if (raw.createdFrom != null && String(raw.createdFrom).trim() !== "") {
+    const d = new Date(raw.createdFrom);
+    if (Number.isNaN(d.getTime())) {
+      const e = createError("createdFrom must be a valid ISO date/time", 400);
+      (e as any).code = "INVALID_FILTER";
+      throw e;
+    }
+    out.createdFrom = d;
+  }
+  if (raw.createdTo != null && String(raw.createdTo).trim() !== "") {
+    const d = new Date(raw.createdTo);
+    if (Number.isNaN(d.getTime())) {
+      const e = createError("createdTo must be a valid ISO date/time", 400);
+      (e as any).code = "INVALID_FILTER";
+      throw e;
+    }
+    if (String(raw.createdTo).trim().length <= 10) d.setHours(23, 59, 59, 999);
+    out.createdTo = d;
+  }
+  if (raw.mfgFrom != null && String(raw.mfgFrom).trim() !== "") {
+    const s = String(raw.mfgFrom).trim();
+    const d = new Date(s);
+    if (Number.isNaN(d.getTime())) {
+      const e = createError("mfgFrom must be YYYY-MM-DD or valid date", 400);
+      (e as any).code = "INVALID_FILTER";
+      throw e;
+    }
+    out.mfgFrom = d;
+  }
+  if (raw.mfgTo != null && String(raw.mfgTo).trim() !== "") {
+    const s = String(raw.mfgTo).trim();
+    const d = new Date(s);
+    if (Number.isNaN(d.getTime())) {
+      const e = createError("mfgTo must be YYYY-MM-DD or valid date", 400);
+      (e as any).code = "INVALID_FILTER";
+      throw e;
+    }
+    if (s.length <= 10) d.setHours(23, 59, 59, 999);
+    out.mfgTo = d;
+  }
+  return out;
 }
 
 const CODE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -238,7 +326,9 @@ async function getMe(userId, producerOrgId) {
   const org = producerOrgId
     ? await prisma.producerOrg.findUnique({ where: { id: Number(producerOrgId) } })
     : await getProducerOrgByUser(userId);
-  return { user, org };
+  const permissions = await resolvePermissionsForUser(userId);
+  const isProducerOwner = !!(org && org.ownerUserId === userId);
+  return { user, org, permissions: Array.isArray(permissions) ? permissions : [], isProducerOwner };
 }
 
 async function listProducts(producerOrgId) {
@@ -270,7 +360,14 @@ async function createProduct(userId, producerOrgId, data) {
 
 async function getProduct(producerOrgId, id) {
   if (!producerOrgId) return null;
-  return prisma.authProduct.findFirst({ where: { id: Number(id), producerOrgId: Number(producerOrgId) } });
+  return prisma.authProduct.findFirst({
+    where: { id: Number(id), producerOrgId: Number(producerOrgId) },
+    include: {
+      proofs: {
+        include: { media: { select: { id: true, url: true, type: true, mimeType: true } } },
+      },
+    },
+  });
 }
 
 async function updateProduct(userId, producerOrgId, id, data) {
@@ -382,8 +479,8 @@ async function createBatch(userId, producerOrgId, productId, data) {
   if (!product) {
     throw createError("Product not found", 404);
   }
-  if (product.status !== "APPROVED" && product.status !== "ACTIVE") {
-    throw createError("Product is not approved", 403);
+  if (product.status !== "ACTIVE") {
+    throw createError("Product must be activated by platform admin before creating batches", 403);
   }
   if (!data.batchNo || !data.qtyPlanned) {
     throw createError("batchNo and qtyPlanned are required", 400);
@@ -411,6 +508,474 @@ async function listBatches(producerOrgId, params: PaginationParams = {}) {
     prisma.authBatch.count({ where }),
   ]);
   return { items, pagination: { page: Number(params.page || 1), limit: take, total } };
+}
+
+/**
+ * GET /print/batches: list batches for print view with code counts and serial state.
+ * Same producer-org scope and same "issued" definition as getPrintBatchDetail:
+ * issuedCount = BatchSerialState.allocatedCount (serials reserved via allocate/export).
+ * We always load BatchSerialState in a separate query so stats match detail (single source of truth).
+ */
+async function listPrintBatches(producerOrgId) {
+  if (!producerOrgId) return { items: [], pagination: { page: 1, limit: 0, total: 0 } };
+  const where = { authProduct: { producerOrgId: Number(producerOrgId) } };
+  const batches = await prisma.authBatch.findMany({
+    where,
+    orderBy: { createdAt: "desc" },
+    include: {
+      authProduct: { select: { productName: true } },
+      _count: { select: { codes: true } },
+    },
+  });
+  const batchIds = batches.map((b) => b.id);
+  const serialStates =
+    batchIds.length > 0
+      ? await prisma.batchSerialState.findMany({
+          where: { batchId: { in: batchIds } },
+          select: { batchId: true, allocatedCount: true, lastAllocatedSerial: true },
+        })
+      : [];
+  const serialStateMap = new Map(serialStates.map((s) => [s.batchId, s]));
+  const items = batches.map((b) => {
+    const totalCodes = b._count?.codes ?? b.qtyGenerated ?? 0;
+    const state = serialStateMap.get(b.id);
+    const allocatedCount = state?.allocatedCount ?? 0;
+    const lastAllocatedSerial = state?.lastAllocatedSerial ?? 0;
+    const remainingCount = Math.max(0, totalCodes - allocatedCount);
+    const nextAvailableSerial = remainingCount > 0 ? lastAllocatedSerial + 1 : null;
+    return {
+      id: b.id,
+      productName: b.authProduct?.productName ?? null,
+      batchNo: b.batchNo,
+      totalCodes,
+      lastAllocatedSerial: lastAllocatedSerial || null,
+      allocatedCount,
+      remainingCount,
+      nextAvailableSerial,
+    };
+  });
+  return {
+    items,
+    pagination: { page: 1, limit: items.length, total: items.length },
+  };
+}
+
+/**
+ * GET /print/batches/:id: batch detail for print view with serial state and allocation logs.
+ */
+async function getPrintBatchDetail(producerOrgId, batchId) {
+  if (!producerOrgId) return null;
+  const batch = await prisma.authBatch.findFirst({
+    where: { id: Number(batchId), authProduct: { producerOrgId: Number(producerOrgId) } },
+    include: {
+      authProduct: { select: { id: true, productName: true, sku: true } },
+      _count: { select: { codes: true } },
+      serialState: true,
+      allocationLogs: {
+        orderBy: { createdAt: "desc" },
+        take: 100,
+        include: {
+          allocatedBy: { select: { id: true, profile: true, auth: true } },
+        },
+      },
+    },
+  });
+  if (!batch) return null;
+  const totalCodes = batch._count?.codes ?? batch.qtyGenerated ?? 0;
+  const state = batch.serialState;
+  const allocatedCount = state?.allocatedCount ?? 0;
+  const lastAllocatedSerial = state?.lastAllocatedSerial ?? 0;
+  const remainingCount = Math.max(0, totalCodes - allocatedCount);
+  const nextAvailableSerial = remainingCount > 0 ? lastAllocatedSerial + 1 : null;
+  const logs = batch.allocationLogs || [];
+  const lastIssuedLog = logs.find((l) => l.status === "ISSUED") || null;
+  return {
+    batch: {
+      id: batch.id,
+      batchNo: batch.batchNo,
+      status: batch.status,
+      qtyPlanned: batch.qtyPlanned,
+      qtyGenerated: batch.qtyGenerated,
+      createdAt: batch.createdAt,
+      product: batch.authProduct,
+    },
+    totalCodes,
+    lastAllocatedSerial: lastAllocatedSerial || null,
+    allocatedCount,
+    remainingCount,
+    nextAvailableSerial: remainingCount > 0 ? nextAvailableSerial : null,
+    allocationLogs: logs.map((log) => ({
+      id: log.id,
+      startSerial: log.startSerial,
+      endSerial: log.endSerial,
+      quantity: log.quantity,
+      actionType: log.actionType,
+      fileType: log.fileType,
+      targetEmail: log.targetEmail,
+      status: log.status,
+      revokedAt: log.revokedAt,
+      revokedByUserId: log.revokedByUserId,
+      revokeReason: log.revokeReason,
+      allocatedBy: log.allocatedBy
+        ? { id: log.allocatedBy.id, displayName: log.allocatedBy.profile?.displayName || log.allocatedBy.auth?.email || String(log.allocatedBy.id) }
+        : null,
+      revokedBy: (log as any).revokedBy
+        ? { id: (log as any).revokedBy.id, displayName: (log as any).revokedBy.profile?.displayName || (log as any).revokedBy.auth?.email || String((log as any).revokedBy.id) }
+        : null,
+      createdAt: log.createdAt,
+    })),
+    lastIssuedLog: lastIssuedLog
+      ? {
+          id: lastIssuedLog.id,
+          startSerial: lastIssuedLog.startSerial,
+          endSerial: lastIssuedLog.endSerial,
+          quantity: lastIssuedLog.quantity,
+          actionType: lastIssuedLog.actionType,
+          createdAt: lastIssuedLog.createdAt,
+        }
+      : null,
+  };
+}
+
+/**
+ * GET /print/email-recipients: list saved email recipients for the producer org.
+ */
+async function listPrintEmailRecipients(producerOrgId) {
+  if (!producerOrgId) return [];
+  const rows = await prisma.producerEmailRecipient.findMany({
+    where: { producerOrgId: Number(producerOrgId) },
+    orderBy: { createdAt: "desc" },
+    select: { id: true, email: true, label: true },
+  });
+  return rows;
+}
+
+/**
+ * POST /print/email-recipients: create (or return existing) saved recipient. Body: { email, label? }
+ * Throws 400 INVALID_EMAIL on bad format; returns existing row if (producerOrgId, email) already exists.
+ */
+async function createPrintEmailRecipient(producerOrgId, userId, body) {
+  if (!producerOrgId) throw createError("Producer org not found", 404);
+  const email = typeof body?.email === "string" ? body.email.trim() : "";
+  const label = typeof body?.label === "string" ? body.label.trim() || null : null;
+  if (!isValidEmail(email)) {
+    const e = createError("Invalid email format", 400, "INVALID_EMAIL");
+    throw e;
+  }
+  const existing = await prisma.producerEmailRecipient.findUnique({
+    where: {
+      producerOrgId_email: { producerOrgId: Number(producerOrgId), email },
+    },
+  });
+  if (existing) {
+    return existing;
+  }
+  const created = await prisma.producerEmailRecipient.create({
+    data: {
+      producerOrgId: Number(producerOrgId),
+      email,
+      label,
+      createdByUserId: userId || null,
+    },
+    select: { id: true, email: true, label: true },
+  });
+  return created;
+}
+
+/** Get codes for a batch in serial order (id ASC); serial 1 = first code. Returns decrypted codes for the range [startSerial, endSerial] (1-based inclusive). */
+async function getCodesForSerialRange(batchId, startSerial, endSerial) {
+  const skip = Math.max(0, startSerial - 1);
+  const take = Math.max(0, endSerial - startSerial + 1);
+  const rows = await prisma.authCode.findMany({
+    where: { batchId: Number(batchId) },
+    orderBy: { id: "asc" },
+    skip,
+    take,
+  });
+  return rows.map((r) => decryptCode(r.codeCipher, r.codeIv, r.codeTag));
+}
+
+const ALLOCATION_ACTION_TYPES = ["PRINT", "DOWNLOAD_EXPORT", "EMAIL_EXPORT"];
+const ALLOCATION_FILE_TYPES = ["CSV", "XLSX"];
+
+/** Basic email format validation for export recipient. */
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+function isValidEmail(s: string | null): boolean {
+  return typeof s === "string" && s.length <= 254 && EMAIL_REGEX.test(s.trim());
+}
+
+/** Max EMAIL_EXPORT allocations per user per minute (rate limit). */
+const EMAIL_EXPORT_RATE_LIMIT_PER_MINUTE = 5;
+
+/**
+ * POST /print/batches/:id/allocate
+ * Body: { mode: "AUTO"|"RANGE", quantity?, startSerial?, endSerial?, actionType, fileType?, targetEmail? }
+ * Allocates a serial range atomically and optionally generates export / sends email.
+ */
+async function allocatePrintBatch(producerOrgId, batchId, userId, body) {
+  if (!producerOrgId) throw createError("Producer org not found", 404);
+  const batch = await prisma.authBatch.findFirst({
+    where: { id: Number(batchId), authProduct: { producerOrgId: Number(producerOrgId) } },
+    include: {
+      _count: { select: { codes: true } },
+      authProduct: { select: { productName: true } },
+    },
+  });
+  if (!batch) throw createError("Batch not found", 404);
+
+  const totalCodes = batch._count?.codes ?? batch.qtyGenerated ?? 0;
+  if (totalCodes <= 0) throw createError("Batch has no codes to allocate", 400);
+
+  let state = await prisma.batchSerialState.findUnique({ where: { batchId: batch.id } });
+  if (!state) {
+    state = await prisma.batchSerialState.create({
+      data: { batchId: batch.id, lastAllocatedSerial: 0, allocatedCount: 0 },
+    });
+  }
+  if (state.lastAllocatedSerial >= totalCodes) {
+    throw createError("No serials remaining", 400, "NO_SERIALS_REMAINING");
+  }
+
+  const mode = (body.mode || "AUTO").toUpperCase();
+  const actionType = String(body.actionType || "").toUpperCase();
+  if (!ALLOCATION_ACTION_TYPES.includes(actionType)) {
+    throw createError("actionType must be one of PRINT, DOWNLOAD_EXPORT, EMAIL_EXPORT", 400);
+  }
+
+  let startSerial: number;
+  let endSerial: number;
+  const nextAvailable = state.lastAllocatedSerial + 1;
+
+  if (mode === "AUTO") {
+    const quantity = Math.max(1, Number(body.quantity) || 1);
+    startSerial = nextAvailable;
+    endSerial = startSerial + quantity - 1;
+    if (endSerial > totalCodes) {
+      throw createError(`Only ${totalCodes - startSerial + 1} serial(s) remaining; requested ${quantity}`, 400);
+    }
+  } else if (mode === "RANGE") {
+    startSerial = Number(body.startSerial);
+    endSerial = Number(body.endSerial);
+    if (!Number.isInteger(startSerial) || !Number.isInteger(endSerial) || startSerial < 1 || endSerial < startSerial) {
+      throw createError("RANGE mode requires startSerial and endSerial (1-based, startSerial <= endSerial)", 400);
+    }
+    if (startSerial !== nextAvailable) {
+      throw createError(`Next available serial is ${nextAvailable}; startSerial must match for sequential allocation`, 400);
+    }
+    if (endSerial > totalCodes) {
+      throw createError(`endSerial must not exceed total codes (${totalCodes})`, 400);
+    }
+  } else {
+    throw createError("mode must be AUTO or RANGE", 400);
+  }
+
+  const quantity = endSerial - startSerial + 1;
+  const fileType = body.fileType ? String(body.fileType).toUpperCase() : null;
+  const targetEmail = typeof body.targetEmail === "string" ? body.targetEmail.trim() : null;
+
+  if ((actionType === "DOWNLOAD_EXPORT" || actionType === "EMAIL_EXPORT") && !["CSV", "XLSX"].includes(fileType)) {
+    throw createError("fileType (CSV or XLSX) required for export actions", 400);
+  }
+  if (actionType === "EMAIL_EXPORT" && !targetEmail) {
+    throw createError("targetEmail required for EMAIL_EXPORT", 400);
+  }
+  if (actionType === "EMAIL_EXPORT" && targetEmail && !isValidEmail(targetEmail)) {
+    throw createError("Invalid email format for targetEmail", 400, "INVALID_EMAIL");
+  }
+  if (actionType === "EMAIL_EXPORT" && userId) {
+    const oneMinuteAgo = new Date(Date.now() - 60 * 1000);
+    const recentCount = await prisma.batchSerialAllocationLog.count({
+      where: {
+        allocatedByUserId: userId,
+        actionType: "EMAIL_EXPORT",
+        status: "ISSUED",
+        createdAt: { gte: oneMinuteAgo },
+      },
+    });
+    if (recentCount >= EMAIL_EXPORT_RATE_LIMIT_PER_MINUTE) {
+      throw createError("Too many email exports; please try again in a minute", 429, "RATE_LIMIT");
+    }
+  }
+  if (actionType === "EMAIL_EXPORT" && fileType === "XLSX") {
+    throw createError("XLSX export is not yet implemented; use CSV", 400);
+  }
+  if (actionType === "DOWNLOAD_EXPORT" && fileType === "XLSX") {
+    throw createError("XLSX export is not yet implemented; use CSV", 400);
+  }
+
+  const actionTypeEnum = actionType as "PRINT" | "DOWNLOAD_EXPORT" | "EMAIL_EXPORT";
+  const logPayload = {
+    batchId: batch.id,
+    startSerial,
+    endSerial,
+    quantity,
+    actionType: actionTypeEnum,
+    fileType: fileType as "CSV" | "XLSX" | null,
+    targetEmail: actionType === "EMAIL_EXPORT" ? targetEmail : null,
+    allocatedByUserId: userId || null,
+    status: "ISSUED" as const,
+  };
+
+  const skip = startSerial - 1;
+  const take = quantity;
+  const now = new Date();
+
+  const { updatedState, log } = await prisma.$transaction(async (tx) => {
+    const updatedState = await tx.batchSerialState.upsert({
+      where: { batchId: batch.id },
+      create: { batchId: batch.id, lastAllocatedSerial: endSerial, allocatedCount: quantity },
+      update: { lastAllocatedSerial: endSerial, allocatedCount: { increment: quantity } },
+    });
+    const log = await tx.batchSerialAllocationLog.create({ data: logPayload });
+    const codeRows = await tx.authCode.findMany({
+      where: { batchId: batch.id },
+      orderBy: { id: "asc" },
+      skip,
+      take,
+      select: { id: true },
+    });
+    const codeIds = codeRows.map((r) => r.id);
+    if (codeIds.length > 0) {
+      await tx.authCode.updateMany({
+        where: { id: { in: codeIds } },
+        data: {
+          issuedAt: now,
+          issuedByUserId: userId || null,
+          issuedMethod: actionTypeEnum,
+          issuedToEmail: actionType === "EMAIL_EXPORT" ? targetEmail : null,
+          issuedAllocationLogId: log.id,
+        },
+      });
+    }
+    return { updatedState, log };
+  });
+
+  const result: {
+    startSerial: number;
+    endSerial: number;
+    quantity: number;
+    nextAvailableSerial: number | null;
+    allocationLogId: number;
+  } = {
+    startSerial,
+    endSerial,
+    quantity,
+    nextAvailableSerial: updatedState.lastAllocatedSerial < totalCodes ? updatedState.lastAllocatedSerial + 1 : null,
+    allocationLogId: log.id,
+  };
+
+  const productName = (batch as any).authProduct?.productName ?? "";
+  const batchNo = batch.batchNo ?? "";
+  const csvHeaders = ["serial", "code", "batchNo", "productName"];
+
+  if (actionType === "DOWNLOAD_EXPORT" && fileType === "CSV") {
+    const codes = await getCodesForSerialRange(batch.id, startSerial, endSerial);
+    const rows = codes.map((code, i) => ({
+      serial: startSerial + i,
+      code,
+      batchNo,
+      productName,
+    }));
+    const csv = buildCsv(rows, csvHeaders, { useBom: true });
+    const buffer = Buffer.from(csv, "utf-8");
+    const filename = `producer-batch-${batchNo}-${startSerial}-${endSerial}.csv`;
+    return { ...result, download: { contentType: "text/csv; charset=utf-8", filename, buffer } };
+  }
+
+  if (actionType === "EMAIL_EXPORT" && fileType === "CSV" && targetEmail) {
+    const codes = await getCodesForSerialRange(batch.id, startSerial, endSerial);
+    const rows = codes.map((code, i) => ({
+      serial: startSerial + i,
+      code,
+      batchNo,
+      productName,
+    }));
+    const csv = buildCsv(rows, csvHeaders, { useBom: true });
+    const buffer = Buffer.from(csv, "utf-8");
+    const filename = `producer-batch-${batchNo}-${startSerial}-${endSerial}.csv`;
+    const { isSmtpEnabled, sendMailWithAttachment } = require("../../../../utils/smtpMailer");
+    if (isSmtpEnabled()) {
+      await sendMailWithAttachment({
+        to: targetEmail,
+        subject: `Batch ${batch.batchNo} codes ${startSerial}-${endSerial}`,
+        html: `<p>Please find attached the allocated codes (serials ${startSerial}-${endSerial}) for batch ${batch.batchNo}.</p>`,
+        text: `Attached: batch ${batch.batchNo} codes ${startSerial}-${endSerial}.`,
+        attachments: [{ filename, content: buffer }],
+      });
+    }
+    return { ...result, emailSent: true, targetEmail };
+  }
+
+  return result;
+}
+
+/**
+ * POST /print/batches/:batchId/allocations/:allocationId/revoke
+ * Revoke an ISSUED allocation: mark log REVOKED and clear issued fields on codes. Does not change lastAllocatedSerial.
+ * Caller must be producer owner and have producer.codes.revoke (enforced by route).
+ */
+async function revokePrintAllocation(producerOrgId, batchId, allocationId, userId, body) {
+  if (!producerOrgId) throw createError("Producer org not found", 404);
+  const batch = await prisma.authBatch.findFirst({
+    where: { id: Number(batchId), authProduct: { producerOrgId: Number(producerOrgId) } },
+  });
+  if (!batch) throw createError("Batch not found", 404);
+
+  const allocation = await prisma.batchSerialAllocationLog.findFirst({
+    where: { id: Number(allocationId), batchId: batch.id },
+  });
+  if (!allocation) throw createError("Allocation not found", 404);
+  if (allocation.status !== "ISSUED") {
+    throw createError("Allocation is not in ISSUED state and cannot be revoked", 409, "ALLOCATION_NOT_REVOCABLE");
+  }
+
+  const reason = typeof body?.reason === "string" ? body.reason.trim().slice(0, 500) : null;
+
+  const [updated] = await prisma.$transaction([
+    prisma.batchSerialAllocationLog.update({
+      where: { id: allocation.id },
+      data: {
+        status: "REVOKED",
+        revokedAt: new Date(),
+        revokedByUserId: userId,
+        revokeReason: reason,
+      },
+      include: {
+        allocatedBy: { select: { id: true, profile: true, auth: true } },
+        revokedBy: { select: { id: true, profile: true, auth: true } },
+      },
+    }),
+    prisma.authCode.updateMany({
+      where: { issuedAllocationLogId: allocation.id },
+      data: {
+        issuedAt: null,
+        issuedByUserId: null,
+        issuedMethod: null,
+        issuedToEmail: null,
+        issuedAllocationLogId: null,
+      },
+    }),
+  ]);
+
+  return {
+    id: updated.id,
+    batchId: updated.batchId,
+    startSerial: updated.startSerial,
+    endSerial: updated.endSerial,
+    quantity: updated.quantity,
+    actionType: updated.actionType,
+    status: updated.status,
+    revokedAt: updated.revokedAt,
+    revokedByUserId: updated.revokedByUserId,
+    revokeReason: updated.revokeReason,
+    allocatedBy: updated.allocatedBy
+      ? { id: updated.allocatedBy.id, displayName: (updated.allocatedBy as any).profile?.displayName || (updated.allocatedBy as any).auth?.email || String(updated.allocatedBy.id) }
+      : null,
+    revokedBy: updated.revokedBy
+      ? { id: updated.revokedBy.id, displayName: (updated.revokedBy as any).profile?.displayName || (updated.revokedBy as any).auth?.email || String(updated.revokedBy.id) }
+      : null,
+    createdAt: updated.createdAt,
+  };
 }
 
 async function getBatch(producerOrgId, id) {
@@ -562,6 +1127,59 @@ async function generateCodes(userId, producerOrgId, batchId, quantity, options =
   return { codes };
 }
 
+/**
+ * Record a batch print event: update printedAt, printedByUserId, increment printCount; write audit (BATCH_PRINTED or BATCH_REPRINTED).
+ * Batch must be APPROVED or GENERATED. Optionally sets AuthCode.printedAt for codes in batch that have printedAt null.
+ * @param actorType - "OWNER" | "STAFF" for audit log
+ */
+async function recordBatchPrint(producerOrgId, batchId, userId, actorType) {
+  if (!producerOrgId) throw createError("Producer org not found", 404);
+  const batch = await prisma.authBatch.findFirst({
+    where: { id: Number(batchId), authProduct: { producerOrgId: Number(producerOrgId) } },
+  });
+  if (!batch) throw createError("Batch not found", 404);
+  if (batch.status !== "APPROVED" && batch.status !== "GENERATED") {
+    throw createError("Batch is not in a printable state. Approve the batch or generate codes first.", 400, "BATCH_NOT_PRINTABLE");
+  }
+
+  const now = new Date();
+  const nextCount = (batch.printCount ?? 0) + 1;
+  const action = nextCount === 1 ? "BATCH_PRINTED" : "BATCH_REPRINTED";
+  const auditActorType = actorType === "OWNER" ? "OWNER" : "STAFF";
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const b = await tx.authBatch.update({
+      where: { id: batch.id },
+      data: {
+        printedAt: now,
+        printedByUserId: userId,
+        printCount: { increment: 1 },
+      },
+    });
+    await tx.producerAuditLog.create({
+      data: {
+        producerOrgId: Number(producerOrgId),
+        actorType: auditActorType,
+        actorId: Number(userId),
+        action,
+        entityType: "AUTH_BATCH",
+        entityId: String(batchId),
+      },
+    });
+    await tx.authCode.updateMany({
+      where: { batchId: batch.id, printedAt: null },
+      data: { printedAt: now },
+    });
+    return b;
+  });
+
+  return {
+    printedAt: updated.printedAt,
+    printedByUserId: updated.printedByUserId,
+    printCount: updated.printCount,
+  };
+}
+
 async function exportCodes(producerOrgId, batchId) {
   if (!producerOrgId) throw createError("Producer org not found", 404);
   const batch = await prisma.authBatch.findFirst({
@@ -577,6 +1195,316 @@ async function exportCodes(producerOrgId, batchId) {
     data: { exportedAt: new Date() },
   });
   return { codes };
+}
+
+const BATCH_SUMMARY_CSV_HEADERS = [
+  "batch_id", "batch_no", "producer_org_id", "producer_org_name", "factory_id", "factory_name",
+  "product_id", "product_name", "product_sku", "product_brand", "product_category",
+  "status", "mfg_date", "exp_date", "production_started_at", "production_completed_at", "created_at", "updated_at",
+  "qty_planned", "qty_produced", "qty_rejected", "uom",
+  "codes_total_generated", "codes_active", "codes_voided", "codes_last_generated_at",
+  "qa_status", "qa_notes", "proofs_required", "proofs_uploaded_count", "compliance_ready",
+  "export_version", "source_system", "source_env", "batch_url",
+];
+
+async function getBatchesSummaryForCsv(producerOrgId, filters = {}) {
+  if (!producerOrgId) throw createError("Producer org not found", 404);
+  const org = await prisma.producerOrg.findUnique({
+    where: { id: Number(producerOrgId) },
+    select: { id: true, name: true },
+  });
+  if (!org) throw createError("Producer org not found", 404);
+
+  const andClauses = [
+    {
+      authProduct: {
+        producerOrgId: Number(producerOrgId),
+        ...(filters.factoryId ? { factoryId: filters.factoryId } : {}),
+        ...(filters.productId ? { id: filters.productId } : {}),
+      },
+    },
+  ];
+  if (filters.status && filters.status.length) {
+    andClauses.push({ status: { in: filters.status } });
+  }
+  if (filters.createdFrom) {
+    andClauses.push({ createdAt: { gte: filters.createdFrom } });
+  }
+  if (filters.createdTo) {
+    andClauses.push({ createdAt: { lte: filters.createdTo } });
+  }
+  if (filters.mfgFrom) {
+    andClauses.push({ mfgDate: { gte: filters.mfgFrom } });
+  }
+  if (filters.mfgTo) {
+    andClauses.push({ mfgDate: { lte: filters.mfgTo } });
+  }
+  if (filters.search) {
+    andClauses.push({
+      OR: [
+        { batchNo: { contains: filters.search, mode: "insensitive" } },
+        { authProduct: { productName: { contains: filters.search, mode: "insensitive" } } },
+        { authProduct: { sku: { contains: filters.search, mode: "insensitive" } } },
+      ],
+    });
+  }
+
+  const batches = await prisma.authBatch.findMany({
+    where: { AND: andClauses },
+    include: {
+      authProduct: {
+        include: {
+          producerOrg: { select: { id: true, name: true } },
+          factory: { select: { id: true, name: true } },
+          proofs: { select: { id: true } },
+        },
+      },
+      codes: { select: { id: true, status: true, createdAt: true } },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
+  const sourceEnv = process.env.NODE_ENV === "production" ? "PROD" : "DEV";
+  const baseUrl = process.env.APP_BASE_URL || process.env.FRONTEND_URL || "";
+
+  const rows = batches.map((b) => {
+    const product = b.authProduct;
+    const codes = b.codes || [];
+    const lastCodeAt = codes.length ? codes.reduce((max, c) => (c.createdAt > max ? c.createdAt : max), codes[0].createdAt) : null;
+    const activeCount = codes.filter((c) => c.status === "UNUSED" || c.status === "VERIFIED").length;
+    const voidedCount = codes.filter((c) => c.status === "BLOCKED" || c.status === "EXPIRED").length;
+    const batchUrl = baseUrl ? `${baseUrl.replace(/\/$/, "")}/producer/batches/${b.id}` : "";
+    return {
+      batch_id: b.id,
+      batch_no: b.batchNo || "",
+      producer_org_id: org.id,
+      producer_org_name: org.name || "",
+      factory_id: product.factory?.id ?? "",
+      factory_name: product.factory?.name ?? "",
+      product_id: product.id,
+      product_name: product.productName || "",
+      product_sku: product.sku || "",
+      product_brand: product.brandName || "",
+      product_category: product.productType || "",
+      status: (b.status || "DRAFT").toUpperCase(),
+      mfg_date: formatDate(b.mfgDate),
+      exp_date: formatDate(b.expDate),
+      production_started_at: "",
+      production_completed_at: "",
+      created_at: formatIso(b.createdAt),
+      updated_at: formatIso(b.updatedAt),
+      qty_planned: b.qtyPlanned ?? 0,
+      qty_produced: b.qtyGenerated ?? 0,
+      qty_rejected: 0,
+      uom: "PCS",
+      codes_total_generated: codes.length,
+      codes_active: activeCount,
+      codes_voided: voidedCount,
+      codes_last_generated_at: lastCodeAt ? formatIso(lastCodeAt) : "",
+      qa_status: "",
+      qa_notes: "",
+      proofs_required: "true",
+      proofs_uploaded_count: (product.proofs && product.proofs.length) || 0,
+      compliance_ready: "false",
+      export_version: "1.0",
+      source_system: "BPA_WPA",
+      source_env,
+      batch_url: batchUrl,
+    };
+  });
+
+  const csv = buildCsv(rows, BATCH_SUMMARY_CSV_HEADERS);
+  const filename = `batches_summary_${slugify(org.name)}_${filenameTimestamp().replace("_", "_")}.csv`;
+  return { csv, filename };
+}
+
+const BATCH_CODES_CSV_HEADERS = [
+  "batch_id", "batch_no", "product_id", "product_name", "factory_id", "factory_name",
+  "code_id", "code_value", "code_format", "serial_no", "sequence_no",
+  "code_status", "generated_at", "voided_at", "used_at", "expires_at",
+  "checksum", "verification_url",
+  "export_version", "source_system",
+];
+
+const CODES_STREAM_CHUNK_SIZE = 5000;
+
+function buildCodesCsvRow(c, batch, sequenceNo, verificationBase) {
+  const codeValue = decryptCode(c.codeCipher, c.codeIv, c.codeTag);
+  const verificationUrl = verificationBase ? `${verificationBase}?code=${encodeURIComponent(codeValue)}` : "";
+  return {
+    batch_id: batch.id,
+    batch_no: batch.batchNo || "",
+    product_id: batch.authProduct.id,
+    product_name: batch.authProduct.productName || "",
+    factory_id: batch.authProduct.factory?.id ?? "",
+    factory_name: batch.authProduct.factory?.name ?? "",
+    code_id: c.id,
+    code_value: codeValue,
+    code_format: "ALPHANUM",
+    serial_no: "",
+    sequence_no: sequenceNo,
+    code_status: (c.status || "UNUSED").toUpperCase(),
+    generated_at: formatIso(c.createdAt),
+    voided_at: "",
+    used_at: c.firstVerifiedAt ? formatIso(c.firstVerifiedAt) : "",
+    expires_at: "",
+    checksum: "",
+    verification_url: verificationUrl,
+    export_version: "1.0",
+    source_system: "BPA_WPA",
+  };
+}
+
+async function getBatchCodesForCsv(producerOrgId, batchId) {
+  if (!producerOrgId) throw createError("Producer org not found", 404);
+  const batch = await prisma.authBatch.findFirst({
+    where: { id: Number(batchId), authProduct: { producerOrgId: Number(producerOrgId) } },
+    include: {
+      authProduct: {
+        include: { factory: { select: { id: true, name: true } } },
+      },
+    },
+  });
+  if (!batch) throw createError("Batch not found", 404);
+
+  const codeRows = await prisma.authCode.findMany({
+    where: { batchId: batch.id },
+    orderBy: { id: "asc" },
+  });
+
+  const baseUrl = process.env.APP_BASE_URL || process.env.FRONTEND_URL || "";
+  const verifyPath = "/verify";
+  const verificationBase = baseUrl ? `${baseUrl.replace(/\/$/, "")}${verifyPath}` : "";
+
+  const rows = codeRows.map((c, idx) => buildCodesCsvRow(c, batch, idx + 1, verificationBase));
+
+  await prisma.authCode.updateMany({
+    where: { batchId: batch.id, exportedAt: null },
+    data: { exportedAt: new Date() },
+  });
+
+  const csv = buildCsv(rows, BATCH_CODES_CSV_HEADERS);
+  const safeBatchNo = slugify(batch.batchNo) || `batch-${batch.id}`;
+  const filename = `batch_codes_${safeBatchNo}_${filenameTimestamp().replace("_", "_")}.csv`;
+  return { csv, filename };
+}
+
+/**
+ * Stream batch codes CSV to res (cursor pagination, chunk-sized fetches). Does not load all codes into memory.
+ * Sets Content-Type and Content-Disposition on res, writes BOM + header then rows in chunks, updates exportedAt per chunk.
+ */
+async function streamBatchCodesCsvToResponse(producerOrgId, batchId, res) {
+  if (!producerOrgId) throw createError("Producer org not found", 404);
+  const batch = await prisma.authBatch.findFirst({
+    where: { id: Number(batchId), authProduct: { producerOrgId: Number(producerOrgId) } },
+    include: {
+      authProduct: {
+        include: { factory: { select: { id: true, name: true } } },
+      },
+    },
+  });
+  if (!batch) throw createError("Batch not found", 404);
+
+  const baseUrl = process.env.APP_BASE_URL || process.env.FRONTEND_URL || "";
+  const verificationBase = baseUrl ? `${baseUrl.replace(/\/$/, "")}/verify` : "";
+  const safeBatchNo = slugify(batch.batchNo) || `batch-${batch.id}`;
+  const filename = `batch_codes_${safeBatchNo}_${filenameTimestamp()}.csv`;
+
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  const headerLine = BATCH_CODES_CSV_HEADERS.map((h) => escapeCell(h)).join(",");
+  res.write(UTF8_BOM + headerLine + "\n");
+
+  let lastId = 0;
+  let totalRows = 0;
+  const startMs = Date.now();
+  const isDev = process.env.NODE_ENV !== "production";
+
+  while (true) {
+    const chunk = await prisma.authCode.findMany({
+      where: { batchId: batch.id, id: { gt: lastId } },
+      orderBy: { id: "asc" },
+      take: CODES_STREAM_CHUNK_SIZE,
+    });
+    if (chunk.length === 0) break;
+
+    const ids = chunk.map((c) => c.id);
+    lastId = ids[ids.length - 1];
+    let sequenceStart = totalRows + 1;
+    for (let i = 0; i < chunk.length; i++) {
+      const row = buildCodesCsvRow(chunk[i], batch, sequenceStart + i, verificationBase);
+      res.write(rowToCsvLine(row, BATCH_CODES_CSV_HEADERS) + "\n");
+    }
+    totalRows += chunk.length;
+
+    await prisma.authCode.updateMany({
+      where: { id: { in: ids } },
+      data: { exportedAt: new Date() },
+    });
+  }
+
+  res.end();
+  if (isDev) {
+    const ms = Date.now() - startMs;
+    // eslint-disable-next-line no-console
+    console.log(`[batch-codes-export] batchId=${batch.id} rows=${totalRows} ms=${ms}`);
+  }
+}
+
+const BATCH_EVENTS_CSV_HEADERS = [
+  "event_id", "batch_id", "batch_no", "event_type", "event_at", "actor_user_id", "actor_name", "actor_role",
+  "field", "old_value", "new_value", "note", "export_version", "source_system",
+];
+
+async function getBatchEventsForCsv(producerOrgId, batchId) {
+  if (!producerOrgId) throw createError("Producer org not found", 404);
+  const batch = await prisma.authBatch.findFirst({
+    where: { id: Number(batchId), authProduct: { producerOrgId: Number(producerOrgId) } },
+  });
+  if (!batch) throw createError("Batch not found", 404);
+
+  const auditLogs = await prisma.producerAuditLog.findMany({
+    where: {
+      producerOrgId: Number(producerOrgId),
+      entityType: "AUTH_BATCH",
+      entityId: String(batchId),
+    },
+    orderBy: { createdAt: "asc" },
+  });
+
+  const userIds = [...new Set(auditLogs.map((a) => a.actorId).filter(Boolean))];
+  const users = userIds.length
+    ? await prisma.user.findMany({
+        where: { id: { in: userIds } },
+        include: { profile: { select: { displayName: true } } },
+      })
+    : [];
+  const userMap = new Map(users.map((u) => [u.id, u]));
+
+  const rows = auditLogs.map((a) => {
+    const u = userMap.get(a.actorId);
+    return {
+      event_id: a.id,
+      batch_id: batch.id,
+      batch_no: batch.batchNo || "",
+      event_type: (a.action || "EVENT").toUpperCase(),
+      event_at: formatIso(a.createdAt),
+      actor_user_id: a.actorId ?? "",
+      actor_name: u?.profile?.displayName ?? "",
+      actor_role: (a.actorType || "").toUpperCase(),
+      field: "",
+      old_value: "",
+      new_value: "",
+      note: "",
+      export_version: "1.0",
+      source_system: "BPA_WPA",
+    };
+  });
+
+  const csv = buildCsv(rows, BATCH_EVENTS_CSV_HEADERS);
+  const safeBatchNo = slugify(batch.batchNo) || `batch-${batch.id}`;
+  const filename = `batch_events_${safeBatchNo}_${filenameTimestamp().replace("_", "_")}.csv`;
+  return { csv, filename };
 }
 
 async function verifyCode({ publicCode, ip, country, deviceId, userId }) {
@@ -754,9 +1682,13 @@ async function inviteStaff({ producerOrgId, invitedBy, email, phone, roleKey }) 
   });
 }
 
-async function listStaff(producerOrgId) {
+async function listStaff(producerOrgId, opts) {
+  const includeRemoved = opts?.includeRemoved === true;
+  const where = includeRemoved
+    ? { producerOrgId }
+    : { producerOrgId, status: { not: "REMOVED" } };
   return prisma.producerOrgStaff.findMany({
-    where: { producerOrgId },
+    where,
     include: {
       user: {
         include: {
@@ -772,6 +1704,13 @@ async function listStaff(producerOrgId) {
       },
     },
     orderBy: { createdAt: "desc" },
+  });
+}
+
+async function getStaffMember(producerOrgId, staffId) {
+  return prisma.producerOrgStaff.findFirst({
+    where: { id: staffId, producerOrgId },
+    include: { role: { select: { key: true } } },
   });
 }
 
@@ -886,14 +1825,27 @@ module.exports = {
   createFactory,
   createBatch,
   listBatches,
+  listPrintBatches,
+  getPrintBatchDetail,
+  listPrintEmailRecipients,
+  createPrintEmailRecipient,
+  allocatePrintBatch,
+  revokePrintAllocation,
   getBatch,
   getBatchWithCodes,
+  recordBatchPrint,
   generateCodes,
   exportCodes,
+  parseSummaryExportFilters,
+  getBatchesSummaryForCsv,
+  getBatchCodesForCsv,
+  streamBatchCodesCsvToResponse,
+  getBatchEventsForCsv,
   verifyCode,
   searchCode,
   inviteStaff,
   listStaff,
+  getStaffMember,
   updateStaffRole,
   updateStaffStatus,
   removeStaff,
