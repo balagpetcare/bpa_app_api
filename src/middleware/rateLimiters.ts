@@ -62,6 +62,14 @@ const productImportUploadLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+// Producer governance mutations (suspend, unsuspend, flags, quotas, approve, reject)
+const governanceMutationLimiter = rateLimit({
+  windowMs: numEnv('RL_GOVERNANCE_MUTATION_WINDOW_MS', 60 * 1000),
+  limit: numEnv('RL_GOVERNANCE_MUTATION_MAX', 30),
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 module.exports = {
   generalLimiter,
   authLimiter,
@@ -70,6 +78,7 @@ module.exports = {
   donationLimiter,
   geocodeLimiter,
   productImportUploadLimiter,
+  governanceMutationLimiter,
 };
 
 export {};
