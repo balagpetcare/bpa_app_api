@@ -49,9 +49,22 @@ export const requireProducerPermission = (requiredPermissions: string[]) => {
         return next();
       }
 
-      // Check if user is a staff member with required permissions
+      // Prefer producer org from body (e.g. POST create product), query, or session
+      const candidateOrgId =
+        req.body?.producerOrgId != null
+          ? Number(req.body.producerOrgId)
+          : req.query?.producerOrgId != null
+            ? Number(req.query.producerOrgId)
+            : req.user?.defaultProducerOrgId != null
+              ? Number(req.user.defaultProducerOrgId)
+              : null;
+
+      const staffWhere = candidateOrgId
+        ? { userId, producerOrgId: candidateOrgId }
+        : { userId };
+
       const staffMembership = await prisma.producerOrgStaff.findFirst({
-        where: { userId },
+        where: staffWhere,
         include: {
           role: {
             include: {
@@ -69,9 +82,17 @@ export const requireProducerPermission = (requiredPermissions: string[]) => {
       });
 
       if (!staffMembership) {
+        if (candidateOrgId) {
+          return res.status(403).json({
+            success: false,
+            message: "You are not an active member of this producer organization",
+            code: "PRODUCER_ORG_ACCESS",
+          });
+        }
         return res.status(403).json({
           success: false,
           message: "You are not associated with any producer organization",
+          code: "PRODUCER_ORG_ACCESS",
         });
       }
 
@@ -79,6 +100,7 @@ export const requireProducerPermission = (requiredPermissions: string[]) => {
         return res.status(403).json({
           success: false,
           message: "Producer staff access is not active",
+          code: "PRODUCER_ORG_ACCESS",
         });
       }
 
@@ -87,12 +109,14 @@ export const requireProducerPermission = (requiredPermissions: string[]) => {
         return res.status(403).json({
           success: false,
           message: "Producer organization is suspended",
+          code: "PRODUCER_ORG_ACCESS",
         });
       }
       if (requiresVerified && staffMembership.producerOrg.status !== "VERIFIED") {
         return res.status(403).json({
           success: false,
           message: "Producer organization is not verified yet",
+          code: "PRODUCER_ORG_ACCESS",
         });
       }
 
@@ -110,6 +134,7 @@ export const requireProducerPermission = (requiredPermissions: string[]) => {
         return res.status(403).json({
           success: false,
           message: "Insufficient permissions",
+          code: "PRODUCER_PERMISSION_DENIED",
           required: requiredPermissions,
           userPermissions,
         });

@@ -520,6 +520,30 @@ exports.revokePrintAllocation = async (req, res) => {
   }
 };
 
+exports.downloadPrintIssuance = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const actorType = req.isProducerOwner ? "OWNER" : "STAFF";
+    const result = await service.downloadIssuanceSerials(
+      req.producerOrgId,
+      req.params.issuanceId,
+      userId,
+      actorType
+    );
+    res.setHeader("Content-Type", result.contentType);
+    res.setHeader("Content-Disposition", `attachment; filename="${result.filename}"`);
+    return res.send(result.buffer);
+  } catch (e) {
+    const status = e?.statusCode || 500;
+    return res.status(status).json({
+      success: false,
+      message: e?.message || "Download failed",
+      code: e?.code,
+    });
+  }
+};
+
 exports.getBatch = async (req, res) => {
   try {
     const userId = req.user?.id;
@@ -1138,6 +1162,7 @@ module.exports = {
   getPrintBatchDetail: exports.getPrintBatchDetail,
   allocatePrintBatch: exports.allocatePrintBatch,
   revokePrintAllocation: exports.revokePrintAllocation,
+  downloadPrintIssuance: exports.downloadPrintIssuance,
   markBatchPrinted: exports.markBatchPrinted,
   generateCodes: exports.generateCodes,
   exportCodes: exports.exportCodes,

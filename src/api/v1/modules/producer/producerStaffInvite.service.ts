@@ -7,6 +7,8 @@ const crypto = require("crypto");
 const bcrypt = require("bcrypt");
 const { createNotification } = require("../../services/notification.service");
 const { writeProducerAudit } = require("./producerAudit");
+const { addProducerStaffInviteEmailJob } = require("../../../../common/queue/queues");
+const { sendStaffInviteAcceptedToOwner } = require("../../../../common/email/email.service");
 
 const INVITE_EXPIRY_DAYS = 14;
 const TOKEN_BYTES = 32;
@@ -51,12 +53,46 @@ function hashToken(token: string): string {
   return crypto.createHash("sha256").update(token, "utf8").digest("hex");
 }
 
+/** Single source of truth for public web (Producer panel) base URL. Never use backend host or 0.0.0.0 in emails. */
+function getFrontendBaseUrl(): string {
+  const raw =
+    process.env.FRONTEND_BASE_URL ||
+    process.env.WEB_APP_URL ||
+    process.env.PRODUCER_PANEL_URL ||
+    process.env.NEXT_PUBLIC_APP_URL ||
+    process.env.APP_URL ||
+    process.env.FRONTEND_URL ||
+    "";
+  let base = String(raw).trim().replace(/\/$/, "");
+  if (base) {
+    base = base.replace(/^https?:\/\/0\.0\.0\.0(\b|$)/i, (_, rest) => `http://localhost${rest || ""}`);
+    if (base.includes("0.0.0.0")) base = base.replace(/0\.0\.0\.0/g, "localhost");
+  }
+  if (base && (base.startsWith("http://") || base.startsWith("https://"))) {
+    if (process.env.NODE_ENV !== "production") {
+      console.log("[producer-invite] inviteLink base URL:", base);
+    }
+    return base;
+  }
+  if (base) return `https://${base}`;
+  if (process.env.NODE_ENV !== "production") {
+    console.warn("[producer-invite] FRONTEND_BASE_URL (or WEB_APP_URL) not set; using http://localhost:3105 for invite links.");
+  }
+  return "http://localhost:3105";
+}
+
+/** @deprecated Use getFrontendBaseUrl. Kept for any external callers. */
+function getProducerPanelBaseUrl(): string {
+  return getFrontendBaseUrl();
+}
+
 export async function createStaffInvite(params: {
   producerOrgId: number;
   invitedByUserId: number;
   email?: string | null;
   phone?: string | null;
   roleKey?: string | null;
+  message?: string | null;
 }) {
   const emailNorm = normalizeEmail(params.email);
   const phoneNorm = normalizePhone(params.phone);
@@ -184,15 +220,52 @@ export async function createStaffInvite(params: {
       entityId: String(invite.id),
     });
 
-    const baseUrl = process.env.PRODUCER_PANEL_URL || process.env.NEXT_PUBLIC_APP_URL || "";
+    const baseUrl = getFrontendBaseUrl();
     const invitePath = `/producer/staff?inviteId=${invite.id}`;
-    const inviteLink = baseUrl ? `${baseUrl.replace(/\/$/, "")}${invitePath}` : invitePath;
+    const inviteLink = `${baseUrl}${invitePath}`;
+    if (process.env.NODE_ENV !== "production") {
+      console.log("[producer-invite] inviteLink (registered):", inviteLink);
+    }
+
+    if (emailNorm) {
+      try {
+        const inviterProfile = await prisma.userProfile.findUnique({
+          where: { userId: params.invitedByUserId },
+          select: { displayName: true },
+        });
+        const ownerName = inviterProfile?.displayName || "The owner";
+        const delivery = await prisma.producerStaffInviteDelivery.create({
+          data: {
+            inviteId: invite.id,
+            channel: "email",
+            to: emailNorm,
+            status: "QUEUED",
+            attemptCount: 0,
+            updatedAt: new Date(),
+          },
+        });
+        const jobPayload = {
+          deliveryId: delivery.id,
+          inviteId: invite.id,
+          to: emailNorm,
+          inviteLink,
+          producerName: producerOrg.name,
+          roleLabel: invite.role?.label || invite.role?.key || "Staff",
+          expiresAt: invite.expiresAt.toISOString(),
+          ownerName,
+          customMessage: params.message ? String(params.message).trim() : undefined,
+        };
+        await addProducerStaffInviteEmailJob(jobPayload);
+      } catch (e) {
+        console.error("Producer staff invite email queue error:", e);
+      }
+    }
 
     return {
       mode: "REGISTERED" as const,
       inviteId: invite.id,
       inviteLink,
-      invite,
+      invite: { ...invite, expiresAt: invite.expiresAt },
     };
   }
 
@@ -217,9 +290,12 @@ export async function createStaffInvite(params: {
     },
   });
 
-  const baseUrl = process.env.PRODUCER_PANEL_URL || process.env.NEXT_PUBLIC_APP_URL || "";
-  const invitePath = `/producer/invites/accept?token=${rawToken}`;
-  const inviteLink = baseUrl ? `${baseUrl.replace(/\/$/, "")}${invitePath}` : invitePath;
+  const baseUrl = getFrontendBaseUrl();
+  const invitePath = `/producer/invite?token=${rawToken}`;
+  const inviteLink = `${baseUrl}${invitePath}`;
+  if (process.env.NODE_ENV !== "production") {
+    console.log("[producer-invite] inviteLink (create unregistered):", inviteLink.replace(/token=[a-f0-9]+/i, "token=***"));
+  }
 
   void writeProducerAudit({
     producerOrgId: params.producerOrgId,
@@ -230,11 +306,44 @@ export async function createStaffInvite(params: {
     entityId: String(invite.id),
   });
 
+  if (emailNorm) {
+    try {
+      const inviterProfile = await prisma.userProfile.findUnique({
+        where: { userId: params.invitedByUserId },
+        select: { displayName: true },
+      });
+      const ownerName = inviterProfile?.displayName || "The owner";
+      const delivery = await prisma.producerStaffInviteDelivery.create({
+        data: {
+          inviteId: invite.id,
+          channel: "email",
+          to: emailNorm,
+          status: "QUEUED",
+          attemptCount: 0,
+          updatedAt: new Date(),
+        },
+      });
+      await addProducerStaffInviteEmailJob({
+        deliveryId: delivery.id,
+        inviteId: invite.id,
+        to: emailNorm,
+        inviteLink,
+        producerName: producerOrg.name,
+        roleLabel: invite.role?.label || invite.role?.key || "Staff",
+        expiresAt: invite.expiresAt.toISOString(),
+        ownerName,
+        customMessage: params.message ? String(params.message).trim() : undefined,
+      });
+    } catch (e) {
+      console.error("Producer staff invite email queue error:", e);
+    }
+  }
+
   return {
     mode: "UNREGISTERED" as const,
     inviteId: invite.id,
     inviteLink,
-    invite,
+    invite: { ...invite, expiresAt: invite.expiresAt },
   };
 }
 
@@ -256,6 +365,7 @@ export async function listStaffInvites(producerOrgId: number, filters?: { status
       role: { select: { key: true, label: true } },
       invitedBy: { select: { id: true, profile: { select: { displayName: true } } } },
       producerOrg: { select: { name: true } },
+      deliveries: { orderBy: { createdAt: "desc" }, take: 1 },
     },
     orderBy: { createdAt: "desc" },
   });
@@ -282,6 +392,93 @@ export async function cancelStaffInvite(producerOrgId: number, inviteId: number,
     entityId: String(inviteId),
   });
   return { success: true };
+}
+
+/**
+ * Resend a staff invite: new token (invalidates old link), extended expiry, audit.
+ * Only PENDING or SENT invites can be resent.
+ */
+export async function resendStaffInvite(producerOrgId: number, inviteId: number, userId: number) {
+  const invite = await prisma.producerStaffInvite.findFirst({
+    where: { id: inviteId, producerOrgId },
+    include: { role: { select: { key: true, label: true } }, producerOrg: { select: { name: true } } },
+  });
+  if (!invite) throw createError("Invite not found", 404);
+  if (invite.status !== "PENDING" && invite.status !== "SENT") {
+    throw createError("Only pending or sent invites can be resent", 400);
+  }
+  if (new Date() > invite.expiresAt) {
+    await prisma.producerStaffInvite.update({
+      where: { id: inviteId },
+      data: { status: "EXPIRED", updatedAt: new Date() },
+    });
+    throw createError("This invite has expired", 400);
+  }
+
+  const rawToken = crypto.randomBytes(TOKEN_BYTES).toString("hex");
+  const tokenHash = hashToken(rawToken);
+  const expiresAt = new Date(Date.now() + INVITE_EXPIRY_DAYS * 24 * 60 * 60 * 1000);
+
+  await prisma.producerStaffInvite.update({
+    where: { id: inviteId },
+    data: { tokenHash, expiresAt, status: "SENT", updatedAt: new Date() },
+  });
+
+  void writeProducerAudit({
+    producerOrgId,
+    actorType: "OWNER",
+    actorId: userId,
+    action: "STAFF_INVITE_RESENT",
+    entityType: "PRODUCER_STAFF_INVITE",
+    entityId: String(inviteId),
+  });
+
+  const baseUrl = getFrontendBaseUrl();
+  const invitePath = `/producer/invite?token=${rawToken}`;
+  const inviteLink = `${baseUrl}${invitePath}`;
+  if (process.env.NODE_ENV !== "production") {
+    console.log("[producer-invite] inviteLink (resend):", inviteLink.replace(/token=[a-f0-9]+/i, "token=***"));
+  }
+
+  const updated = await prisma.producerStaffInvite.findUnique({
+    where: { id: inviteId },
+    include: { role: { select: { key: true, label: true } }, producerOrg: { select: { name: true } } },
+  });
+
+  if (invite.email) {
+    try {
+      const inviterProfile = await prisma.userProfile.findUnique({
+        where: { userId },
+        select: { displayName: true },
+      });
+      const ownerName = inviterProfile?.displayName || "The owner";
+      const delivery = await prisma.producerStaffInviteDelivery.create({
+        data: {
+          inviteId,
+          channel: "email",
+          to: invite.email,
+          status: "QUEUED",
+          attemptCount: 0,
+          updatedAt: new Date(),
+        },
+      });
+      await addProducerStaffInviteEmailJob({
+        deliveryId: delivery.id,
+        inviteId,
+        to: invite.email,
+        inviteLink,
+        producerName: updated.producerOrg?.name || "Producer",
+        roleLabel: updated.role?.label || updated.role?.key || "Staff",
+        expiresAt: expiresAt.toISOString(),
+        ownerName,
+        customMessage: undefined,
+      });
+    } catch (e) {
+      console.error("Producer staff invite resend email queue error:", e);
+    }
+  }
+
+  return { inviteLink, invite: updated };
 }
 
 function userMatchesInvite(userAuth: { email?: string | null; phone?: string | null }, invite: { email?: string | null; phone?: string | null }): boolean {
@@ -365,6 +562,50 @@ export async function acceptStaffInvite(params: { userId: number; inviteId?: num
     entityId: String(invite.id),
   });
 
+  const baseUrl = getProducerPanelBaseUrl();
+  const staffListUrl = `${baseUrl}/producer/staff`;
+  try {
+    const [acceptedUser, owner] = await Promise.all([
+      prisma.user.findUnique({
+        where: { id: params.userId },
+        select: { profile: { select: { displayName: true } } },
+      }),
+      prisma.user.findUnique({
+        where: { id: invite.invitedByUserId },
+        select: { profile: { select: { displayName: true } }, auth: { select: { email: true } } },
+      }),
+    ]);
+    const staffDisplayName = acceptedUser?.profile?.displayName || "A staff member";
+    const ownerName = owner?.profile?.displayName || "Owner";
+    const ownerEmail = owner?.auth?.email;
+    await createNotification({
+      userId: invite.invitedByUserId,
+      type: "STAFF_INVITE",
+      title: "Staff accepted your invitation",
+      message: `${staffDisplayName} accepted your invitation to join ${invite.producerOrg?.name || "your producer"} as ${invite.role?.label || "staff"}.`,
+      meta: { inviteId: invite.id, producerOrgId: invite.producerOrgId, acceptedByUserId: params.userId },
+      source: "producer",
+      actionUrl: "/producer/staff",
+      dedupeKey: `producer-staff-accepted-${invite.id}`,
+      senderId: params.userId,
+    });
+    if (ownerEmail) {
+      const emailResult = await sendStaffInviteAcceptedToOwner({
+        to: ownerEmail,
+        ownerName,
+        staffDisplayName,
+        orgName: invite.producerOrg?.name || "your producer",
+        roleLabel: invite.role?.label || "staff",
+        staffListUrl,
+      });
+      if ("skipped" in emailResult) {
+        // SMTP not configured - ignore
+      }
+    }
+  } catch (e) {
+    console.error("Producer staff accept notification/email error:", e);
+  }
+
   return { success: true, producerOrgId: invite.producerOrgId, producerName: invite.producerOrg?.name };
 }
 
@@ -433,6 +674,32 @@ export async function getPendingInvitesForUser(userId: number) {
   });
 
   return invites;
+}
+
+/**
+ * Public preview of an invite by token (for accept page). Returns minimal info; validates token and expiry.
+ */
+export async function getStaffInvitePreviewByToken(token: string) {
+  const t = String(token || "").trim();
+  if (!t) throw createError("Token is required", 400);
+  const tokenHash = hashToken(t);
+  const invite = await prisma.producerStaffInvite.findFirst({
+    where: { tokenHash, status: { in: ["PENDING", "SENT"] } },
+    include: { role: { select: { label: true, key: true } }, producerOrg: { select: { name: true } } },
+  });
+  if (!invite) throw createError("Invalid or expired invite token", 404);
+  if (new Date() > invite.expiresAt) {
+    await prisma.producerStaffInvite.update({
+      where: { id: invite.id },
+      data: { status: "EXPIRED", updatedAt: new Date() },
+    });
+    throw createError("This invite has expired", 400);
+  }
+  return {
+    orgName: invite.producerOrg?.name || "Producer",
+    roleLabel: invite.role?.label || invite.role?.key || "Staff",
+    expiresAt: invite.expiresAt,
+  };
 }
 
 export async function getInviteByIdForProducer(producerOrgId: number, inviteId: number) {
@@ -545,6 +812,44 @@ export async function acceptStaffInvitePublic(params: { token: string; password:
     entityType: "PRODUCER_STAFF_INVITE",
     entityId: String(invite.id),
   });
+
+  const baseUrl = getProducerPanelBaseUrl();
+  const staffListUrl = `${baseUrl}/producer/staff`;
+  try {
+    const staffDisplayName = user?.profile?.displayName || "A staff member";
+    const owner = await prisma.user.findUnique({
+      where: { id: invite.invitedByUserId },
+      select: { profile: { select: { displayName: true } }, auth: { select: { email: true } } },
+    });
+    const ownerName = owner?.profile?.displayName || "Owner";
+    const ownerEmail = owner?.auth?.email;
+    await createNotification({
+      userId: invite.invitedByUserId,
+      type: "STAFF_INVITE",
+      title: "Staff accepted your invitation",
+      message: `${staffDisplayName} accepted your invitation to join ${invite.producerOrg?.name || "your producer"} as ${invite.role?.label || "staff"}.`,
+      meta: { inviteId: invite.id, producerOrgId: invite.producerOrgId, acceptedByUserId: user.id },
+      source: "producer",
+      actionUrl: "/producer/staff",
+      dedupeKey: `producer-staff-accepted-${invite.id}`,
+      senderId: user.id,
+    });
+    if (ownerEmail) {
+      const emailResult = await sendStaffInviteAcceptedToOwner({
+        to: ownerEmail,
+        ownerName,
+        staffDisplayName,
+        orgName: invite.producerOrg?.name || "your producer",
+        roleLabel: invite.role?.label || "staff",
+        staffListUrl,
+      });
+      if ("skipped" in emailResult) {
+        // SMTP not configured - ignore
+      }
+    }
+  } catch (e) {
+    console.error("Producer staff accept notification/email error:", e);
+  }
 
   return { user, producerOrgId: invite.producerOrgId, producerName: invite.producerOrg?.name };
 }

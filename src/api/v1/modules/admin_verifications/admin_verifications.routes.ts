@@ -45,6 +45,12 @@ router.post(
 router.post("/producer-orgs/:id/suspend", authenticateToken, adminOnly, ctrl.suspendProducerOrg);
 router.post("/producer-orgs/:id/comment", authenticateToken, adminOnly, ctrl.commentProducerOrg);
 
+// Producer Products queue (UNDER_REVIEW → ACTIVE by platform admin)
+router.get("/producer-products", authenticateToken, adminOnly, ctrl.listProducerProducts);
+router.get("/producer-products/:id", authenticateToken, adminOnly, ctrl.getProducerProduct);
+router.post("/producer-products/:id/approve", authenticateToken, adminOnly, ctrl.approveProducerProduct);
+router.post("/producer-products/:id/reject", authenticateToken, adminOnly, ctrl.rejectProducerProduct);
+
 // Backward-compatible alias (older UI used /orgs)
 router.get("/orgs", authenticateToken, adminOnly, ctrl.listOrgKycs);
 

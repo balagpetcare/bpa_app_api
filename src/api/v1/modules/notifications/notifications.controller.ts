@@ -1,5 +1,28 @@
 import type { Request, Response, NextFunction } from "express";
+import { NotificationStatus, NotificationType } from "@prisma/client";
 import prisma from "../../../../infrastructure/db/prismaClient";
+
+/** Producer notification display priority (API layer, non-breaking). */
+const PRODUCER_DISPLAY_PRIORITY: Record<string, "HIGH" | "MEDIUM" | "LOW"> = {
+  VERIFICATION_CASE_REJECTED: "HIGH",
+  BATCH_SUSPICIOUS_ACTIVITY: "HIGH",
+  STAFF_INVITE_ACCEPTED: "MEDIUM",
+  VERIFICATION_CASE_APPROVED: "MEDIUM",
+  SYSTEM_INFO: "LOW",
+  SYSTEM: "LOW",
+};
+const ACTION_REQUIRED_TYPES: NotificationType[] = [NotificationType.VERIFICATION_CASE_REJECTED, NotificationType.BATCH_SUSPICIOUS_ACTIVITY];
+
+const producerPanelOr = [
+  { actionUrl: { startsWith: "/producer" } },
+  { source: "producer" },
+  { type: NotificationType.STAFF_INVITE },
+  { type: NotificationType.BATCH_SUSPICIOUS_ACTIVITY },
+];
+
+function getProducerDisplayPriority(type: string): "HIGH" | "MEDIUM" | "LOW" {
+  return PRODUCER_DISPLAY_PRIORITY[type] ?? "LOW";
+}
 
 function getAuthUserId(req: any): number | null {
   const id =
@@ -34,11 +57,19 @@ export async function list(req: Request, res: Response, next: NextFunction) {
     const priorityFilter = req.query.priority as string | undefined;
     const fromDate = req.query.from ? new Date(req.query.from as string) : undefined;
     const toDate = req.query.to ? new Date(req.query.to as string) : undefined;
+    const panel = (req.query.panel as string) || undefined;
+    const filterActionRequired = String(req.query.filter || "").toLowerCase() === "actionrequired" || req.query.filter === "action_required";
 
-    const where: any = { userId, status: "ACTIVE" };
+    const where: any = { userId, status: NotificationStatus.ACTIVE };
+    if (panel === "producer") {
+      where.AND = [{ OR: producerPanelOr }];
+      if (filterActionRequired) {
+        where.AND.push({ type: { in: ACTION_REQUIRED_TYPES } });
+      }
+    }
     if (unreadOnly) where.readAt = null;
     if (cursorId && Number.isFinite(cursorId)) where.id = { lt: cursorId };
-    if (typeFilter) where.type = typeFilter;
+    if (typeFilter) where.type = typeFilter as NotificationType;
     if (branchIdFilter && Number.isFinite(branchIdFilter)) where.branchId = branchIdFilter;
     if (priorityFilter) where.priority = priorityFilter;
     if ((fromDate && !isNaN(fromDate.getTime())) || (toDate && !isNaN(toDate.getTime()))) {
@@ -73,8 +104,16 @@ export async function list(req: Request, res: Response, next: NextFunction) {
     });
 
     const hasMore = notifications.length > limit;
-    const items = hasMore ? notifications.slice(0, limit) : notifications;
-    const nextCursor = hasMore && items.length ? String(items[items.length - 1].id) : null;
+    const rawItems = hasMore ? notifications.slice(0, limit) : notifications;
+    const nextCursor = hasMore && rawItems.length ? String(rawItems[rawItems.length - 1].id) : null;
+
+    const items =
+      panel === "producer"
+        ? rawItems.map((n) => ({
+            ...n,
+            displayPriority: getProducerDisplayPriority(String(n.type)),
+          }))
+        : rawItems;
 
     return res.json({
       success: true,
@@ -93,8 +132,16 @@ export async function unreadCount(req: Request, res: Response, next: NextFunctio
     const userId = getAuthUserId(req as any);
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
 
+    const panel = (req.query.panel as string) || undefined;
+    const filterActionRequired = String(req.query.filter || "").toLowerCase() === "actionrequired" || req.query.filter === "action_required";
+    const where: any = { userId, readAt: null, status: NotificationStatus.ACTIVE };
+    if (panel === "producer") {
+      where.AND = [{ OR: producerPanelOr }];
+      if (filterActionRequired) where.AND.push({ type: { in: ACTION_REQUIRED_TYPES } });
+    }
+
     const count = await prisma.notification.count({
-      where: { userId, readAt: null, status: "ACTIVE" },
+      where,
     });
 
     return res.json({ success: true, data: { count } });
@@ -134,7 +181,7 @@ export async function markRead(req: Request, res: Response, next: NextFunction) 
     });
     try {
       const { emitUnreadCount } = require("../../../../realtime/socketio.gateway");
-      const count = await prisma.notification.count({ where: { userId, readAt: null, status: "ACTIVE" } });
+      const count = await prisma.notification.count({ where: { userId, readAt: null, status: NotificationStatus.ACTIVE } });
       emitUnreadCount(userId, count);
     } catch (_) {}
     return res.json({ success: true });
@@ -169,7 +216,7 @@ export async function markReadBulk(req: Request, res: Response, next: NextFuncti
     });
     try {
       const { emitUnreadCount } = require("../../../../realtime/socketio.gateway");
-      const count = await prisma.notification.count({ where: { userId, readAt: null, status: "ACTIVE" } });
+      const count = await prisma.notification.count({ where: { userId, readAt: null, status: NotificationStatus.ACTIVE } });
       emitUnreadCount(userId, count);
     } catch (_) {}
     return res.json({ success: true, data: { updated: updated.count } });
@@ -293,21 +340,29 @@ export async function analytics(req: Request, res: Response, next: NextFunction)
       from.setDate(from.getDate() - 7);
     }
 
-    const where = { userId, status: "ACTIVE", createdAt: { gte: from, lte: to } };
+    const panel = (req.query.panel as string) || undefined;
+    const baseWhere: any = { userId, status: NotificationStatus.ACTIVE, createdAt: { gte: from, lte: to } };
+    if (panel === "producer") {
+      baseWhere.AND = [{ OR: producerPanelOr }];
+    }
+    const unreadWhere: any = { userId, readAt: null, status: NotificationStatus.ACTIVE };
+    if (panel === "producer") {
+      unreadWhere.AND = [{ OR: producerPanelOr }];
+    }
 
     const [byType, byPriority, unreadCount] = await Promise.all([
       prisma.notification.groupBy({
         by: ["type"],
-        where,
+        where: baseWhere,
         _count: { id: true },
       }),
       prisma.notification.groupBy({
         by: ["priority"],
-        where,
+        where: baseWhere,
         _count: { id: true },
       }),
       prisma.notification.count({
-        where: { userId, readAt: null, status: "ACTIVE" },
+        where: unreadWhere,
       }),
     ]);
 

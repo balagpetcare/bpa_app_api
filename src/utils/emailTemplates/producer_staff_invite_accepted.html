@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Staff invitation accepted</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f5f5f5; }
+    .container { background-color: #ffffff; border-radius: 8px; padding: 30px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+    .header { border-bottom: 2px solid #16a34a; padding-bottom: 20px; margin-bottom: 20px; }
+    .header h1 { color: #16a34a; margin: 0; font-size: 24px; }
+    .content { margin: 20px 0; }
+    .success-box { background-color: #f0fdf4; border-left: 4px solid #16a34a; padding: 15px; margin: 20px 0; }
+    .button { display: inline-block; padding: 12px 24px; background-color: #16a34a; color: #ffffff !important; text-decoration: none; border-radius: 6px; margin-top: 20px; font-weight: 600; }
+    .footer { margin-top: 30px; padding-top: 20px; border-top: 1px solid #e0e0e0; font-size: 12px; color: #666; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>Staff invitation accepted</h1>
+    </div>
+    <div class="content">
+      <p>Hi {{ownerName}},</p>
+      <div class="success-box">
+        <strong>{{staffDisplayName}}</strong> has accepted your invitation to join <strong>{{orgName}}</strong> as <strong>{{roleLabel}}</strong>.
+      </div>
+      <p>They can now access the Producer panel with the permissions for that role.</p>
+      <p><a href="{{staffListUrl}}" class="button">View Staff &amp; Access Control</a></p>
+    </div>
+    <div class="footer">
+      <p>This is an automated message from BPA Producer Portal.</p>
+    </div>
+  </div>
+</body>
+</html>

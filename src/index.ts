@@ -34,6 +34,17 @@ try {
 } catch (e) {
   console.error("[JOB_INIT] ownersTeamAutomation failed", e);
 }
+try {
+  const { runNotificationRetentionJob } = require("./common/jobs/notificationRetention.job");
+  const retentionIntervalMs = Number(process.env.NOTIFICATION_RETENTION_INTERVAL_MS || 24 * 60 * 60 * 1000);
+  function runRetention() {
+    runNotificationRetentionJob().catch((err) => console.error("[JOB_INIT] notificationRetention error", err));
+  }
+  runRetention();
+  setInterval(runRetention, retentionIntervalMs).unref?.();
+} catch (e) {
+  console.error("[JOB_INIT] notificationRetention failed", e);
+}
 
 /**
  * ✅ Request logger (must be registered BEFORE app.listen)

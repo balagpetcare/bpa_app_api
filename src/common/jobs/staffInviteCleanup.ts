@@ -13,9 +13,9 @@ exports.startStaffInviteCleanup = function startStaffInviteCleanup() {
   async function runOnce() {
     try {
       const now = new Date();
-      const result = await prisma.staffInvite.updateMany({
+      const result = await prisma.producerStaffInvite.updateMany({
         where: {
-          status: "PENDING",
+          status: { in: ["PENDING", "SENT"] },
           expiresAt: { lt: now },
         },
         data: { status: "EXPIRED" },

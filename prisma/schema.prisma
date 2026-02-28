@@ -440,9 +440,14 @@ model User {
   producerStaffInvitesAccepted ProducerStaffInvite[] @relation("ProducerStaffInviteAcceptedBy")
   authProductsCreated    AuthProduct[]         @relation("AuthProductCreatedBy")
   authBatchesCreated     AuthBatch[]           @relation("AuthBatchCreatedBy")
-  authCodesGenerated     AuthCode[]            @relation("AuthCodeGeneratedBy")
-  authVerifyLogs         AuthVerificationLog[]
-  returnRequestsApproved ReturnRequest[]       @relation("ReturnApprovedBy")
+  authBatchesPrinted     AuthBatch[]           @relation("AuthBatchPrintedBy")
+  authCodesGenerated        AuthCode[]                  @relation("AuthCodeGeneratedBy")
+  authCodesIssued           AuthCode[]                  @relation("AuthCodeIssuedBy")
+  authVerifyLogs            AuthVerificationLog[]
+  batchSerialAllocationLogs         BatchSerialAllocationLog[] @relation("BatchSerialAllocationAllocatedBy")
+  batchSerialAllocationLogsRevoked  BatchSerialAllocationLog[] @relation("BatchSerialAllocationRevokedBy")
+  producerEmailRecipientsCreated    ProducerEmailRecipient[]   @relation("ProducerEmailRecipientCreatedBy")
+  returnRequestsApproved    ReturnRequest[]             @relation("ReturnApprovedBy")
 
   // === Multi-Branch Staff Permission System ===
   branchAccessPermissions         BranchAccessPermission[] @relation("BranchAccessPermissionUser")
@@ -1013,6 +1018,7 @@ enum NotificationType {
   FINANCE_PAYOUT
   CLINIC_APPOINTMENT
   CLINIC_PRESCRIPTION
+  BATCH_SUSPICIOUS_ACTIVITY
 }
 
 enum NotificationPriority {
@@ -5028,9 +5034,28 @@ model ProducerOrg {
   documents  ProducerOrgDocument[]
   auditLogs  ProducerAuditLog[]
   approvals  ProducerApproval[]
+  printEmailRecipients ProducerEmailRecipient[]
 
   @@index([ownerUserId])
   @@map("producer_orgs")
+}
+
+// Saved email recipients for Producer Print (Email CSV export)
+model ProducerEmailRecipient {
+  id              Int      @id @default(autoincrement())
+  producerOrgId   Int
+  email           String
+  label           String?
+  createdByUserId  Int?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  producerOrg ProducerOrg @relation(fields: [producerOrgId], references: [id], onDelete: Cascade)
+  createdBy   User?       @relation("ProducerEmailRecipientCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([producerOrgId, email])
+  @@index([producerOrgId])
+  @@map("producer_email_recipients")
 }
 
 // Producer-scoped factory (verified manufacturing facility for product approval)
@@ -5109,6 +5134,7 @@ enum ProducerStaffInviteStatus {
   DECLINED
   EXPIRED
   CANCELLED
+  DELETED
 }
 
 model ProducerStaffInvite {
@@ -5129,6 +5155,7 @@ model ProducerStaffInvite {
   invitedBy     User        @relation("ProducerStaffInviteInvitedBy", fields: [invitedByUserId], references: [id], onDelete: Restrict)
   role         Role        @relation(fields: [roleId], references: [id], onDelete: Restrict)
   acceptedBy   User?       @relation("ProducerStaffInviteAcceptedBy", fields: [acceptedByUserId], references: [id], onDelete: SetNull)
+  deliveries   ProducerStaffInviteDelivery[]
 
   @@unique([producerOrgId, email], map: "producer_staff_invite_producer_org_email_unique")
   @@unique([producerOrgId, phone], map: "producer_staff_invite_producer_org_phone_unique")
@@ -5137,6 +5164,27 @@ model ProducerStaffInvite {
   @@index([phone])
   @@index([expiresAt])
   @@map("producer_staff_invites")
+}
+
+model ProducerStaffInviteDelivery {
+  id           Int       @id @default(autoincrement())
+  inviteId     Int
+  channel      String    @db.VarChar(32)
+  to           String    @db.VarChar(255)
+  provider     String?   @db.VarChar(64)
+  status       String    @db.VarChar(32)
+  attemptCount Int       @default(0)
+  lastError    String?   @db.Text
+  messageId    String?   @db.VarChar(255)
+  sentAt       DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  invite ProducerStaffInvite @relation(fields: [inviteId], references: [id], onDelete: Cascade)
+
+  @@index([inviteId])
+  @@index([status])
+  @@map("producer_staff_invite_deliveries")
 }
 
 model ProducerAuditLog {
@@ -5253,44 +5301,114 @@ model AuthBatch {
   qtyGenerated    Int             @default(0)
   status          AuthBatchStatus @default(DRAFT)
   createdByUserId Int?
+  printedAt       DateTime?
+  printedByUserId Int?
+  printCount      Int             @default(0)
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
 
-  authProduct AuthProduct @relation(fields: [authProductId], references: [id], onDelete: Cascade)
-  createdBy   User?       @relation("AuthBatchCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
-  codes       AuthCode[]
+  authProduct    AuthProduct              @relation(fields: [authProductId], references: [id], onDelete: Cascade)
+  createdBy      User?                    @relation("AuthBatchCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  printedBy      User?                    @relation("AuthBatchPrintedBy", fields: [printedByUserId], references: [id], onDelete: SetNull)
+  codes          AuthCode[]
+  serialState    BatchSerialState?
+  allocationLogs BatchSerialAllocationLog[]
 
   @@index([authProductId])
   @@index([status])
   @@map("auth_batches")
 }
 
-model AuthCode {
-  id                   Int            @id @default(autoincrement())
-  batchId              Int
-  codeHash             String         @unique
-  codeLength           Int            @default(12)
-  customPrefix         String?
-  customSuffix         String?
-  codeCipher           String
-  codeIv               String
-  codeTag              String
-  status               AuthCodeStatus @default(UNUSED)
-  printedAt            DateTime?
-  exportedAt           DateTime?
-  verifyCount          Int            @default(0)
-  firstVerifiedAt      DateTime?
-  firstVerifiedIp      String?
-  firstVerifiedCountry String?
-  generatedByUserId    Int?
-  createdAt            DateTime       @default(now())
+enum BatchSerialAllocationActionType {
+  PRINT
+  DOWNLOAD_EXPORT
+  EMAIL_EXPORT
+}
 
-  batch       AuthBatch             @relation(fields: [batchId], references: [id], onDelete: Cascade)
-  generatedBy User?                 @relation("AuthCodeGeneratedBy", fields: [generatedByUserId], references: [id], onDelete: SetNull)
-  logs        AuthVerificationLog[]
+enum BatchSerialAllocationFileType {
+  CSV
+  XLSX
+}
+
+enum BatchSerialAllocationStatus {
+  ISSUED
+  REVOKED
+}
+
+model BatchSerialState {
+  id                   Int      @id @default(autoincrement())
+  batchId              Int      @unique
+  lastAllocatedSerial  Int      @default(0)
+  allocatedCount       Int      @default(0)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  batch AuthBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  @@map("batch_serial_states")
+}
+
+model BatchSerialAllocationLog {
+  id                Int                            @id @default(autoincrement())
+  batchId           Int
+  startSerial       Int
+  endSerial         Int
+  quantity          Int
+  actionType        BatchSerialAllocationActionType
+  fileType          BatchSerialAllocationFileType?
+  targetEmail       String?
+  allocatedByUserId Int?
+  status            BatchSerialAllocationStatus    @default(ISSUED)
+  revokedAt         DateTime?
+  revokedByUserId   Int?
+  revokeReason      String?
+  createdAt         DateTime                       @default(now())
+
+  batch       AuthBatch  @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  allocatedBy User?      @relation("BatchSerialAllocationAllocatedBy", fields: [allocatedByUserId], references: [id], onDelete: SetNull)
+  revokedBy   User?      @relation("BatchSerialAllocationRevokedBy", fields: [revokedByUserId], references: [id], onDelete: SetNull)
+  codes       AuthCode[]
+
+  @@index([batchId])
+  @@index([allocatedByUserId])
+  @@index([revokedByUserId])
+  @@map("batch_serial_allocation_logs")
+}
+
+model AuthCode {
+  id                      Int                            @id @default(autoincrement())
+  batchId                 Int
+  codeHash                String                         @unique
+  codeLength              Int                            @default(12)
+  customPrefix            String?
+  customSuffix            String?
+  codeCipher              String
+  codeIv                  String
+  codeTag                 String
+  status                  AuthCodeStatus                 @default(UNUSED)
+  printedAt               DateTime?
+  exportedAt              DateTime?
+  verifyCount             Int                            @default(0)
+  firstVerifiedAt         DateTime?
+  firstVerifiedIp         String?
+  firstVerifiedCountry    String?
+  generatedByUserId       Int?
+  issuedAt                DateTime?
+  issuedByUserId          Int?
+  issuedMethod            BatchSerialAllocationActionType?
+  issuedToEmail           String?
+  issuedAllocationLogId   Int?
+  createdAt               DateTime                       @default(now())
+
+  batch              AuthBatch                  @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  generatedBy        User?                      @relation("AuthCodeGeneratedBy", fields: [generatedByUserId], references: [id], onDelete: SetNull)
+  issuedBy           User?                      @relation("AuthCodeIssuedBy", fields: [issuedByUserId], references: [id], onDelete: SetNull)
+  issuedAllocationLog BatchSerialAllocationLog? @relation(fields: [issuedAllocationLogId], references: [id], onDelete: SetNull)
+  logs               AuthVerificationLog[]
 
   @@index([batchId])
   @@index([status])
+  @@index([issuedAllocationLogId])
   @@map("auth_codes")
 }
 

@@ -48,8 +48,10 @@ export default async function seedRolesPermissions(prisma: PrismaClient) {
     { key: "producer.products.write", label: "Manage products", description: "Create and edit products" },
     { key: "producer.batches.read", label: "Read batches", description: "View batch list and details" },
     { key: "producer.batches.write", label: "Manage batches", description: "Create and manage production batches" },
+    { key: "producer.batches.print", label: "Print batch / Mark batch as printed", description: "Record batch print events and view print count" },
     { key: "producer.codes.generate", label: "Generate QR codes", description: "Generate authenticity QR codes" },
     { key: "producer.codes.export", label: "Export codes", description: "Export generated codes" },
+    { key: "producer.codes.revoke", label: "Revoke allocations", description: "Revoke issued serial allocations (owner only)" },
     { key: "producer.verification.read", label: "Read verification logs", description: "View verification history and analytics" },
     { key: "producer.analytics.read", label: "Read analytics", description: "View producer analytics and reports" },
   ];
@@ -128,7 +130,7 @@ export default async function seedRolesPermissions(prisma: PrismaClient) {
         "producer.org.read", "producer.org.write",
         "producer.kyc.submit", "producer.kyc.view",
         "producer.products.read", "producer.products.write",
-        "producer.batches.read", "producer.batches.write",
+        "producer.batches.read", "producer.batches.write", "producer.batches.print",
         "producer.codes.generate", "producer.codes.export",
         "producer.verification.read", "producer.analytics.read",
       ],
@@ -141,7 +143,7 @@ export default async function seedRolesPermissions(prisma: PrismaClient) {
         "producer.org.read",
         "producer.kyc.view",
         "producer.products.read", "producer.products.write",
-        "producer.batches.read", "producer.batches.write",
+        "producer.batches.read", "producer.batches.write", "producer.batches.print",
         "producer.codes.generate", "producer.codes.export",
         "producer.verification.read", "producer.analytics.read",
       ],
@@ -151,8 +153,8 @@ export default async function seedRolesPermissions(prisma: PrismaClient) {
       label: "Producer Staff",
       scope: "ORG",
       permissionKeys: [
-        "producer.products.read",
-        "producer.batches.read",
+        "producer.products.read", "producer.products.write",
+        "producer.batches.read", "producer.batches.print",
         "producer.codes.generate", "producer.codes.export",
       ],
     },
@@ -220,4 +222,13 @@ export default async function seedRolesPermissions(prisma: PrismaClient) {
       });
     }
   }
+
+  // One-time verification: PRODUCER_STAFF has producer.products.write (for staff product create)
+  const producerStaffRole = await prisma.role.findUnique({
+    where: { key: "PRODUCER_STAFF" },
+    include: { rolePermissions: { include: { permission: { select: { key: true } } } } },
+  });
+  const staffPermKeys = (producerStaffRole?.rolePermissions ?? []).map((rp) => rp.permission.key);
+  const hasProductsWrite = staffPermKeys.includes("producer.products.write");
+  console.log("[seedRolesPermissions] PRODUCER_STAFF has producer.products.write:", hasProductsWrite);
 }

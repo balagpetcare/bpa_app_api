@@ -1,3 +1,4 @@
+import producerPrintAliasRouter from "./modules/producer/producerPrintAlias.routes";
 const router = require("express").Router();
 const countryScopeGuard = require("../../middlewares/countryScopeGuard");
 
@@ -120,6 +121,10 @@ router.use("/factories", countryScopeGuard, require("./modules/factories/factori
 
 // Producer/Auth system (separate)
 router.use("/producer", require("./modules/producer/producer.routes"));
+// Producer-print alias: same issuance download at /api/v1/producer-print/issuances/:issuanceId/download
+router.use("/producer-print", producerPrintAliasRouter);
+// TEMP: remove after verification
+router.get("/__route_probe/producer-print", (_req: any, res: any) => res.json({ ok: true }));
 
 // Inventory (MVP Core Feature)
 router.use("/inventory", countryScopeGuard, require("./modules/inventory/inventory.routes"));
@@ -173,7 +178,6 @@ router.post(
   require("../../middleware/auth.middleware"),
   require("./modules/pricing/pricing.controller").enableLocationVariant
 );
-
 
 module.exports = router;
 

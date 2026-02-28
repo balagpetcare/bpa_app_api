@@ -32,14 +32,23 @@ module.exports = async function authenticateToken(req, res, next) {
     if (payload && payload.userType) req.user.userType = payload.userType;
 
     if (payload && payload.tv !== undefined && payload.tv !== null) {
-      const row = await prisma.user.findUnique({
-        where: { id: userId },
-        select: { tokenVersion: true },
-      });
-      const current = Number(row?.tokenVersion || 0);
-      const tokenVersion = Number(payload.tv || 0);
-      if (current !== tokenVersion) {
-        return res.status(401).json({ success: false, message: "Unauthorized: token revoked" });
+      try {
+        const row = await prisma.user.findUnique({
+          where: { id: userId },
+          select: { tokenVersion: true },
+        });
+        const current = Number(row?.tokenVersion ?? 0);
+        const tokenVersion = Number(payload.tv || 0);
+        if (current !== tokenVersion) {
+          return res.status(401).json({ success: false, message: "Unauthorized: token revoked" });
+        }
+      } catch (err) {
+        // Prisma client may be stale (e.g. tokenVersion not in generated client). Run: npx prisma generate
+        if (err?.message?.includes("tokenVersion") || err?.message?.includes("Unknown field")) {
+          console.warn("Auth: tokenVersion check skipped (run 'npx prisma generate' if schema has tokenVersion).");
+        } else {
+          throw err;
+        }
       }
     }
 

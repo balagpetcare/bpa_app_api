@@ -13,8 +13,8 @@ const REDIS_ENABLED =
   REDIS_URL.length > 0 ||
   (process.env.REDIS_ENABLED !== "false" && process.env.REDIS_ENABLED !== "0");
 
-function getConnection(): { host: string; port: number; maxRetriesPerRequest: null } | string {
-  if (REDIS_URL) return REDIS_URL;
+function getConnection(): { url?: string; host?: string; port?: number; maxRetriesPerRequest: null } {
+  if (REDIS_URL) return { url: REDIS_URL, maxRetriesPerRequest: null };
   return {
     host: process.env.REDIS_HOST || "localhost",
     port: Number(process.env.REDIS_PORT) || 6379,
@@ -23,13 +23,15 @@ function getConnection(): { host: string; port: number; maxRetriesPerRequest: nu
 }
 
 async function processJob(job: Job<ProducerStaffInviteEmailJobPayload>): Promise<string | null> {
-  const { deliveryId, to, inviteLink, producerName, roleLabel, expiresAt } = job.data;
+  const { deliveryId, to, inviteLink, producerName, roleLabel, expiresAt, ownerName, customMessage } = job.data;
   const result = await sendInviteEmail({
     to,
     inviteLink,
     producerName,
     roleLabel,
     expiresAt: new Date(expiresAt),
+    ownerName,
+    customMessage,
   });
   if ("skipped" in result) {
     const isSmtpMissing =

@@ -12,8 +12,8 @@
 | `producerPrintBatchesList` | DONE |
 | `producerPrintBatchDetail` | DONE |
 | `producerPrintBatchAllocate` | DONE |
-| `producerPrintEmailRecipientsList` | N/A (not implemented) |
-| `producerPrintEmailRecipientCreate` | N/A (not implemented) |
+| `producerPrintEmailRecipientsList` | DONE |
+| `producerPrintEmailRecipientCreate` | DONE |
 | `producerPrintAllocationRevoke` | DONE |
 | CSV download (Content-Type detection, `triggerBlobDownload`) | DONE |
 | Email export (API responds; SMTP required for delivery) | DONE |
@@ -28,6 +28,8 @@
 | `GET /api/v1/producer/print/batches/:id` | DONE |
 | `POST /api/v1/producer/print/batches/:id/allocate` | DONE |
 | `POST /api/v1/producer/print/batches/:batchId/allocations/:allocationId/revoke` | DONE |
+| `GET /api/v1/producer/print/email-recipients` | DONE |
+| `POST /api/v1/producer/print/email-recipients` | DONE |
 | List/detail use `producer.batches.read` | DONE |
 | Allocate uses `producer.batches.read` + `producer.codes.export` | DONE |
 | Revoke uses owner + `producer.codes.revoke` | DONE |
@@ -42,7 +44,7 @@
 ## What Is Implemented
 
 - **List:** Batches for the producer org with total/issued/remaining and next serial; fallback to regular batches list when print API empty/fails.
-- **Detail:** Batch overview, allocation history (with status/revoke when `?revoke=1` and owner), and Export/Email tab with quantity, action type (Print / Download / Email), and quick buttons.
+- **Detail:** Batch overview, allocation history (with status/revoke when `?revoke=1` and owner), and Export/Email tab with Larkon-style pill tabs, two-column layout (Mode + quantity/range left; Action + recipient + submit right), PrettyRadio for Mode, saved email recipients dropdown and “Add new recipient” modal.
 - **Allocate:** Atomic serial range allocation; optional CSV download or email export; NO_SERIALS_REMAINING, INVALID_EMAIL, RATE_LIMIT errors with `code`.
 - **Revoke:** Owner + `producer.codes.revoke` to revoke an ISSUED allocation.
 
@@ -55,6 +57,8 @@
 | GET | `/api/v1/producer/print/batches/:id` | auth | producer.batches.read |
 | POST | `/api/v1/producer/print/batches/:id/allocate` | auth | producer.batches.read, producer.codes.export |
 | POST | `/api/v1/producer/print/batches/:batchId/allocations/:allocationId/revoke` | auth | owner + producer.codes.revoke |
+| GET | `/api/v1/producer/print/email-recipients` | auth | producer.batches.read |
+| POST | `/api/v1/producer/print/email-recipients` | auth | producer.codes.export |
 
 ## UI Routes (bpa_web)
 
@@ -73,8 +77,10 @@ Frontend may call these via Next.js proxy `/api/proxy/producer-print/*` when sam
 
 1. Sidebar **Print → Batches** visible for users with `producer.batches.read`.
 2. List loads; empty state shows message + link to Batches.
-3. Detail loads; Overview / Allocations / Export tabs render.
-4. Allocate: Print, Download CSV, Email CSV work (email requires SMTP).
-5. Allocation logs show new entries; revoke appears when `?revoke=1` and owner.
-6. No duplicate toast + modal for the same error.
-7. Other producer pages (Products, Batches, Staff, etc.) unaffected.
+3. Detail loads; Overview / Allocations / Export pill tabs render with section header.
+4. Export/Email: Mode uses PrettyRadio (Auto / Range); form is two-column on desktop (Mode + inputs left, Action + recipient + submit right).
+5. When Action = Email CSV: recipient dropdown shows saved recipients (“label — email” or “email”); “+ Add new recipient” opens modal (email required, label optional); save refreshes list and selects new recipient; manual email input clears dropdown selection; “Next 1000 Email” enabled when targetEmail is set.
+6. Allocate: Print, Download CSV, Email CSV work (email requires SMTP).
+7. Allocation logs show new entries; revoke appears when `?revoke=1` and owner.
+8. No duplicate toast + modal for the same error.
+9. Other producer pages (Products, Batches, Staff, etc.) unaffected.

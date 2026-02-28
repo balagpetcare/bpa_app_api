@@ -84,7 +84,7 @@ Backend uses the `Role` table (no hardcoded UUIDs); role string is resolved to a
   "data": {
     "mode": "UNREGISTERED",
     "inviteId": 1,
-    "inviteLink": "http://localhost:3105/producer/invites/accept?token=...",
+    "inviteLink": "http://localhost:3105/producer/invite?token=...",
     "invite": { "id": 1, "email": "...", "role": { "key": "PRODUCER_VIEWER", "label": "..." }, ... }
   }
 }
@@ -118,7 +118,15 @@ Auth: unauthenticated → 401; forbidden (not owner / suspended) → 403. Never 
 - **Invite modal**: New copy: "Enter email or phone. If they already have an account, they will receive an in-app invitation. If not, we'll send an invitation to register." On success, for UNREGISTERED show "Copy link" with `inviteLink`.
 - **Staff page**: Tabs "Staff list" | "Invitations" | "Activity". Invitations table: Invitee, Role, Status, Sent, Expires, Actions (Cancel for pending/sent).
 - **Pending-invites banner**: When the current user has pending invites (from `GET /me/pending-invites`), show a banner with Accept/Decline per invite.
-- **Token accept page**: `/producer/invites/accept?token=...` — if not logged in, redirect to login with return URL; then show Accept/Decline and call accept or decline with `token`.
+- **Token accept page**: `/producer/invite?token=...` (or `/producer/invites/accept?token=...`) — redirects to accept flow; if not logged in, redirect to login with return URL; then show Accept/Decline and call accept or decline with `token`.
+
+### Environment variables (invite links and email)
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `FRONTEND_BASE_URL` or `WEB_APP_URL` | Yes (prod) | Public base URL for the Producer panel (e.g. `http://localhost:3105`, `https://producer.example.com`). Invite emails use this for the link; never use backend host or `0.0.0.0`. Dev fallback: `http://localhost:3105`. |
+| `REDIS_URL` (or `REDIS_HOST`/`REDIS_PORT`) | For email queue | BullMQ; if missing, invite email job is not processed; UI still shows copyable link and delivery status. |
+| SMTP (e.g. `SMTP_HOST`, `SMTP_USER`, `SMTP_PASS`) | For sending email | If missing, delivery is marked FAILED/SKIPPED; owner can copy link and share manually. |
 
 ## Related
 

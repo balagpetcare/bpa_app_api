@@ -15,6 +15,17 @@ const upload = multer({
 router.post("/auth/register", ctrl.register);
 router.post("/auth/login", ctrl.login);
 
+// Print batches (must be before /batches/:id to avoid param matching)
+// Health check (no auth) to verify route is registered: GET /api/v1/producer/print/health
+router.get("/print/health", (_req, res) => res.status(200).json({ ok: true, scope: "producer.print" }));
+router.get("/print/email-recipients", auth, requireProducerPermission(["producer.batches.read"]), ctrl.listPrintEmailRecipients);
+router.post("/print/email-recipients", auth, requireProducerPermission(["producer.codes.export"]), ctrl.createPrintEmailRecipient);
+router.get("/print/batches", auth, requireProducerPermission(["producer.batches.read"]), ctrl.listPrintBatches);
+router.get("/print/issuances/:issuanceId/download", auth, requireProducerPermission(["producer.batches.read"]), ctrl.downloadPrintIssuance);
+router.get("/print/batches/:id", auth, requireProducerPermission(["producer.batches.read"]), ctrl.getPrintBatchDetail);
+router.post("/print/batches/:id/allocate", auth, requireProducerPermission(["producer.batches.read", "producer.codes.export"]), ctrl.allocatePrintBatch);
+router.post("/print/batches/:batchId/allocations/:allocationId/revoke", auth, requireProducerOwner, requireProducerPermission(["producer.codes.revoke"]), ctrl.revokePrintAllocation);
+
 // KYC + me (auth required)
 router.get("/me", auth, requireProducerPermission(["producer.org.read"]), ctrl.me);
 // Pending staff invites for any logged-in user (invitee may not be producer yet)
@@ -42,7 +53,11 @@ router.post("/products/:id/batches", auth, requireProducerPermission(["producer.
 
 // Batches (permission-based)
 router.get("/batches", auth, requireProducerPermission(["producer.batches.read"]), ctrl.listBatches);
+router.get("/batches/export/summary", auth, requireProducerPermission(["producer.batches.read"]), ctrl.exportSummaryCsv);
 router.get("/batches/:id", auth, requireProducerPermission(["producer.batches.read"]), ctrl.getBatch);
+router.post("/batches/:id/print", auth, requireProducerPermission(["producer.batches.print"]), ctrl.markBatchPrinted);
+router.get("/batches/:batchId/export/codes", auth, requireProducerPermission(["producer.codes.export"]), ctrl.exportBatchCodesCsv);
+router.get("/batches/:batchId/export/events", auth, requireProducerPermission(["producer.batches.read"]), ctrl.exportBatchEventsCsv);
 router.post("/batches/:id/submit", auth, requireProducerPermission(["producer.batches.write"]), ctrl.submitBatch);
 router.post("/batches/:batchId/codes/generate", auth, requireProducerPermission(["producer.codes.generate"]), ctrl.generateCodes);
 router.get("/batches/:batchId/codes/export", auth, requireProducerPermission(["producer.codes.export"]), ctrl.exportCodes);
@@ -65,11 +80,14 @@ router.delete("/staff/:staffId", auth, requireProducerOwner, ctrl.removeStaff);
 // Staff Invites (new workflow: registered → notification accept; unregistered → token link)
 router.post("/staff/invite", auth, requireProducerOwner, requireProducerVerified, ctrl.createStaffInvite);
 router.get("/staff/invites", auth, requireProducerOwner, ctrl.listStaffInvites);
+router.get("/staff/invites/preview", ctrl.getStaffInvitePreview);
 router.post("/staff/invites/accept-public", ctrl.acceptStaffInvitePublic);
 // Accept/decline first (static path before :id)
 router.post("/staff/invites/accept", auth, ctrl.acceptStaffInvite);
 router.post("/staff/invites/decline", auth, ctrl.declineStaffInvite);
 router.post("/staff/invites/:id/cancel", auth, requireProducerOwner, ctrl.cancelStaffInvite);
+router.post("/staff/invites/:id/revoke", auth, requireProducerOwner, ctrl.cancelStaffInvite);
+router.post("/staff/invites/:id/resend", auth, requireProducerOwner, ctrl.resendStaffInvite);
 
 module.exports = router;
 export {};

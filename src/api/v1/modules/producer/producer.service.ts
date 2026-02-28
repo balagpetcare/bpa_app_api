@@ -5,6 +5,7 @@ const appConfig = require("../../../../config/appConfig");
 const { resolvePermissionsForUser } = require("../../utils/permissions");
 const { hmacHash, encryptCode, decryptCode } = require("../../utils/authCodeHasher");
 const { UTF8_BOM, escapeCell, formatDate, formatIso, buildCsv, rowToCsvLine, slugify, filenameTimestamp } = require("../../utils/csvExportHelper");
+const { writeProducerAudit } = require("./producerAudit");
 const crypto = require("crypto");
 
 type AppError = Error & { statusCode?: number; code?: string };
@@ -514,7 +515,8 @@ async function listBatches(producerOrgId, params: PaginationParams = {}) {
  * GET /print/batches: list batches for print view with code counts and serial state.
  * Same producer-org scope and same "issued" definition as getPrintBatchDetail:
  * issuedCount = BatchSerialState.allocatedCount (serials reserved via allocate/export).
- * We always load BatchSerialState in a separate query so stats match detail (single source of truth).
+ * Uses include serialState (same as detail) and an explicit BatchSerialState query keyed by
+ * AuthBatch.id (batchId) so lookup matches regardless of number/string coercion.
  */
 async function listPrintBatches(producerOrgId) {
   if (!producerOrgId) return { items: [], pagination: { page: 1, limit: 0, total: 0 } };
@@ -525,9 +527,10 @@ async function listPrintBatches(producerOrgId) {
     include: {
       authProduct: { select: { productName: true } },
       _count: { select: { codes: true } },
+      serialState: true,
     },
   });
-  const batchIds = batches.map((b) => b.id);
+  const batchIds = batches.map((b) => Number(b.id));
   const serialStates =
     batchIds.length > 0
       ? await prisma.batchSerialState.findMany({
@@ -535,10 +538,10 @@ async function listPrintBatches(producerOrgId) {
           select: { batchId: true, allocatedCount: true, lastAllocatedSerial: true },
         })
       : [];
-  const serialStateMap = new Map(serialStates.map((s) => [s.batchId, s]));
+  const serialStateMap = new Map(serialStates.map((s) => [Number(s.batchId), s]));
   const items = batches.map((b) => {
     const totalCodes = b._count?.codes ?? b.qtyGenerated ?? 0;
-    const state = serialStateMap.get(b.id);
+    const state = b.serialState ?? serialStateMap.get(Number(b.id));
     const allocatedCount = state?.allocatedCount ?? 0;
     const lastAllocatedSerial = state?.lastAllocatedSerial ?? 0;
     const remainingCount = Math.max(0, totalCodes - allocatedCount);
@@ -907,6 +910,54 @@ async function allocatePrintBatch(producerOrgId, batchId, userId, body) {
   }
 
   return result;
+}
+
+/**
+ * GET /print/issuances/:issuanceId/download
+ * Re-download serials for an ISSUED allocation. Validates producerOrg isolation; generates CSV from issuance start–end range; writes audit ISSUANCE_SERIAL_REDOWNLOADED.
+ */
+async function downloadIssuanceSerials(producerOrgId, issuanceId, userId, actorType) {
+  if (!producerOrgId) throw createError("Producer org not found", 404);
+  const log = await prisma.batchSerialAllocationLog.findFirst({
+    where: { id: Number(issuanceId) },
+    include: {
+      batch: {
+        include: {
+          authProduct: { select: { id: true, producerOrgId: true, productName: true } },
+        },
+      },
+    },
+  });
+  if (!log || !log.batch) throw createError("Issuance not found", 404);
+  const batch = log.batch as any;
+  if (batch.authProduct?.producerOrgId !== Number(producerOrgId)) {
+    throw createError("Issuance not found", 404);
+  }
+  if (log.status !== "ISSUED") {
+    throw createError("Only issued allocations can be re-downloaded", 400, "ISSUANCE_NOT_ISSUED");
+  }
+  const productName = batch.authProduct?.productName ?? "";
+  const batchNo = batch.batchNo ?? "";
+  const csvHeaders = ["serial", "code", "batchNo", "productName"];
+  const codes = await getCodesForSerialRange(batch.id, log.startSerial, log.endSerial);
+  const rows = codes.map((code, i) => ({
+    serial: log.startSerial + i,
+    code,
+    batchNo,
+    productName,
+  }));
+  const csv = buildCsv(rows, csvHeaders, { useBom: true });
+  const buffer = Buffer.from(csv, "utf-8");
+  const filename = `producer-batch-${batchNo}-${log.startSerial}-${log.endSerial}.csv`;
+  await writeProducerAudit({
+    producerOrgId: Number(producerOrgId),
+    actorType: actorType === "OWNER" ? "OWNER" : "STAFF",
+    actorId: Number(userId),
+    action: "ISSUANCE_SERIAL_REDOWNLOADED",
+    entityType: "ISSUANCE",
+    entityId: String(log.id),
+  });
+  return { contentType: "text/csv; charset=utf-8", filename, buffer };
 }
 
 /**
@@ -1831,6 +1882,7 @@ module.exports = {
   createPrintEmailRecipient,
   allocatePrintBatch,
   revokePrintAllocation,
+  downloadIssuanceSerials,
   getBatch,
   getBatchWithCodes,
   recordBatchPrint,

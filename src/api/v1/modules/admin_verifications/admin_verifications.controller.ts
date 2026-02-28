@@ -1,4 +1,5 @@
 const prisma = require("../../../../infrastructure/db/prismaClient");
+const { createNotification } = require("../../services/notification.service");
 
 function pickStatus(req) {
   const s = String(req.query.status || "").trim();
@@ -464,6 +465,21 @@ exports.approveProducerOrg = async (req, res) => {
       adminUserId,
       note: req.body?.note,
     });
+    try {
+      await createNotification({
+        userId: current.ownerUserId,
+        type: "VERIFICATION_CASE_APPROVED",
+        title: "Producer organization verified",
+        message: `Your producer organization has been verified.`,
+        meta: { entityType: "PRODUCER_ORG", entityId: id },
+        source: "producer",
+        actionUrl: "/producer/kyc",
+        dedupeKey: `producer-org-approved-${id}`,
+        severity: "success",
+      });
+    } catch (notifErr) {
+      console.error("approveProducerOrg notification error", notifErr?.message || notifErr);
+    }
     return res.json({ success: true, data: updated });
   } catch (e) {
     console.error("approveProducerOrg error", e);
@@ -524,6 +540,21 @@ exports.rejectProducerOrg = async (req, res) => {
       adminUserId,
       note: reviewNote,
     });
+    try {
+      await createNotification({
+        userId: current.ownerUserId,
+        type: "VERIFICATION_CASE_REJECTED",
+        title: "Producer organization verification declined",
+        message: reason || "Your producer organization verification was declined. You can submit again after making changes.",
+        meta: { entityType: "PRODUCER_ORG", entityId: id, reason: reviewNote },
+        source: "producer",
+        actionUrl: "/producer/kyc",
+        dedupeKey: `producer-org-rejected-${id}`,
+        severity: "warn",
+      });
+    } catch (notifErr) {
+      console.error("rejectProducerOrg notification error", notifErr?.message || notifErr);
+    }
     return res.json({ success: true, data: updated });
   } catch (e) {
     console.error("rejectProducerOrg error", e);
@@ -630,6 +661,162 @@ exports.commentProducerOrg = async (req, res) => {
   } catch (e) {
     console.error('commentProducerOrg error', e);
     return res.status(500).json({ success: false, message: 'Server Error' });
+  }
+};
+
+// ---------------- Producer Products (Auth Product queue: UNDER_REVIEW → ACTIVE by platform admin) ----------------
+exports.listProducerProducts = async (req, res) => {
+  try {
+    const status = pickStatus(req);
+    const where = status ? { status } : { status: "UNDER_REVIEW" };
+    const rows = await prisma.authProduct.findMany({
+      where,
+      orderBy: { submittedAt: "desc" },
+      include: {
+        producerOrg: { select: { id: true, name: true, status: true } },
+        factory: { select: { id: true, name: true } },
+      },
+      take: 200,
+    });
+    return res.json({ success: true, data: rows });
+  } catch (e) {
+    console.error("listProducerProducts error", e);
+    return res.status(500).json({ success: false, message: "Server Error" });
+  }
+};
+
+exports.getProducerProduct = async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const row = await prisma.authProduct.findUnique({
+      where: { id },
+      include: {
+        producerOrg: { select: { id: true, name: true, status: true } },
+        factory: { select: { id: true, name: true } },
+        proofs: { include: { media: { select: { id: true, url: true, type: true, mimeType: true } } } },
+      },
+    });
+    if (!row) return res.status(404).json({ success: false, message: "Not found" });
+    return res.json({ success: true, data: row });
+  } catch (e) {
+    console.error("getProducerProduct error", e);
+    return res.status(500).json({ success: false, message: "Server Error" });
+  }
+};
+
+exports.approveProducerProduct = async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const adminUserId = Number(req.user?.id || req.admin?.id || 0) || null;
+    const current = await prisma.authProduct.findUnique({ where: { id } });
+    if (!current) return res.status(404).json({ success: false, message: "Not found" });
+    if (current.status !== "UNDER_REVIEW") {
+      return res.status(400).json({ success: false, message: "Product is not under platform review" });
+    }
+
+    const updated = await prisma.authProduct.update({
+      where: { id },
+      data: {
+        status: "ACTIVE",
+        reviewedAt: new Date(),
+        reviewedByAdminId: adminUserId,
+        reviewNotes: req.body?.note || null,
+      },
+    });
+    await logAction({
+      entityType: "PRODUCER_PRODUCT",
+      entityId: id,
+      action: "APPROVE",
+      fromStatus: "SUBMITTED",
+      toStatus: "VERIFIED",
+      adminUserId,
+      note: req.body?.note,
+    });
+    try {
+      const org = await prisma.producerOrg.findUnique({
+        where: { id: current.producerOrgId },
+        select: { ownerUserId: true },
+      });
+      if (org?.ownerUserId) {
+        await createNotification({
+          userId: org.ownerUserId,
+          type: "VERIFICATION_CASE_APPROVED",
+          title: "Product approved",
+          message: `Your product has been approved and is now active.`,
+          meta: { entityType: "PRODUCER_PRODUCT", entityId: id },
+          source: "producer",
+          actionUrl: `/producer/products/${id}`,
+          dedupeKey: `producer-product-approved-${id}`,
+          severity: "success",
+        });
+      }
+    } catch (notifErr) {
+      console.error("approveProducerProduct notification error", notifErr?.message || notifErr);
+    }
+    return res.json({ success: true, data: updated });
+  } catch (e) {
+    console.error("approveProducerProduct error", e);
+    return res.status(500).json({ success: false, message: "Server Error" });
+  }
+};
+
+exports.rejectProducerProduct = async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const { reason, note } = req.body || {};
+    if (!reason) return res.status(400).json({ success: false, message: "reason is required" });
+
+    const adminUserId = Number(req.user?.id || req.admin?.id || 0) || null;
+    const current = await prisma.authProduct.findUnique({ where: { id } });
+    if (!current) return res.status(404).json({ success: false, message: "Not found" });
+    if (current.status !== "UNDER_REVIEW") {
+      return res.status(400).json({ success: false, message: "Product is not under platform review" });
+    }
+
+    const reviewNote = note || reason;
+    const updated = await prisma.authProduct.update({
+      where: { id },
+      data: {
+        status: "REJECTED",
+        reviewedAt: new Date(),
+        reviewedByAdminId: adminUserId,
+        reviewNotes: reviewNote,
+      },
+    });
+    await logAction({
+      entityType: "PRODUCER_PRODUCT",
+      entityId: id,
+      action: "REJECT",
+      fromStatus: "SUBMITTED",
+      toStatus: "REJECTED",
+      adminUserId,
+      note: reviewNote,
+    });
+    try {
+      const org = await prisma.producerOrg.findUnique({
+        where: { id: current.producerOrgId },
+        select: { ownerUserId: true },
+      });
+      if (org?.ownerUserId) {
+        await createNotification({
+          userId: org.ownerUserId,
+          type: "VERIFICATION_CASE_REJECTED",
+          title: "Product verification declined",
+          message: reason || "Your product verification was declined. You can edit and resubmit.",
+          meta: { entityType: "PRODUCER_PRODUCT", entityId: id, reason: reviewNote },
+          source: "producer",
+          actionUrl: `/producer/products/${id}`,
+          dedupeKey: `producer-product-rejected-${id}`,
+          severity: "warn",
+        });
+      }
+    } catch (notifErr) {
+      console.error("rejectProducerProduct notification error", notifErr?.message || notifErr);
+    }
+    return res.json({ success: true, data: updated });
+  } catch (e) {
+    console.error("rejectProducerProduct error", e);
+    return res.status(500).json({ success: false, message: "Server Error" });
   }
 };
 
