@@ -1,5 +1,8 @@
 const prisma = require("../../../../infrastructure/db/prismaClient");
 const bcrypt = require("bcrypt");
+const featureFlag = require("../../services/governance/featureFlag.service");
+const quota = require("../../services/governance/quota.service");
+const approvalPolicy = require("../../services/governance/approvalPolicy.service");
 const jwt = require("jsonwebtoken");
 const appConfig = require("../../../../config/appConfig");
 const { resolvePermissionsForUser } = require("../../utils/permissions");
@@ -24,13 +27,22 @@ function createError(message: string, statusCode: number, code?: string): AppErr
 
 const VALID_BATCH_STATUSES = ["DRAFT", "APPROVED", "REJECTED", "GENERATED"];
 
+export type SummaryExportFilters = {
+  status?: string[];
+  factoryId?: number;
+  productId?: number;
+  search?: string;
+  createdFrom?: Date;
+  createdTo?: Date;
+  mfgFrom?: Date;
+  mfgTo?: Date;
+};
+
 /**
  * Parse and validate summary export filters from query. Throws createError(..., 400) with code on invalid.
- * @param {{ status?: string, factoryId?: string, productId?: string, search?: string, createdFrom?: string, createdTo?: string, mfgFrom?: string, mfgTo?: string }} raw
- * @returns {{ status?: string[], factoryId?: number, productId?: number, search?: string, createdFrom?: Date, createdTo?: Date, mfgFrom?: Date, mfgTo?: Date }}
  */
-function parseSummaryExportFilters(raw) {
-  const out = {};
+function parseSummaryExportFilters(raw: Record<string, unknown>): SummaryExportFilters {
+  const out: SummaryExportFilters = {};
   if (raw.status != null && String(raw.status).trim() !== "") {
     const list = String(raw.status)
       .split(",")
@@ -66,7 +78,7 @@ function parseSummaryExportFilters(raw) {
     out.search = String(raw.search).trim().slice(0, 200);
   }
   if (raw.createdFrom != null && String(raw.createdFrom).trim() !== "") {
-    const d = new Date(raw.createdFrom);
+    const d = new Date(raw.createdFrom as string);
     if (Number.isNaN(d.getTime())) {
       const e = createError("createdFrom must be a valid ISO date/time", 400);
       (e as any).code = "INVALID_FILTER";
@@ -75,7 +87,7 @@ function parseSummaryExportFilters(raw) {
     out.createdFrom = d;
   }
   if (raw.createdTo != null && String(raw.createdTo).trim() !== "") {
-    const d = new Date(raw.createdTo);
+    const d = new Date(raw.createdTo as string);
     if (Number.isNaN(d.getTime())) {
       const e = createError("createdTo must be a valid ISO date/time", 400);
       (e as any).code = "INVALID_FILTER";
@@ -340,6 +352,60 @@ async function listProducts(producerOrgId) {
   });
 }
 
+/**
+ * Paginated, searchable product list for pickers (e.g. batch creation).
+ * Only returns eligible products when onlyApproved: APPROVED or ACTIVE.
+ * @param {number} producerOrgId
+ * @param {{ q?: string, page?: number, limit?: number, onlyApproved?: boolean, onlyActive?: boolean }} opts
+ * @returns {{ items: Array<{ id, name, sku, isActive, approvalStatus }>, page, limit, total }}
+ */
+async function listProductsPick(producerOrgId, opts = {}) {
+  if (!producerOrgId) return { items: [], page: 1, limit: 20, total: 0 };
+  const page = Math.max(1, Number(opts.page) || 1);
+  const limit = Math.min(50, Math.max(1, Number(opts.limit) || 20));
+  const onlyApproved = opts.onlyApproved !== false;
+  const onlyActive = opts.onlyActive === true;
+  const q = typeof opts.q === "string" ? opts.q.trim() : "";
+
+  const where = { producerOrgId: Number(producerOrgId) };
+  if (onlyApproved) {
+    where.status = onlyActive ? "ACTIVE" : { in: ["APPROVED", "ACTIVE"] };
+  }
+  if (q.length > 0) {
+    const searchClause = {
+      OR: [
+        { productName: { contains: q, mode: "insensitive" } },
+        { sku: { contains: q, mode: "insensitive" } },
+      ],
+    };
+    where.AND = where.AND ? [...where.AND, searchClause] : [searchClause];
+  }
+
+  const [items, total] = await Promise.all([
+    prisma.authProduct.findMany({
+      where,
+      select: { id: true, productName: true, sku: true, status: true, updatedAt: true },
+      orderBy: [{ updatedAt: "desc" }],
+      skip: (page - 1) * limit,
+      take: limit,
+    }),
+    prisma.authProduct.count({ where }),
+  ]);
+
+  return {
+    items: items.map((p) => ({
+      id: p.id,
+      name: p.productName,
+      sku: p.sku,
+      isActive: p.status === "ACTIVE",
+      approvalStatus: p.status,
+    })),
+    page,
+    limit,
+    total,
+  };
+}
+
 async function createProduct(userId, producerOrgId, data) {
   if (!producerOrgId) throw createError("Producer org not found", 404);
   if (!data.productName || !data.sku) {
@@ -413,6 +479,83 @@ async function submitProduct(userId, producerOrgId, id) {
   });
 }
 
+/**
+ * Resubmit product after changes requested or rejection. Only allowed when status is CHANGES_REQUESTED or REJECTED.
+ * Creates a revision snapshot, sets product to SUBMITTED, and upserts ProducerApproval to SUBMITTED.
+ */
+async function resubmitProduct(userId, producerOrgId, productId) {
+  if (!producerOrgId) throw createError("Producer org not found", 404);
+  const product = await prisma.authProduct.findFirst({
+    where: { id: Number(productId), producerOrgId: Number(producerOrgId) },
+    select: { id: true, status: true },
+  });
+  if (!product) throw createError("Product not found", 404);
+  if (product.status !== "CHANGES_REQUESTED" && product.status !== "REJECTED") {
+    throw createError(
+      "Resubmit only allowed when product status is CHANGES_REQUESTED or REJECTED. Current: " + (product.status || "unknown"),
+      400,
+      "INVALID_STATE"
+    );
+  }
+
+  const approvalPolicy = require("../../services/governance/approvalPolicy.service");
+  await approvalPolicy.checkCanSubmit(prisma, producerOrgId, "PRODUCT", product.id, userId);
+
+  const approvalService = require("./producerApproval.service");
+  const productRevision = require("../../services/governance/productRevision.service");
+
+  const approval = await prisma.producerApproval.findFirst({
+    where: {
+      producerOrgId: Number(producerOrgId),
+      entityType: "PRODUCT",
+      entityId: product.id,
+    },
+    select: { id: true },
+  });
+
+  const now = new Date();
+  const result = await prisma.$transaction(async (tx) => {
+    const { revision } = await productRevision.createRevisionSnapshot(tx, {
+      productId: product.id,
+      submittedByUserId: userId,
+      approvalId: approval?.id ?? undefined,
+    });
+    await tx.authProduct.update({
+      where: { id: product.id },
+      data: { status: "SUBMITTED", submittedAt: now },
+    });
+    const slaDeadline = new Date(Date.now() + 48 * 60 * 60 * 1000);
+    const updatedApproval = await tx.producerApproval.upsert({
+      where: {
+        producerOrgId_entityType_entityId: {
+          producerOrgId: Number(producerOrgId),
+          entityType: "PRODUCT",
+          entityId: product.id,
+        },
+      },
+      update: {
+        status: "SUBMITTED",
+        submittedByUserId: userId,
+        reviewedByUserId: null,
+        reviewedAt: null,
+        note: null,
+        slaDeadline,
+      },
+      create: {
+        producerOrgId: Number(producerOrgId),
+        entityType: "PRODUCT",
+        entityId: product.id,
+        status: "SUBMITTED",
+        submittedByUserId: userId,
+        slaDeadline,
+      },
+    });
+    return { product: await tx.authProduct.findUnique({ where: { id: product.id } }), approval: updatedApproval, revision };
+  });
+
+  return result;
+}
+
 async function getProductStatus(producerOrgId, id) {
   if (!producerOrgId) return null;
   return prisma.authProduct.findFirst({
@@ -474,6 +617,8 @@ async function createFactory(producerOrgId, data) {
 
 async function createBatch(userId, producerOrgId, productId, data) {
   if (!producerOrgId) throw createError("Producer org not found", 404);
+  await featureFlag.requireEnabled(prisma, Number(producerOrgId), "producer.batches.enabled");
+  await quota.checkAndIncrement(prisma, Number(producerOrgId), "producer.batches.create.daily", 1);
   const product = await prisma.authProduct.findFirst({
     where: { id: Number(productId), producerOrgId: Number(producerOrgId) },
   });
@@ -717,6 +862,7 @@ const EMAIL_EXPORT_RATE_LIMIT_PER_MINUTE = 5;
  */
 async function allocatePrintBatch(producerOrgId, batchId, userId, body) {
   if (!producerOrgId) throw createError("Producer org not found", 404);
+  await featureFlag.requireEnabled(prisma, Number(producerOrgId), "producer.printing.enabled");
   const batch = await prisma.authBatch.findFirst({
     where: { id: Number(batchId), authProduct: { producerOrgId: Number(producerOrgId) } },
     include: {
@@ -725,6 +871,8 @@ async function allocatePrintBatch(producerOrgId, batchId, userId, body) {
     },
   });
   if (!batch) throw createError("Batch not found", 404);
+  await approvalPolicy.checkBatchApprovedForCodes(prisma, batch.id);
+  await approvalPolicy.checkBatchNotQuarantinedOrFrozen(prisma, batch.id);
 
   const totalCodes = batch._count?.codes ?? batch.qtyGenerated ?? 0;
   if (totalCodes <= 0) throw createError("Batch has no codes to allocate", 400);
@@ -1090,6 +1238,8 @@ async function generateCodes(userId, producerOrgId, batchId, quantity, options =
   if (!batch) {
     throw createError("Batch not found", 404);
   }
+  await approvalPolicy.checkBatchApprovedForCodes(prisma, batch.id);
+  await approvalPolicy.checkBatchNotQuarantinedOrFrozen(prisma, batch.id);
   if (batch.status !== "APPROVED" && batch.status !== "GENERATED") {
     throw createError("Batch is not approved", 403);
   }
@@ -1185,10 +1335,13 @@ async function generateCodes(userId, producerOrgId, batchId, quantity, options =
  */
 async function recordBatchPrint(producerOrgId, batchId, userId, actorType) {
   if (!producerOrgId) throw createError("Producer org not found", 404);
+  await featureFlag.requireEnabled(prisma, Number(producerOrgId), "producer.printing.enabled");
+  await quota.checkAndIncrement(prisma, Number(producerOrgId), "producer.print.daily", 1);
   const batch = await prisma.authBatch.findFirst({
     where: { id: Number(batchId), authProduct: { producerOrgId: Number(producerOrgId) } },
   });
   if (!batch) throw createError("Batch not found", 404);
+  if (batch.frozenAt) throw createError("Batch is frozen by admin.", 403, "BATCH_FROZEN");
   if (batch.status !== "APPROVED" && batch.status !== "GENERATED") {
     throw createError("Batch is not in a printable state. Approve the batch or generate codes first.", 400, "BATCH_NOT_PRINTABLE");
   }
@@ -1239,6 +1392,8 @@ async function exportCodes(producerOrgId, batchId) {
   if (!batch) {
     throw createError("Batch not found", 404);
   }
+  await approvalPolicy.checkBatchApprovedForCodes(prisma, batch.id);
+  await approvalPolicy.checkBatchNotQuarantinedOrFrozen(prisma, batch.id);
   const rows = await prisma.authCode.findMany({ where: { batchId: batch.id } });
   const codes = rows.map((r) => decryptCode(r.codeCipher, r.codeIv, r.codeTag));
   await prisma.authCode.updateMany({
@@ -1258,7 +1413,7 @@ const BATCH_SUMMARY_CSV_HEADERS = [
   "export_version", "source_system", "source_env", "batch_url",
 ];
 
-async function getBatchesSummaryForCsv(producerOrgId, filters = {}) {
+async function getBatchesSummaryForCsv(producerOrgId: number, filters: SummaryExportFilters = {}) {
   if (!producerOrgId) throw createError("Producer org not found", 404);
   const org = await prisma.producerOrg.findUnique({
     where: { id: Number(producerOrgId) },
@@ -1266,7 +1421,7 @@ async function getBatchesSummaryForCsv(producerOrgId, filters = {}) {
   });
   if (!org) throw createError("Producer org not found", 404);
 
-  const andClauses = [
+  const andClauses: Record<string, unknown>[] = [
     {
       authProduct: {
         producerOrgId: Number(producerOrgId),
@@ -1301,7 +1456,7 @@ async function getBatchesSummaryForCsv(producerOrgId, filters = {}) {
   }
 
   const batches = await prisma.authBatch.findMany({
-    where: { AND: andClauses },
+    where: { AND: andClauses as any },
     include: {
       authProduct: {
         include: {
@@ -1359,7 +1514,7 @@ async function getBatchesSummaryForCsv(producerOrgId, filters = {}) {
       compliance_ready: "false",
       export_version: "1.0",
       source_system: "BPA_WPA",
-      source_env,
+      sourceEnv,
       batch_url: batchUrl,
     };
   });
@@ -1541,7 +1696,7 @@ async function getBatchEventsForCsv(producerOrgId, batchId) {
       event_type: (a.action || "EVENT").toUpperCase(),
       event_at: formatIso(a.createdAt),
       actor_user_id: a.actorId ?? "",
-      actor_name: u?.profile?.displayName ?? "",
+      actor_name: (u as { profile?: { displayName?: string } })?.profile?.displayName ?? "",
       actor_role: (a.actorType || "").toUpperCase(),
       field: "",
       old_value: "",
@@ -1569,7 +1724,7 @@ async function verifyCode({ publicCode, ip, country, deviceId, userId }) {
   const codeHash = hmacHash(publicCode);
   const code = await prisma.authCode.findUnique({
     where: { codeHash },
-    include: { batch: { include: { authProduct: true } } },
+    include: { batch: { include: { authProduct: { include: { producerOrg: { select: { id: true, status: true } } } } } } },
   });
   if (!code) {
     await prisma.authVerificationLog.create({
@@ -1582,6 +1737,28 @@ async function verifyCode({ publicCode, ip, country, deviceId, userId }) {
       data: { codeId: code.id, publicCodeMasked: masked, ip, country, deviceId, userId: userId || null, result: "BLOCKED" },
     });
     return { status: "BLOCKED" };
+  }
+  const batch = code.batch;
+  const product = batch?.authProduct;
+  const org = product?.producerOrg;
+  const quarantinedAt = batch?.quarantinedAt ?? null;
+  if (quarantinedAt) {
+    await prisma.authVerificationLog.create({
+      data: { codeId: code.id, publicCodeMasked: masked, ip, country, deviceId, userId: userId || null, result: "BLOCKED" },
+    });
+    return { status: "QUARANTINED", message: "Batch under investigation." };
+  }
+  if (product?.status === "INACTIVE") {
+    await prisma.authVerificationLog.create({
+      data: { codeId: code.id, publicCodeMasked: masked, ip, country, deviceId, userId: userId || null, result: "BLOCKED" },
+    });
+    return { status: "PRODUCT_INACTIVE", message: "Product not available." };
+  }
+  if (org?.status === "SUSPENDED") {
+    await prisma.authVerificationLog.create({
+      data: { codeId: code.id, publicCodeMasked: masked, ip, country, deviceId, userId: userId || null, result: "BLOCKED" },
+    });
+    return { status: "ORG_SUSPENDED", message: "Producer suspended." };
   }
 
   const status = code.verifyCount > 0 ? "ALREADY_VERIFIED" : "GENUINE";
@@ -1859,6 +2036,38 @@ async function removeStaff(producerOrgId, staffId) {
   });
 }
 
+/**
+ * Trust & Safety: return active enforcement holds for producer org (and optionally product/batch).
+ * Used by producer UI to show hold banners.
+ */
+async function getEnforcementHolds(prisma, producerOrgId, opts = {}) {
+  if (!producerOrgId) return { orgHold: null, productHold: null, batchHold: null };
+  const where = {
+    status: "APPLIED",
+    case: { producerOrgId: Number(producerOrgId) },
+  };
+  const actions = await prisma.enforcementAction.findMany({
+    where,
+    include: { case: { select: { caseNo: true } } },
+    orderBy: { appliedAt: "desc" },
+  });
+  let orgHold = null;
+  let productHold = null;
+  let batchHold = null;
+  for (const a of actions) {
+    if (a.targetType === "ORG" && String(a.targetId) === String(producerOrgId)) {
+      if (!orgHold) orgHold = { caseNo: a.case?.caseNo ?? "" };
+    }
+    if (opts.productId != null && a.targetType === "PRODUCT" && String(a.targetId) === String(opts.productId)) {
+      if (!productHold) productHold = { caseNo: a.case?.caseNo ?? "" };
+    }
+    if (opts.batchId != null && a.targetType === "BATCH" && String(a.targetId) === String(opts.batchId)) {
+      if (!batchHold) batchHold = { caseNo: a.case?.caseNo ?? "" };
+    }
+  }
+  return { orgHold, productHold, batchHold };
+}
+
 module.exports = {
   registerProducer,
   loginProducer,
@@ -1866,10 +2075,12 @@ module.exports = {
   getKycStatus,
   getMe,
   listProducts,
+  listProductsPick,
   createProduct,
   getProduct,
   updateProduct,
   submitProduct,
+  resubmitProduct,
   getProductStatus,
   addProductProof,
   listFactories,
@@ -1901,5 +2112,6 @@ module.exports = {
   updateStaffRole,
   updateStaffStatus,
   removeStaff,
+  getEnforcementHolds,
 };
 export {};

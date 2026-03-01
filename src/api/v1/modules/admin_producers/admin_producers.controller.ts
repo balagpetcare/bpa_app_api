@@ -28,7 +28,7 @@ exports.list = async (req: any, res: any) => {
       kycStatus: req.query?.kycStatus ? String(req.query.kycStatus) : undefined,
       search: req.query?.search ? String(req.query.search) : undefined,
       page: toInt(req.query?.page) ?? 1,
-      pageSize: toInt(req.query?.pageSize) ?? 20,
+      pageSize: toInt(req.query?.pageSize) ?? toInt(req.query?.limit) ?? 20,
     };
     const data = await adminProducersService.listProducers(prisma, params);
     return res.json(successEnvelope(data, "Producer organizations fetched", "OK", traceId));
@@ -63,7 +63,7 @@ exports.suspend = async (req: any, res: any) => {
     const userId = req.user?.id ?? null;
     const traceId = getTraceId(req);
     const body = req.body ?? {};
-    const updated = await adminProducersService.suspendProducer(
+    const result = await adminProducersService.suspendProducer(
       prisma,
       orgId,
       userId ?? 0,
@@ -72,8 +72,8 @@ exports.suspend = async (req: any, res: any) => {
       traceId,
       req.ip ?? null
     );
-    if (!updated) return res.status(404).json(errorEnvelope("NOT_FOUND", "Producer organization not found", { orgId }, traceId));
-    return res.json(successEnvelope(updated, "Producer organization suspended", "UPDATED", traceId));
+    if (!result) return res.status(404).json(errorEnvelope("NOT_FOUND", "Producer organization not found", { orgId }, traceId));
+    return res.json(successEnvelope({ ...result.updated, incidentId: result.incidentId }, "Producer organization suspended", "UPDATED", traceId));
   } catch (e: any) {
     const traceId = getTraceId(req);
     return res.status(e?.statusCode ?? 500).json(errorEnvelope(e?.code ?? "ERROR", e?.message ?? "Server error", undefined, traceId));
@@ -88,7 +88,7 @@ exports.unsuspend = async (req: any, res: any) => {
     const userId = req.user?.id ?? null;
     const traceId = getTraceId(req);
     const body = req.body ?? {};
-    const updated = await adminProducersService.unsuspendProducer(
+    const result = await adminProducersService.unsuspendProducer(
       prisma,
       orgId,
       userId ?? 0,
@@ -97,8 +97,8 @@ exports.unsuspend = async (req: any, res: any) => {
       traceId,
       req.ip ?? null
     );
-    if (!updated) return res.status(404).json(errorEnvelope("NOT_FOUND", "Producer organization not found", { orgId }, traceId));
-    return res.json(successEnvelope(updated, "Producer organization unsuspended", "UPDATED", traceId));
+    if (!result) return res.status(404).json(errorEnvelope("NOT_FOUND", "Producer organization not found", { orgId }, traceId));
+    return res.json(successEnvelope({ ...result.updated, incidentId: result.incidentId }, "Producer organization unsuspended", "UPDATED", traceId));
   } catch (e: any) {
     const traceId = getTraceId(req);
     return res.status(e?.statusCode ?? 500).json(errorEnvelope(e?.code ?? "ERROR", e?.message ?? "Server error", undefined, traceId));
@@ -280,3 +280,5 @@ exports.getStaff = async (req: any, res: any) => {
     return res.status(e?.statusCode ?? 500).json(errorEnvelope(e?.code ?? "ERROR", e?.message ?? "Server error", undefined, traceId));
   }
 };
+
+export {};

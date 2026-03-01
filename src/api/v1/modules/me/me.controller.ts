@@ -117,12 +117,30 @@ export async function getMe(req: Request, res: Response, next: NextFunction) {
       // keep branchAccess [] if resolver fails
     }
 
+    let roles: string[] = [];
+    let permissions: string[] = Array.isArray((req as any)?.user?.permissions)
+      ? (req as any).user.permissions.map((p: unknown) => String(p))
+      : [];
+    try {
+      const countryCode = (req as any).countryContext?.countryCode as string | undefined;
+      const stateId = (req as any).countryContext?.state?.stateId as number | undefined;
+      const effective = await getEffectivePermissions(prisma, userId, countryCode, stateId);
+      roles = (effective.roles || []).map((r) => String(r.key)).filter(Boolean);
+      if (permissions.length === 0) {
+        permissions = (effective.permissions || []).map((p) => String(p.key)).filter(Boolean);
+      }
+    } catch {
+      // keep fallback from req.user.permissions
+    }
+
     return res.json({
       success: true,
       data: {
         user,
         orgMembers: normalizedOrgMembers,
         branchAccess,
+        roles,
+        permissions,
       },
     });
   } catch (err) {

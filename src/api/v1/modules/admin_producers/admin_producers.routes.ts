@@ -14,13 +14,14 @@ const ctrl = require("./admin_producers.controller");
 
 const read = requirePermission("admin.producers.read", "admin.audit.read");
 const write = requirePermission("admin.producers.write");
+const enforcementSuspend = requirePermission("admin.governance.enforcement.suspend");
 
 router.use(governanceTrace);
 
 router.get("/", authenticateToken, requireAdmin, read, ctrl.list);
 router.get("/:orgId", authenticateToken, requireAdmin, read, ctrl.getOne);
-router.post("/:orgId/suspend", governanceMutationLimiter, authenticateToken, requireAdmin, write, ctrl.suspend);
-router.post("/:orgId/unsuspend", governanceMutationLimiter, authenticateToken, requireAdmin, write, ctrl.unsuspend);
+router.post("/:orgId/suspend", governanceMutationLimiter, authenticateToken, requireAdmin, enforcementSuspend, ctrl.suspend);
+router.post("/:orgId/unsuspend", governanceMutationLimiter, authenticateToken, requireAdmin, enforcementSuspend, ctrl.unsuspend);
 router.get("/:orgId/staff", authenticateToken, requireAdmin, read, ctrl.getStaff);
 router.get("/:orgId/flags", authenticateToken, requireAdmin, read, ctrl.getFlags);
 router.put("/:orgId/flags", governanceMutationLimiter, authenticateToken, requireAdmin, write, ctrl.putFlags);

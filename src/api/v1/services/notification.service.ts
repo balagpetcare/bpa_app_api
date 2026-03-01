@@ -22,6 +22,7 @@ export type CreateNotificationInput = {
   severity?: "info" | "warn" | "error" | "success" | null;
   source?: string | null; // module: auth|clinic|order|producer|wallet|branch_access|etc.
   senderId?: number | null;
+  panel?: string | null; // e.g. "staff" for dispatch notifications
 };
 
 /**

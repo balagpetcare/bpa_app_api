@@ -20,9 +20,30 @@ router.use(
   require("./modules/admin_super_admin_whitelist/admin_super_admin_whitelist.routes")
 );
 router.use("/admin/verifications", require("./modules/admin_verifications/admin_verifications.routes"));
+router.use("/admin/producers", require("./modules/admin_producers/admin_producers.routes"));
+router.use("/admin/approvals", require("./modules/admin_approvals/admin_approvals.routes"));
+// Governance-related admin modules with 503 fallback if load fails
+function mountWith503(path: string, modulePath: string) {
+  try {
+    router.use(path, require(modulePath));
+  } catch (err) {
+    console.error(`[routes] ${path} failed to load:`, err);
+    router.use(path, (_req: any, res: any) =>
+      res.status(503).json({ success: false, message: `${path} not loaded; check server logs and restart API.` }));
+  }
+}
+mountWith503("/admin/batches", "./modules/admin_batches/admin_batches.routes");
+mountWith503("/admin/governance", "./modules/admin_governance/admin_governance.routes");
+mountWith503("/admin/incidents", "./modules/admin_incidents/admin_incidents.routes");
+mountWith503("/admin/enforcement", "./modules/admin_enforcement/admin_enforcement.routes");
+router.use("/admin/support/tickets", require("./modules/admin_support/admin_support.routes"));
 router.use("/admin/verification-metrics", require("./modules/admin_verification_metrics/admin_verification_metrics.routes"));
 // Admin dashboard widgets (counts, queues)
 router.use("/admin/dashboard", require("./modules/admin_dashboard/admin_dashboard.routes"));
+// Admin producer system overview (KPIs, trends, top producers, alerts)
+router.use("/admin/producer-overview", require("./modules/admin_producer_overview/adminProducerOverview.routes"));
+// Admin code lookup (trace code -> batch -> product -> org, verification history, block/unblock)
+router.use("/admin/code-lookup", require("./modules/admin_code_lookup/adminCodeLookup.routes"));
 // V1 universal verification workflow (non-breaking, new endpoints)
 router.use("/admin/verification-cases", require("./modules/admin_verification_cases/admin_verification_cases.routes"));
 router.use("/admin/organizations", require("./modules/admin_organizations/admin_organizations.routes"));
@@ -119,12 +140,15 @@ router.use("/batches", countryScopeGuard, require("./modules/batches/batches.rou
 router.use("/serials", countryScopeGuard, require("./modules/serials/serials.routes"));
 router.use("/factories", countryScopeGuard, require("./modules/factories/factories.routes"));
 
-// Producer/Auth system (separate)
+// Producer/Auth system (separate) – dashboard before /producer so /producer/dashboard/* is matched
+router.use("/producer/dashboard", require("./modules/producer_dashboard/producerDashboard.routes"));
 router.use("/producer", require("./modules/producer/producer.routes"));
+router.use("/producer/tickets", require("./modules/producer_tickets/producer_tickets.routes"));
 // Producer-print alias: same issuance download at /api/v1/producer-print/issuances/:issuanceId/download
 router.use("/producer-print", producerPrintAliasRouter);
 // TEMP: remove after verification
 router.get("/__route_probe/producer-print", (_req: any, res: any) => res.json({ ok: true }));
+router.get("/__route_probe/admin-governance-products", (_req: any, res: any) => res.status(200).json({ ok: true }));
 
 // Inventory (MVP Core Feature)
 router.use("/inventory", countryScopeGuard, require("./modules/inventory/inventory.routes"));

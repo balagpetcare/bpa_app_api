@@ -447,6 +447,8 @@ model User {
   batchSerialAllocationLogs         BatchSerialAllocationLog[] @relation("BatchSerialAllocationAllocatedBy")
   batchSerialAllocationLogsRevoked  BatchSerialAllocationLog[] @relation("BatchSerialAllocationRevokedBy")
   producerEmailRecipientsCreated    ProducerEmailRecipient[]   @relation("ProducerEmailRecipientCreatedBy")
+  orgFeatureFlagsUpdated    OrgFeatureFlag[]            @relation("OrgFeatureFlagUpdatedBy")
+  orgQuotasUpdated          OrgQuota[]                  @relation("OrgQuotaUpdatedBy")
   returnRequestsApproved    ReturnRequest[]             @relation("ReturnApprovedBy")
 
   // === Multi-Branch Staff Permission System ===
@@ -482,6 +484,13 @@ model User {
   workspaceAlertsAcknowledged WorkspaceAlert[]
   workspaceApprovalRequestsRequested WorkspaceApprovalRequest[] @relation("WorkspaceApprovalRequester")
   workspaceApprovalRequestsDecidedBy WorkspaceApprovalRequest[] @relation("WorkspaceApprovalDecidedBy")
+
+  // Support tickets
+  supportTicketsCreated   SupportTicket[]  @relation("SupportTicketCreatedBy")
+  supportTicketsAssigned  SupportTicket[]  @relation("SupportTicketAssignedTo")
+  ticketMessagesSent      TicketMessage[]
+  ticketAttachmentsUploaded TicketAttachment[]
+  ticketAuditEventsActed  TicketAuditEvent[]
 
   // Location: user's saved place (lat/lng-first; optional)
   currentPlaceId Int?
@@ -1019,6 +1028,18 @@ enum NotificationType {
   CLINIC_APPOINTMENT
   CLINIC_PRESCRIPTION
   BATCH_SUSPICIOUS_ACTIVITY
+  PRODUCT_APPROVED
+  PRODUCT_REJECTED
+  ENFORCEMENT_CODE_BLOCKED
+  ENFORCEMENT_BATCH_QUARANTINED
+  ENFORCEMENT_PRODUCT_DEACTIVATED
+  ENFORCEMENT_ORG_SUSPENDED
+  ENFORCEMENT_ACTION_REVERTED
+  TICKET_CREATED
+  TICKET_REPLIED
+  TICKET_STATUS_CHANGED
+  TICKET_ASSIGNED
+  TICKET_SLA_BREACH
 }
 
 enum NotificationPriority {
@@ -4987,17 +5008,25 @@ enum AuthProductStatus {
   DRAFT
   SUBMITTED
   UNDER_REVIEW
+  CHANGES_REQUESTED
   APPROVED
   REJECTED
   ACTIVE
   INACTIVE
+  ARCHIVED
 }
 
 enum AuthBatchStatus {
   DRAFT
+  SUBMITTED
+  UNDER_REVIEW
   APPROVED
   REJECTED
   GENERATED
+  CODES_ALLOCATED
+  PRINTED
+  VOIDED
+  ARCHIVED
 }
 
 enum AuthCodeStatus {
@@ -5035,9 +5064,240 @@ model ProducerOrg {
   auditLogs  ProducerAuditLog[]
   approvals  ProducerApproval[]
   printEmailRecipients ProducerEmailRecipient[]
+  featureFlags     OrgFeatureFlag[]
+  quotas           OrgQuota[]
+  governanceIncidents GovernanceIncident[]
+  complaintCases       ComplaintCase[]
+  supportTickets       SupportTicket[]
 
   @@index([ownerUserId])
   @@map("producer_orgs")
+}
+
+// Governance incidents (Phase 4: enforcement audit trail)
+model GovernanceIncident {
+  id                Int       @id @default(autoincrement())
+  entityType        String    @db.VarChar(64)
+  entityId          Int
+  producerOrgId     Int
+  incidentType     String    @db.VarChar(64)
+  severity         String    @db.VarChar(16)
+  actionTaken      String    @db.VarChar(64)
+  reason           String    @db.Text
+  ticketId         String?   @db.VarChar(128)
+  createdByUserId  Int
+  resolvedAt       DateTime?
+  resolvedByUserId Int?
+  resolutionNote   String?   @db.Text
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  producerOrg ProducerOrg @relation(fields: [producerOrgId], references: [id], onDelete: Cascade)
+
+  @@index([producerOrgId])
+  @@index([entityType, entityId])
+  @@index([incidentType])
+  @@map("governance_incidents")
+}
+
+// Trust & Safety / Enforcement: case-centric complaint and enforcement
+model ComplaintCase {
+  id               Int       @id @default(autoincrement())
+  caseNo           String    @unique @db.VarChar(32)
+  source           String    @db.VarChar(32)   // CONSUMER | ADMIN | PARTNER | AUTO
+  entityType       String    @db.VarChar(32)   // CODE | BATCH | PRODUCT | ORG
+  entityId         String    @db.VarChar(128)
+  producerOrgId    Int
+  status           String    @db.VarChar(32)   @default("OPEN")
+  severity         String    @db.VarChar(16)   @default("MEDIUM")
+  summary          String    @db.VarChar(256)
+  details          String?   @db.Text
+  assignedToUserId Int?
+  resolvedAt       DateTime?
+  resolvedByUserId Int?
+  resolutionNote   String?   @db.Text
+  createdByUserId  Int
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  producerOrg ProducerOrg        @relation(fields: [producerOrgId], references: [id])
+  evidence    CaseEvidence[]
+  actions     EnforcementAction[]
+  escalatedTickets SupportTicket[] @relation("TicketEscalatedToCase")
+
+  @@index([producerOrgId])
+  @@index([entityType, entityId])
+  @@index([status])
+  @@index([severity])
+  @@index([caseNo])
+  @@map("complaint_cases")
+}
+
+model CaseEvidence {
+  id              Int      @id @default(autoincrement())
+  caseId          Int
+  type            String   @db.VarChar(16)
+  url             String?  @db.Text
+  note            String?  @db.Text
+  createdByUserId Int
+  createdAt       DateTime @default(now())
+
+  case ComplaintCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId])
+  @@map("case_evidence")
+}
+
+model EnforcementAction {
+  id               Int       @id @default(autoincrement())
+  caseId           Int
+  targetType       String    @db.VarChar(32)
+  targetId         String    @db.VarChar(128)
+  actionType       String    @db.VarChar(64)
+  reason           String    @db.Text
+  meta             Json?
+  status           String    @db.VarChar(16)   @default("APPLIED")
+  appliedByUserId  Int
+  appliedAt        DateTime  @default(now())
+  revertedByUserId Int?
+  revertedAt       DateTime?
+  revertNote       String?   @db.Text
+
+  case ComplaintCase @relation(fields: [caseId], references: [id])
+
+  @@index([caseId])
+  @@index([targetType, targetId])
+  @@index([actionType])
+  @@map("enforcement_actions")
+}
+
+// Support ticketing (Phase 1 MVP)
+enum TicketCategory {
+  BATCH_CODE
+  PRODUCT_GOVERNANCE
+  ACCOUNT_KYC
+  PAYMENT
+  TECHNICAL
+  FRAUD_ABUSE
+  OTHER
+}
+
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  WAITING_ON_PRODUCER
+  RESOLVED
+  CLOSED
+  ESCALATED
+}
+
+enum TicketMessageSenderType {
+  PRODUCER
+  ADMIN
+  SYSTEM
+}
+
+enum TicketAuditEventType {
+  STATUS_CHANGED
+  ASSIGNED
+  PRIORITY_CHANGED
+  CATEGORY_CHANGED
+  ESCALATED
+  CLOSED
+  REOPENED
+}
+
+model SupportTicket {
+  id                 Int       @id @default(autoincrement())
+  ticketNo           String    @unique @db.VarChar(32)
+  producerOrgId      Int
+  createdByUserId    Int
+  category           TicketCategory
+  priority           TicketPriority
+  subject            String    @db.VarChar(512)
+  description        String    @db.Text
+  status             TicketStatus @default(OPEN)
+  assignedToUserId   Int?
+  relatedEntityType  String?   @db.VarChar(32)
+  relatedEntityId    String?   @db.VarChar(128)
+  consentToViewData  Boolean   @default(false)
+  slaBreachedAt      DateTime?
+  escalatedCaseId   Int?
+  closedAt           DateTime?
+  resolvedAt        DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  producerOrg   ProducerOrg   @relation(fields: [producerOrgId], references: [id], onDelete: Cascade)
+  createdBy     User          @relation("SupportTicketCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  assignedTo    User?         @relation("SupportTicketAssignedTo", fields: [assignedToUserId], references: [id], onDelete: SetNull)
+  escalatedCase ComplaintCase? @relation("TicketEscalatedToCase", fields: [escalatedCaseId], references: [id], onDelete: SetNull)
+  messages      TicketMessage[]
+  auditEvents   TicketAuditEvent[]
+
+  @@index([producerOrgId])
+  @@index([status, priority])
+  @@index([ticketNo])
+  @@index([relatedEntityType, relatedEntityId])
+  @@index([assignedToUserId])
+  @@map("support_tickets")
+}
+
+model TicketMessage {
+  id          Int       @id @default(autoincrement())
+  ticketId    Int
+  senderType  TicketMessageSenderType
+  senderUserId Int?
+  message     String    @db.Text
+  isInternal  Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+
+  ticket      SupportTicket    @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  sender      User?            @relation(fields: [senderUserId], references: [id], onDelete: SetNull)
+  attachments TicketAttachment[]
+
+  @@index([ticketId])
+  @@map("ticket_messages")
+}
+
+model TicketAttachment {
+  id             Int      @id @default(autoincrement())
+  ticketMessageId Int
+  fileKey        String   @db.VarChar(512)
+  fileName       String   @db.VarChar(255)
+  mimeType       String?  @db.VarChar(128)
+  fileSize       Int?
+  uploadedByUserId Int?
+  createdAt      DateTime @default(now())
+
+  ticketMessage TicketMessage @relation(fields: [ticketMessageId], references: [id], onDelete: Cascade)
+  uploadedBy    User?          @relation(fields: [uploadedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([ticketMessageId])
+  @@map("ticket_attachments")
+}
+
+model TicketAuditEvent {
+  id         Int       @id @default(autoincrement())
+  ticketId   Int
+  eventType  TicketAuditEventType
+  meta       Json?
+  actorUserId Int?
+  createdAt  DateTime  @default(now())
+
+  ticket SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  actor  User?         @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([ticketId])
+  @@index([actorUserId])
+  @@map("ticket_audit_events")
 }
 
 // Saved email recipients for Producer Print (Email CSV export)
@@ -5200,6 +5460,7 @@ model ProducerAuditLog {
   producerOrg ProducerOrg @relation(fields: [producerOrgId], references: [id], onDelete: Cascade)
 
   @@index([producerOrgId])
+  @@index([producerOrgId, action, createdAt])
   @@index([actorId])
   @@index([createdAt])
   @@map("producer_audit_logs")
@@ -5224,8 +5485,15 @@ model ProducerApproval {
   status          ProducerApprovalStatus   @default(SUBMITTED)
   submittedByUserId Int
   reviewedByUserId  Int?
+  assignedToUserId  Int?
+  assignedAt        DateTime?
+  slaDeadline       DateTime?
+  stage             String?                @db.VarChar(32)
   note            String?                  @db.Text
   reviewedAt      DateTime?
+  overrideNote    String?                  @db.Text  // Phase 3: compliance override note
+  overrideAt      DateTime?
+  overrideByUserId Int?
   createdAt       DateTime                 @default(now())
   updatedAt       DateTime                 @updatedAt
 
@@ -5234,7 +5502,76 @@ model ProducerApproval {
   @@unique([producerOrgId, entityType, entityId], map: "producer_approvals_unique_entity")
   @@index([producerOrgId, status])
   @@index([producerOrgId, entityType])
+  @@index([assignedToUserId])
+  @@index([slaDeadline])
+  @@index([stage])
   @@map("producer_approvals")
+}
+
+// Producer Governance (Phase 1): audit, feature flags, quotas
+enum OrgQuotaResetPeriod {
+  DAILY
+  MONTHLY
+}
+
+model AuditEvent {
+  id         Int      @id @default(autoincrement())
+  actorUserId Int?
+  actorRole  String   @db.VarChar(64)
+  actionKey  String   @db.VarChar(128)
+  entityType String   @db.VarChar(64)
+  entityId   String?  @db.VarChar(128)
+  orgId      Int?
+  metadata   Json?
+  traceId    String?  @db.VarChar(128)
+  ip         String?  @db.VarChar(64)
+  createdAt  DateTime @default(now())
+
+  @@index([orgId, createdAt])
+  @@index([entityType, entityId])
+  @@index([actorUserId, createdAt])
+  @@index([actionKey, createdAt])
+  @@index([traceId])
+  @@map("audit_events")
+}
+
+model OrgFeatureFlag {
+  id              Int      @id @default(autoincrement())
+  producerOrgId   Int
+  key             String   @db.VarChar(128)
+  enabled         Boolean  @default(true)
+  updatedByUserId Int?
+  updatedAt       DateTime @updatedAt
+  createdAt       DateTime @default(now())
+
+  producerOrg ProducerOrg @relation(fields: [producerOrgId], references: [id], onDelete: Cascade)
+  updatedBy   User?        @relation("OrgFeatureFlagUpdatedBy", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([producerOrgId, key], map: "org_feature_flags_org_key_unique")
+  @@index([producerOrgId])
+  @@index([key])
+  @@map("org_feature_flags")
+}
+
+model OrgQuota {
+  id              Int                 @id @default(autoincrement())
+  producerOrgId   Int
+  key             String              @db.VarChar(128)
+  limit           Int
+  used            Int                 @default(0)
+  resetPeriod     OrgQuotaResetPeriod  @default(DAILY)
+  updatedByUserId Int?
+  updatedAt       DateTime            @updatedAt
+  createdAt       DateTime            @default(now())
+
+  producerOrg ProducerOrg @relation(fields: [producerOrgId], references: [id], onDelete: Cascade)
+  updatedBy   User?        @relation("OrgQuotaUpdatedBy", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([producerOrgId, key], map: "org_quotas_org_key_unique")
+  @@index([producerOrgId])
+  @@index([key])
+  @@index([resetPeriod])
+  @@map("org_quotas")
 }
 
 model AuthProduct {
@@ -5263,12 +5600,30 @@ model AuthProduct {
   createdBy   User?            @relation("AuthProductCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   batches     AuthBatch[]
   proofs      AuthProductProof[]
+  revisions   ProductRevision[]
 
   @@unique([producerOrgId, sku])
   @@index([producerOrgId])
   @@index([factoryId])
   @@index([status])
   @@map("auth_products")
+}
+
+model ProductRevision {
+  id                Int       @id @default(autoincrement())
+  authProductId     Int
+  revisionNumber    Int
+  snapshotJson      Json
+  submittedByUserId Int
+  approvalId        Int?
+  createdAt         DateTime  @default(now())
+
+  authProduct AuthProduct @relation(fields: [authProductId], references: [id], onDelete: Cascade)
+
+  @@unique([authProductId, revisionNumber])
+  @@index([authProductId])
+  @@index([approvalId])
+  @@map("product_revisions")
 }
 
 // Proof pack and fingerprints for verification & anti-copy
@@ -5292,27 +5647,36 @@ model AuthProductProof {
 }
 
 model AuthBatch {
-  id              Int             @id @default(autoincrement())
-  authProductId   Int
-  batchNo         String
-  mfgDate         DateTime?
-  expDate         DateTime?
-  qtyPlanned      Int
-  qtyGenerated    Int             @default(0)
-  status          AuthBatchStatus @default(DRAFT)
-  createdByUserId Int?
-  printedAt       DateTime?
-  printedByUserId Int?
-  printCount      Int             @default(0)
-  createdAt       DateTime        @default(now())
-  updatedAt       DateTime        @updatedAt
+  id                Int             @id @default(autoincrement())
+  authProductId     Int
+  batchNo           String
+  mfgDate           DateTime?
+  expDate           DateTime?
+  qtyPlanned        Int
+  qtyGenerated      Int             @default(0)
+  status            AuthBatchStatus @default(DRAFT)
+  createdByUserId   Int?
+  submittedAt       DateTime?
+  reviewedAt        DateTime?
+  reviewedByAdminId Int?
+  reviewNotes       String?         @db.Text
+  voidedAt          DateTime?
+  voidedByUserId    Int?
+  voidReason        String?         @db.Text
+  frozenAt          DateTime?      // Phase 4: block print/export when set
+  quarantinedAt     DateTime?      // Trust & Safety: block verifications when set
+  printedAt         DateTime?
+  printedByUserId   Int?
+  printCount        Int             @default(0)
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
 
-  authProduct    AuthProduct              @relation(fields: [authProductId], references: [id], onDelete: Cascade)
-  createdBy      User?                    @relation("AuthBatchCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
-  printedBy      User?                    @relation("AuthBatchPrintedBy", fields: [printedByUserId], references: [id], onDelete: SetNull)
-  codes          AuthCode[]
-  serialState    BatchSerialState?
-  allocationLogs BatchSerialAllocationLog[]
+  authProduct       AuthProduct              @relation(fields: [authProductId], references: [id], onDelete: Cascade)
+  createdBy         User?                    @relation("AuthBatchCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  printedBy         User?                    @relation("AuthBatchPrintedBy", fields: [printedByUserId], references: [id], onDelete: SetNull)
+  codes             AuthCode[]
+  serialState       BatchSerialState?
+  allocationLogs    BatchSerialAllocationLog[]
 
   @@index([authProductId])
   @@index([status])

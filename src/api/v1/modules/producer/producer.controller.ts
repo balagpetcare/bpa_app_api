@@ -104,6 +104,21 @@ exports.me = async (req, res) => {
   }
 };
 
+/** Trust & Safety: active enforcement holds for current org (and optional productId/batchId). */
+exports.getEnforcementHolds = async (req, res) => {
+  try {
+    const producerOrgId = req.producerOrgId;
+    if (!producerOrgId) return res.status(200).json({ success: true, data: { orgHold: null, productHold: null, batchHold: null } });
+    const prisma = require("../../../../infrastructure/db/prismaClient");
+    const productId = req.query?.productId != null ? Number(req.query.productId) : undefined;
+    const batchId = req.query?.batchId != null ? Number(req.query.batchId) : undefined;
+    const data = await service.getEnforcementHolds(prisma, producerOrgId, { productId, batchId });
+    return res.status(200).json({ success: true, data });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e?.message || "Failed to load holds" });
+  }
+};
+
 /** Legacy KYC submit (docsJson only). @deprecated Use VerificationCase flow: POST /kyc/documents + POST /kyc/submit */
 exports.submitKyc = async (req, res) => {
   try {
@@ -157,6 +172,22 @@ exports.listProducts = async (req, res) => {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
     const data = await service.listProducts(req.producerOrgId);
+    return res.status(200).json({ success: true, data });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e?.message || "Failed to list products" });
+  }
+};
+
+/** GET /products/pick — search + pagination for product picker (batch creation). Query: q, page, limit, onlyApproved, onlyActive. */
+exports.listProductsPick = async (req, res) => {
+  try {
+    if (!req.user?.id) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const q = req.query.q != null ? String(req.query.q) : "";
+    const page = req.query.page != null ? Math.max(1, parseInt(String(req.query.page), 10) || 1) : 1;
+    const limit = req.query.limit != null ? Math.min(50, Math.max(1, parseInt(String(req.query.limit), 10) || 20)) : 20;
+    const onlyApproved = req.query.onlyApproved !== "false";
+    const onlyActive = req.query.onlyActive === "true";
+    const data = await service.listProductsPick(req.producerOrgId, { q, page, limit, onlyApproved, onlyActive });
     return res.status(200).json({ success: true, data });
   } catch (e) {
     return res.status(500).json({ success: false, message: e?.message || "Failed to list products" });
@@ -266,6 +297,34 @@ exports.submitProduct = async (req, res) => {
   } catch (e: any) {
     const status = e?.statusCode || 500;
     const payload: { success: false; message: string; code?: string } = { success: false, message: e?.message || "Submit failed" };
+    if (e?.code) payload.code = e.code;
+    return res.status(status).json(payload);
+  }
+};
+
+exports.resubmitProduct = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const producerOrgId = req.producerOrgId;
+    const productId = req.params.id;
+    const result = await service.resubmitProduct(userId, producerOrgId, productId);
+    void writeProducerAudit({
+      producerOrgId,
+      actorType: "STAFF",
+      actorId: userId,
+      action: "PRODUCT_RESUBMITTED",
+      entityType: "AUTH_PRODUCT",
+      entityId: String(result.product.id),
+    });
+    return res.status(200).json({
+      success: true,
+      data: { product: result.product, approval: result.approval, revision: result.revision },
+      message: "Product resubmitted for approval",
+    });
+  } catch (e: any) {
+    const status = e?.statusCode || 500;
+    const payload: { success: false; message: string; code?: string } = { success: false, message: e?.message || "Resubmit failed" };
     if (e?.code) payload.code = e.code;
     return res.status(status).json(payload);
   }
@@ -514,7 +573,7 @@ exports.revokePrintAllocation = async (req, res) => {
     return res.status(200).json({ success: true, data });
   } catch (e) {
     const status = e?.statusCode || 500;
-    const body = { success: false, message: e?.message || "Revoke failed" };
+    const body: { success: boolean; message: any; code?: string } = { success: false, message: e?.message || "Revoke failed" };
     if (e?.code) body.code = e.code;
     return res.status(status).json(body);
   }
@@ -569,7 +628,7 @@ exports.markBatchPrinted = async (req, res) => {
     return res.status(200).json({ success: true, data });
   } catch (e) {
     const status = e?.statusCode || 500;
-    const body = { success: false, message: e?.message || "Failed to mark batch as printed" };
+    const body: { success: boolean; message: any; code?: string } = { success: false, message: e?.message || "Failed to mark batch as printed" };
     if (e?.code) body.code = e.code;
     return res.status(status).json(body);
   }
@@ -629,7 +688,7 @@ exports.exportSummaryCsv = async (req, res) => {
   } catch (e) {
     const status = e?.statusCode || 500;
     const code = e?.code || null;
-    const body = { success: false, message: e?.message || "Failed to export summary CSV" };
+    const body: { success: boolean; message: any; code?: string } = { success: false, message: e?.message || "Failed to export summary CSV" };
     if (code) body.code = code;
     return res.status(status).json(body);
   }
@@ -1144,10 +1203,12 @@ module.exports = {
   submitKycLegacyOrNew: exports.submitKycLegacyOrNew,
   kycStatus: exports.kycStatus,
   listProducts: exports.listProducts,
+  listProductsPick: exports.listProductsPick,
   createProduct: exports.createProduct,
   getProduct: exports.getProduct,
   updateProduct: exports.updateProduct,
   submitProduct: exports.submitProduct,
+  resubmitProduct: exports.resubmitProduct,
   getProductStatus: exports.getProductStatus,
   addProductProof: exports.addProductProof,
   listFactories: exports.listFactories,
@@ -1185,6 +1246,7 @@ module.exports = {
   acceptStaffInvitePublic: exports.acceptStaffInvitePublic,
   declineStaffInvite: exports.declineStaffInvite,
   getPendingInvites: exports.getPendingInvites,
+  getEnforcementHolds: exports.getEnforcementHolds,
   listAuditLogs: exports.listAuditLogs,
   listApprovals: exports.listApprovals,
   approveApproval: exports.approveApproval,

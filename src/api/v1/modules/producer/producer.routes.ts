@@ -28,6 +28,7 @@ router.post("/print/batches/:batchId/allocations/:allocationId/revoke", auth, re
 
 // KYC + me (auth required)
 router.get("/me", auth, requireProducerPermission(["producer.org.read"]), ctrl.me);
+router.get("/enforcement-holds", auth, requireProducerPermission(["producer.org.read"]), ctrl.getEnforcementHolds);
 // Pending staff invites for any logged-in user (invitee may not be producer yet)
 router.get("/me/pending-invites", auth, ctrl.getPendingInvites);
 // New KYC (VerificationCase + documents)
@@ -41,13 +42,15 @@ router.get("/kyc/status/legacy", auth, requireProducerPermission(["producer.kyc.
 router.get("/factories", auth, requireProducerPermission(["producer.products.read"]), ctrl.listFactories);
 router.post("/factories", auth, requireProducerPermission(["producer.products.write"]), ctrl.createFactory);
 
-// Products (permission-based)
+// Products (permission-based); pick must be before :id
+router.get("/products/pick", auth, requireProducerPermission(["producer.products.read"]), ctrl.listProductsPick);
 router.get("/products", auth, requireProducerPermission(["producer.products.read"]), ctrl.listProducts);
 router.post("/products", auth, requireProducerPermission(["producer.products.write"]), ctrl.createProduct);
 router.get("/products/:id", auth, requireProducerPermission(["producer.products.read"]), ctrl.getProduct);
 router.get("/products/:id/status", auth, requireProducerPermission(["producer.products.read"]), ctrl.getProductStatus);
 router.patch("/products/:id", auth, requireProducerPermission(["producer.products.write"]), ctrl.updateProduct);
 router.post("/products/:id/submit", auth, requireProducerPermission(["producer.products.write"]), ctrl.submitProduct);
+router.post("/products/:id/resubmit", auth, requireProducerPermission(["producer.products.write"]), ctrl.resubmitProduct);
 router.post("/products/:id/proofs", auth, requireProducerPermission(["producer.products.write"]), upload.single("file"), ctrl.addProductProof);
 router.post("/products/:id/batches", auth, requireProducerPermission(["producer.batches.write"]), ctrl.createBatch);
 

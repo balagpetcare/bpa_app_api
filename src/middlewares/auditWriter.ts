@@ -35,5 +35,4 @@ async function writeAudit({ prisma, req, action, entityType, entityId, before, a
 }
 
 module.exports = { writeAudit };
-
-export {};
+export { writeAudit };

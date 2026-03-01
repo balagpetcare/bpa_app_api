@@ -34,13 +34,18 @@ async function listApprovals(producerOrgId, params: any = {}) {
   return items;
 }
 
+const approvalPolicy = require("../../services/governance/approvalPolicy.service");
+
 async function submitProductForApproval(producerOrgId, productId, submittedByUserId) {
+  await approvalPolicy.checkCanSubmit(prisma, producerOrgId, "PRODUCT", Number(productId), submittedByUserId);
   const product = await prisma.authProduct.findFirst({
     where: { id: Number(productId), producerOrgId },
     select: { id: true },
   });
   if (!product) throw createError("Product not found", 404);
 
+  const slaHours = 48;
+  const slaDeadline = new Date(Date.now() + slaHours * 60 * 60 * 1000);
   const approval = await prisma.producerApproval.upsert({
     where: { producerOrgId_entityType_entityId: { producerOrgId, entityType: "PRODUCT", entityId: product.id } },
     update: {
@@ -49,6 +54,7 @@ async function submitProductForApproval(producerOrgId, productId, submittedByUse
       reviewedByUserId: null,
       reviewedAt: null,
       note: null,
+      slaDeadline,
     },
     create: {
       producerOrgId,
@@ -56,6 +62,7 @@ async function submitProductForApproval(producerOrgId, productId, submittedByUse
       entityId: product.id,
       status: "SUBMITTED",
       submittedByUserId,
+      slaDeadline,
     },
   });
 
@@ -63,28 +70,40 @@ async function submitProductForApproval(producerOrgId, productId, submittedByUse
 }
 
 async function submitBatchForApproval(producerOrgId, batchId, submittedByUserId) {
+  await approvalPolicy.checkCanSubmit(prisma, producerOrgId, "BATCH", Number(batchId), submittedByUserId);
   const batch = await prisma.authBatch.findFirst({
     where: { id: Number(batchId), authProduct: { producerOrgId } },
     select: { id: true },
   });
   if (!batch) throw createError("Batch not found", 404);
 
-  const approval = await prisma.producerApproval.upsert({
-    where: { producerOrgId_entityType_entityId: { producerOrgId, entityType: "BATCH", entityId: batch.id } },
-    update: {
-      status: "SUBMITTED",
-      submittedByUserId,
-      reviewedByUserId: null,
-      reviewedAt: null,
-      note: null,
-    },
-    create: {
-      producerOrgId,
-      entityType: "BATCH",
-      entityId: batch.id,
-      status: "SUBMITTED",
-      submittedByUserId,
-    },
+  const now = new Date();
+  const approval = await prisma.$transaction(async (tx) => {
+    await tx.authBatch.update({
+      where: { id: batch.id },
+      data: { status: "SUBMITTED", submittedAt: now },
+    });
+    const slaHours = 48;
+    const slaDeadline = new Date(Date.now() + slaHours * 60 * 60 * 1000);
+    return await tx.producerApproval.upsert({
+      where: { producerOrgId_entityType_entityId: { producerOrgId, entityType: "BATCH", entityId: batch.id } },
+      update: {
+        status: "SUBMITTED",
+        submittedByUserId,
+        reviewedByUserId: null,
+        reviewedAt: null,
+        note: null,
+        slaDeadline,
+      },
+      create: {
+        producerOrgId,
+        entityType: "BATCH",
+        entityId: batch.id,
+        status: "SUBMITTED",
+        submittedByUserId,
+        slaDeadline,
+      },
+    });
   });
 
   return approval;
@@ -176,18 +195,35 @@ async function autoApproveBatchAsOwner(producerOrgId, batchId, userId) {
   return result;
 }
 
-async function approveApproval(producerOrgId, approvalId, reviewedByUserId, note) {
+/** @param overridePayload - Phase 3: when set, persist overrideNote/overrideAt/overrideByUserId (compliance override) */
+async function approveApproval(producerOrgId, approvalId, reviewedByUserId, note, overridePayload) {
   const approval = await prisma.producerApproval.findFirst({
     where: { id: Number(approvalId), producerOrgId },
   });
   if (!approval) throw createError("Approval not found", 404);
   if (approval.status !== "SUBMITTED") throw createError("Approval is not pending", 400);
+  await approvalPolicy.checkCanApprove(prisma, producerOrgId, approval.entityType, approval.entityId, reviewedByUserId);
+
+  const now = new Date();
+  const data: {
+    status: string;
+    reviewedByUserId: any;
+    reviewedAt: Date;
+    note: string | null;
+    overrideNote?: string | null;
+    overrideAt?: Date;
+    overrideByUserId?: number;
+  } = { status: "APPROVED", reviewedByUserId, reviewedAt: now, note: note ? String(note) : null };
+  if (overridePayload && (overridePayload.overrideNote !== undefined || overridePayload.overrideAt !== undefined)) {
+    data.overrideNote = typeof overridePayload.overrideNote === "string" ? overridePayload.overrideNote : null;
+    data.overrideAt = overridePayload.overrideAt instanceof Date ? overridePayload.overrideAt : now;
+    data.overrideByUserId = reviewedByUserId;
+  }
 
   const updated = await prisma.$transaction(async (tx) => {
-    const now = new Date();
     const row = await tx.producerApproval.update({
       where: { id: approval.id },
-      data: { status: "APPROVED", reviewedByUserId, reviewedAt: now, note: note ? String(note) : null },
+      data,
     });
 
     if (approval.entityType === "PRODUCT") {
@@ -241,6 +277,142 @@ async function rejectApproval(producerOrgId, approvalId, reviewedByUserId, note)
   return updated;
 }
 
+/**
+ * Platform admin: activate a product that is UNDER_REVIEW (owner already approved, now platform sets ACTIVE).
+ * Approval must be status APPROVED, entityType PRODUCT, and AuthProduct.status UNDER_REVIEW.
+ */
+async function activateProductForPlatform(producerOrgId, approvalId, reviewedByUserId, note) {
+  const approval = await prisma.producerApproval.findFirst({
+    where: { id: Number(approvalId), producerOrgId },
+  });
+  if (!approval) throw createError("Approval not found", 404);
+  if (approval.status !== "APPROVED" || approval.entityType !== "PRODUCT") {
+    throw createError("Approval is not in platform-review state (APPROVED + PRODUCT)", 400);
+  }
+  const product = await prisma.authProduct.findFirst({
+    where: { id: approval.entityId, producerOrgId },
+    select: { id: true, status: true },
+  });
+  if (!product) throw createError("Product not found", 404);
+  if (product.status !== "UNDER_REVIEW") {
+    throw createError("Product is not under review; current status: " + (product.status || "unknown"), 400);
+  }
+
+  const now = new Date();
+  await prisma.$transaction(async (tx) => {
+    await tx.producerApproval.update({
+      where: { id: approval.id },
+      data: { reviewedByUserId, reviewedAt: now, note: note ? String(note) : null },
+    });
+    await tx.authProduct.update({
+      where: { id: product.id },
+      data: { status: "ACTIVE", reviewedAt: now, reviewNotes: note ? String(note) : null },
+    });
+  });
+
+  return prisma.producerApproval.findFirst({ where: { id: approval.id } });
+}
+
+/**
+ * Reject an approval that is APPROVED + PRODUCT + UNDER_REVIEW (platform reject without prior SUBMITTED).
+ */
+async function rejectUnderReviewProduct(producerOrgId, approvalId, reviewedByUserId, note) {
+  const approval = await prisma.producerApproval.findFirst({
+    where: { id: Number(approvalId), producerOrgId },
+  });
+  if (!approval) throw createError("Approval not found", 404);
+  if (approval.status !== "APPROVED" || approval.entityType !== "PRODUCT") {
+    throw createError("Approval is not in platform-review state", 400);
+  }
+  const product = await prisma.authProduct.findFirst({
+    where: { id: approval.entityId, producerOrgId },
+    select: { id: true, status: true },
+  });
+  if (!product || product.status !== "UNDER_REVIEW") {
+    throw createError("Product not found or not under review", 400);
+  }
+
+  const now = new Date();
+  const updated = await prisma.$transaction(async (tx) => {
+    const row = await tx.producerApproval.update({
+      where: { id: approval.id },
+      data: { status: "REJECTED", reviewedByUserId, reviewedAt: now, note: note ? String(note) : null },
+    });
+    await tx.authProduct.update({
+      where: { id: product.id },
+      data: { status: "REJECTED", reviewedAt: now, reviewNotes: note ? String(note) : null },
+    });
+    return row;
+  });
+  return updated;
+}
+
+/**
+ * Admin: request changes on a product (SUBMITTED or UNDER_REVIEW -> CHANGES_REQUESTED).
+ * Sets approval to REJECTED with note so producer can resubmit after fixing.
+ */
+async function requestChangesApproval(producerOrgId, approvalId, reviewedByUserId, note) {
+  const approvalPolicy = require("../../services/governance/approvalPolicy.service");
+  const { checkCanRequestChanges } = approvalPolicy;
+  const { approval, product } = await checkCanRequestChanges(prisma, Number(approvalId), reviewedByUserId);
+  if (approval.producerOrgId !== Number(producerOrgId)) throw createError("Approval not found", 404);
+
+  const now = new Date();
+  const updated = await prisma.$transaction(async (tx) => {
+    await tx.producerApproval.update({
+      where: { id: approval.id },
+      data: { status: "REJECTED", reviewedByUserId, reviewedAt: now, note: note ? String(note) : null },
+    });
+    await tx.authProduct.update({
+      where: { id: product.id },
+      data: {
+        status: "CHANGES_REQUESTED",
+        reviewedAt: now,
+        reviewNotes: note ? String(note) : null,
+      },
+    });
+    return await tx.producerApproval.findFirst({ where: { id: approval.id } });
+  });
+  return updated;
+}
+
+/**
+ * Take reviewer lock on an approval (assign current user).
+ */
+async function takeReviewerLock(approvalId, userId) {
+  const approval = await prisma.producerApproval.findFirst({
+    where: { id: Number(approvalId) },
+    select: { id: true, assignedToUserId: true },
+  });
+  if (!approval) throw createError("Approval not found", 404);
+  if (approval.assignedToUserId != null && approval.assignedToUserId !== userId) {
+    throw createError("Approval is already assigned to another reviewer", 409);
+  }
+  const now = new Date();
+  return prisma.producerApproval.update({
+    where: { id: approval.id },
+    data: { assignedToUserId: userId, assignedAt: now },
+  });
+}
+
+/**
+ * Release reviewer lock (only if assigned to current user or force by same user).
+ */
+async function releaseReviewerLock(approvalId, userId) {
+  const approval = await prisma.producerApproval.findFirst({
+    where: { id: Number(approvalId) },
+    select: { id: true, assignedToUserId: true },
+  });
+  if (!approval) throw createError("Approval not found", 404);
+  if (approval.assignedToUserId != null && approval.assignedToUserId !== userId) {
+    throw createError("Cannot release: approval is assigned to another reviewer", 403);
+  }
+  return prisma.producerApproval.update({
+    where: { id: approval.id },
+    data: { assignedToUserId: null, assignedAt: null },
+  });
+}
+
 module.exports = {
   listApprovals,
   submitProductForApproval,
@@ -249,6 +421,11 @@ module.exports = {
   autoApproveBatchAsOwner,
   approveApproval,
   rejectApproval,
+  activateProductForPlatform,
+  rejectUnderReviewProduct,
+  requestChangesApproval,
+  takeReviewerLock,
+  releaseReviewerLock,
 };
 
 export {};

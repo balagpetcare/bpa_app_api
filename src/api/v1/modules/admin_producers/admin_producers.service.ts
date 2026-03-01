@@ -138,11 +138,28 @@ export async function suspendProducer(
 ) {
   const org = await prisma.producerOrg.findUnique({ where: { id: orgId } });
   if (!org) return null;
-  if (org.status === "SUSPENDED") return org;
+  if (org.status === "SUSPENDED") return { updated: org, incidentId: null };
 
-  const updated = await prisma.producerOrg.update({
-    where: { id: orgId },
-    data: { status: "SUSPENDED" },
+  let incidentId: number | null = null;
+  const updated = await prisma.$transaction(async (tx) => {
+    const o = await tx.producerOrg.update({
+      where: { id: orgId },
+      data: { status: "SUSPENDED" },
+    });
+    const incident = await tx.governanceIncident.create({
+      data: {
+        entityType: "PRODUCER_ORG",
+        entityId: orgId,
+        producerOrgId: orgId,
+        incidentType: "POLICY_VIOLATION",
+        severity: "HIGH",
+        actionTaken: "SUSPENDED",
+        reason: reason ?? "Suspended by admin",
+        createdByUserId: actorUserId,
+      },
+    });
+    incidentId = incident.id;
+    return o;
   });
   await auditGov.createAuditEvent(prisma, {
     actorUserId,
@@ -151,11 +168,11 @@ export async function suspendProducer(
     entityType: "PRODUCER_ORG",
     entityId: String(orgId),
     orgId,
-    metadata: { reason: reason ?? null },
+    metadata: { reason: reason ?? null, incidentId },
     traceId,
     ip,
   });
-  return updated;
+  return { updated, incidentId };
 }
 
 export async function unsuspendProducer(
@@ -169,11 +186,28 @@ export async function unsuspendProducer(
 ) {
   const org = await prisma.producerOrg.findUnique({ where: { id: orgId } });
   if (!org) return null;
-  if (org.status !== "SUSPENDED") return org;
+  if (org.status !== "SUSPENDED") return { updated: org, incidentId: null };
 
-  const updated = await prisma.producerOrg.update({
-    where: { id: orgId },
-    data: { status: "VERIFIED" },
+  let incidentId: number | null = null;
+  const updated = await prisma.$transaction(async (tx) => {
+    const o = await tx.producerOrg.update({
+      where: { id: orgId },
+      data: { status: "VERIFIED" },
+    });
+    const incident = await tx.governanceIncident.create({
+      data: {
+        entityType: "PRODUCER_ORG",
+        entityId: orgId,
+        producerOrgId: orgId,
+        incidentType: "RESTORATION",
+        severity: "LOW",
+        actionTaken: "UNSUSPENDED",
+        reason: reason ?? "Unsuspended by admin",
+        createdByUserId: actorUserId,
+      },
+    });
+    incidentId = incident.id;
+    return o;
   });
   await auditGov.createAuditEvent(prisma, {
     actorUserId,
@@ -182,11 +216,11 @@ export async function unsuspendProducer(
     entityType: "PRODUCER_ORG",
     entityId: String(orgId),
     orgId,
-    metadata: { reason: reason ?? null },
+    metadata: { reason: reason ?? null, incidentId },
     traceId,
     ip,
   });
-  return updated;
+  return { updated, incidentId };
 }
 
 export type AuditEventsParams = {

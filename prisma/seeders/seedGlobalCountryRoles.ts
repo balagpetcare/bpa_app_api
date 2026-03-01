@@ -15,6 +15,91 @@ type SeedRole = {
   permissionKeys: string[];
 };
 
+function parseCsv(raw: string | undefined): string[] {
+  return String(raw || "")
+    .split(",")
+    .map((x) => String(x || "").trim())
+    .filter(Boolean);
+}
+
+function normalizeEmail(v: string | null | undefined): string {
+  return String(v || "").trim().toLowerCase();
+}
+
+function normalizePhone(v: string | null | undefined): string {
+  return String(v || "").replace(/\D/g, "");
+}
+
+function parseAdminUserIds(): number[] {
+  return parseCsv(process.env.ADMIN_USER_IDS)
+    .map((x) => Number(x))
+    .filter(Boolean);
+}
+
+function parseAdminEmails(): string[] {
+  const raw = process.env.ADMIN_EMAILS || process.env.SUPER_ADMIN_WHITELIST_EMAILS;
+  return parseCsv(raw).map((x) => normalizeEmail(x)).filter(Boolean);
+}
+
+function parseAdminPhones(): string[] {
+  const raw = process.env.ADMIN_PHONES || process.env.SUPER_ADMIN_WHITELIST_PHONES;
+  return parseCsv(raw).map((x) => normalizePhone(x)).filter(Boolean);
+}
+
+async function resolveAdminUserIds(prisma: PrismaClient): Promise<number[]> {
+  const ids = new Set<number>(parseAdminUserIds());
+  const emails = parseAdminEmails();
+  const phones = parseAdminPhones();
+
+  const authOr: any[] = [
+    ...emails.map((email) => ({ email: { equals: email, mode: "insensitive" as const } })),
+    ...phones.map((phone) => ({ phone })),
+    ...phones
+      .map((phone) => (phone.length > 11 ? phone.slice(-11) : null))
+      .filter(Boolean)
+      .map((phone) => ({ phone })),
+  ];
+
+  if (authOr.length > 0) {
+    const authMatches = await prisma.userAuth.findMany({
+      where: { OR: authOr },
+      select: { userId: true },
+    });
+    for (const row of authMatches) ids.add(Number(row.userId));
+  }
+
+  // Fallback: try first active whitelist entries (if env values were not configured).
+  if (ids.size === 0) {
+    const whitelist = await prisma.superAdminWhitelist.findMany({
+      where: { isActive: true },
+      select: { email: true, phone: true },
+      orderBy: { id: "asc" },
+      take: 10,
+    });
+
+    const wlEmails = whitelist.map((w) => normalizeEmail(w.email)).filter(Boolean);
+    const wlPhones = whitelist.map((w) => normalizePhone(w.phone)).filter(Boolean);
+    const wlOr: any[] = [
+      ...wlEmails.map((email) => ({ email: { equals: email, mode: "insensitive" as const } })),
+      ...wlPhones.map((phone) => ({ phone })),
+      ...wlPhones
+        .map((phone) => (phone.length > 11 ? phone.slice(-11) : null))
+        .filter(Boolean)
+        .map((phone) => ({ phone })),
+    ];
+
+    if (wlOr.length > 0) {
+      const wlMatches = await prisma.userAuth.findMany({
+        where: { OR: wlOr },
+        select: { userId: true },
+      });
+      for (const row of wlMatches) ids.add(Number(row.userId));
+    }
+  }
+
+  return Array.from(ids).filter((id) => Number.isFinite(id) && id > 0);
+}
+
 export default async function seedGlobalCountryRoles(prisma: PrismaClient) {
   const permissions: SeedPermission[] = [
     { key: "global.admin", label: "Global admin", description: "Full platform access" },
@@ -54,6 +139,32 @@ export default async function seedGlobalCountryRoles(prisma: PrismaClient) {
     { key: "country.profile.read", label: "Country profile read" },
     { key: "state.admin", label: "State admin", description: "State-level admin" },
     { key: "state.support", label: "State support", description: "State support operations" },
+    { key: "admin.producers.read", label: "View producers", description: "List and view producer organizations and details." },
+    { key: "admin.producers.write", label: "Manage producers", description: "Suspend, unsuspend, and update flags/quotas for producers." },
+    { key: "admin.approvals.manage", label: "Manage approvals", description: "Review and approve or reject producer approvals." },
+    { key: "admin.governance.products.review", label: "Review products", description: "Take/release reviewer lock on product approvals." },
+    { key: "admin.governance.products.approve", label: "Approve products", description: "Approve or activate producer products." },
+    { key: "admin.governance.products.request_changes", label: "Request product changes", description: "Request changes on submitted/under-review products." },
+    { key: "admin.governance.products.archive", label: "Archive products", description: "Archive or unarchive rejected/inactive products." },
+    { key: "admin.governance.batches.review", label: "Review batches", description: "Review batch submissions." },
+    { key: "admin.governance.batches.approve", label: "Approve batches", description: "Approve or reject batches." },
+    { key: "admin.governance.batches.allocate_codes", label: "Allocate codes", description: "Allow code allocation for batches." },
+    { key: "admin.governance.batches.void", label: "Void batches", description: "Void batches (no verified codes)." },
+    { key: "admin.governance.enforcement.hide", label: "Hide products", description: "Hide/unhide products (enforcement)." },
+    { key: "admin.governance.enforcement.freeze", label: "Freeze batches", description: "Freeze batch printing/export." },
+    { key: "admin.governance.enforcement.suspend", label: "Suspend producers", description: "Suspend producer org with incident." },
+    { key: "admin.governance.enforcement.cases", label: "Trust & Safety cases", description: "Manage complaint cases, evidence, and trace." },
+    { key: "admin.governance.enforcement.actions", label: "Enforcement actions", description: "Apply or revert enforcement actions." },
+    { key: "admin.governance.incidents.manage", label: "Manage incidents", description: "Create and resolve governance incidents." },
+    { key: "admin.governance.analytics.read", label: "Governance analytics", description: "View governance analytics." },
+    { key: "admin.governance.code.search", label: "Code lookup", description: "Search codes and trace producer/product/batch." },
+    { key: "admin.audit.read", label: "View governance audit", description: "Read governance audit and metrics." },
+    { key: "admin.permissions.read", label: "View permissions registry", description: "Read grouped permissions registry." },
+    { key: "admin.kyc.manage", label: "Manage producer KYC", description: "Review and decide producer KYC verification." },
+    { key: "admin.support.tickets.manage", label: "Manage support tickets", description: "List, view, update, assign, internal notes." },
+    { key: "admin.support.tickets.respond", label: "Respond to tickets", description: "Post public replies to producer tickets." },
+    { key: "admin.support.tickets.assign", label: "Assign tickets", description: "Assign tickets to support agents." },
+    { key: "admin.support.tickets.escalate", label: "Escalate to enforcement", description: "Escalate ticket to Trust & Safety case." },
   ];
 
   const COUNTRY_BASE = [
@@ -94,6 +205,39 @@ export default async function seedGlobalCountryRoles(prisma: PrismaClient) {
       label: "Platform Finance",
       scope: "GLOBAL",
       permissionKeys: ["global.finance"],
+    },
+    {
+      key: "PLATFORM_ADMIN",
+      label: "Platform Admin",
+      scope: "GLOBAL",
+      permissionKeys: [
+        "admin.producers.read",
+        "admin.producers.write",
+        "admin.approvals.manage",
+        "admin.governance.products.review",
+        "admin.governance.products.approve",
+        "admin.governance.products.request_changes",
+        "admin.governance.products.archive",
+        "admin.governance.batches.review",
+        "admin.governance.batches.approve",
+        "admin.governance.batches.allocate_codes",
+        "admin.governance.batches.void",
+        "admin.governance.enforcement.hide",
+        "admin.governance.enforcement.freeze",
+        "admin.governance.enforcement.suspend",
+        "admin.governance.enforcement.cases",
+        "admin.governance.enforcement.actions",
+        "admin.governance.incidents.manage",
+        "admin.governance.analytics.read",
+        "admin.governance.code.search",
+        "admin.audit.read",
+        "admin.permissions.read",
+        "admin.kyc.manage",
+        "admin.support.tickets.manage",
+        "admin.support.tickets.respond",
+        "admin.support.tickets.assign",
+        "admin.support.tickets.escalate",
+      ],
     },
     {
       key: "COUNTRY_ADMIN",
@@ -149,6 +293,9 @@ export default async function seedGlobalCountryRoles(prisma: PrismaClient) {
         "country.moderation.read",
         "country.support.read",
         "country.support.write",
+        "admin.support.tickets.manage",
+        "admin.support.tickets.respond",
+        "admin.support.tickets.assign",
       ],
     },
     {
@@ -210,6 +357,22 @@ export default async function seedGlobalCountryRoles(prisma: PrismaClient) {
         update: {},
         create: { roleId, permissionId },
       });
+    }
+  }
+
+  // Auto-assign PLATFORM_ADMIN to env/whitelist admin users.
+  const platformAdminRoleId = roleMap.get("PLATFORM_ADMIN");
+  if (platformAdminRoleId) {
+    const adminUserIds = await resolveAdminUserIds(prisma);
+    for (const userId of adminUserIds) {
+      await prisma.userGlobalRole.upsert({
+        where: { userId_roleId: { userId, roleId: platformAdminRoleId } },
+        update: {},
+        create: { userId, roleId: platformAdminRoleId },
+      });
+    }
+    if (adminUserIds.length) {
+      console.log(`[seedGlobalCountryRoles] PLATFORM_ADMIN assigned to ${adminUserIds.length} user(s).`);
     }
   }
 }

@@ -102,7 +102,7 @@ async function resolvePermissionsForUser(userId) {
 
   try {
     // 1) DB-backed roles via org_member_roles / branch_member_roles
-    const [orgMembers, branchMembers, producerStaff, countryRoles, stateRoles] = await Promise.all([
+    const [orgMembers, branchMembers, producerStaff, globalRoles, countryRoles, stateRoles] = await Promise.all([
       prisma.orgMember.findMany({
         where: { userId: Number(userId), status: "ACTIVE" },
         select: {
@@ -138,6 +138,17 @@ async function resolvePermissionsForUser(userId) {
         },
       }),
       prisma.producerOrgStaff.findMany({
+        where: { userId: Number(userId) },
+        select: {
+          role: {
+            select: {
+              key: true,
+              rolePermissions: { select: { permission: { select: { key: true } } } },
+            },
+          },
+        },
+      }),
+      prisma.userGlobalRole.findMany({
         where: { userId: Number(userId) },
         select: {
           role: {
@@ -198,6 +209,13 @@ async function resolvePermissionsForUser(userId) {
 
     // producer org staff perms
     for (const m of producerStaff) {
+      const role = m.role;
+      if (!role) continue;
+      for (const rp of (role.rolePermissions || [])) out.add(rp.permission.key);
+    }
+
+    // global role perms
+    for (const m of globalRoles) {
       const role = m.role;
       if (!role) continue;
       for (const rp of (role.rolePermissions || [])) out.add(rp.permission.key);
@@ -348,4 +366,8 @@ async function resolvePermissionsForUser(userId) {
   }
 }
 
-module.exports = { resolvePermissionsForUser, LEGACY_ROLE_PERMS };
+/** Trust & Safety / Enforcement permission keys (admin panel). */
+const ENFORCEMENT_CASES = "admin.governance.enforcement.cases";
+const ENFORCEMENT_ACTIONS = "admin.governance.enforcement.actions";
+
+module.exports = { resolvePermissionsForUser, LEGACY_ROLE_PERMS, ENFORCEMENT_CASES, ENFORCEMENT_ACTIONS };

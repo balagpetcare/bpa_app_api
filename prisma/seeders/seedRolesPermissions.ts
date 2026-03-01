@@ -54,6 +54,8 @@ export default async function seedRolesPermissions(prisma: PrismaClient) {
     { key: "producer.codes.revoke", label: "Revoke allocations", description: "Revoke issued serial allocations (owner only)" },
     { key: "producer.verification.read", label: "Read verification logs", description: "View verification history and analytics" },
     { key: "producer.analytics.read", label: "Read analytics", description: "View producer analytics and reports" },
+    { key: "producer.tickets.read", label: "View support tickets", description: "View own org support tickets and messages." },
+    { key: "producer.tickets.write", label: "Create and reply to tickets", description: "Create tickets, reply, close, reopen." },
   ];
 
   const roles: SeedRole[] = [
@@ -133,6 +135,7 @@ export default async function seedRolesPermissions(prisma: PrismaClient) {
         "producer.batches.read", "producer.batches.write", "producer.batches.print",
         "producer.codes.generate", "producer.codes.export",
         "producer.verification.read", "producer.analytics.read",
+        "producer.tickets.read", "producer.tickets.write",
       ],
     },
     {
@@ -146,6 +149,7 @@ export default async function seedRolesPermissions(prisma: PrismaClient) {
         "producer.batches.read", "producer.batches.write", "producer.batches.print",
         "producer.codes.generate", "producer.codes.export",
         "producer.verification.read", "producer.analytics.read",
+        "producer.tickets.read", "producer.tickets.write",
       ],
     },
     {
@@ -156,6 +160,7 @@ export default async function seedRolesPermissions(prisma: PrismaClient) {
         "producer.products.read", "producer.products.write",
         "producer.batches.read", "producer.batches.print",
         "producer.codes.generate", "producer.codes.export",
+        "producer.tickets.read", "producer.tickets.write",
       ],
     },
     {
@@ -168,6 +173,7 @@ export default async function seedRolesPermissions(prisma: PrismaClient) {
         "producer.batches.read",
         "producer.verification.read",
         "producer.analytics.read",
+        "producer.tickets.read",
       ],
     },
     {
@@ -178,6 +184,7 @@ export default async function seedRolesPermissions(prisma: PrismaClient) {
         "producer.org.read",
         "producer.products.read",
         "producer.batches.read",
+        "producer.tickets.read",
       ],
     },
   ];

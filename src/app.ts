@@ -95,8 +95,22 @@ app.get("/health", (_req, res) => res.json({ ok: true, service: "bpa_api" }));
 const authUiRoutes = require("./api/v1/modules/auth-ui/auth-ui.routes");
 app.use("/auth", authUiRoutes);
 
-// API mount
-app.use(env.apiPrefix || "/api/v1", apiV1Routes);
+// API mount — MUST be /api/v1 so admin governance routes match: GET /api/v1/admin/producers, GET /api/v1/admin/approvals
+const apiPrefix = env.apiPrefix ?? process.env.API_PREFIX ?? "/api/v1";
+// Explicit admin governance mounts (before generic v1 so these paths always match)
+try {
+  const adminProducersRoutes = require("./api/v1/modules/admin_producers/admin_producers.routes");
+  const adminApprovalsRoutes = require("./api/v1/modules/admin_approvals/admin_approvals.routes");
+  app.use("/api/v1/admin/producers", adminProducersRoutes);
+  app.use("/api/v1/admin/approvals", adminApprovalsRoutes);
+} catch (err) {
+  console.error("[app] Admin governance routes failed to load. Restart after ensuring dependencies exist.", err);
+  app.use("/api/v1/admin/producers", (req, res) =>
+    res.status(503).json({ success: false, message: "Governance routes not loaded; check server logs and restart API." }));
+  app.use("/api/v1/admin/approvals", (req, res) =>
+    res.status(503).json({ success: false, message: "Governance routes not loaded; check server logs and restart API." }));
+}
+app.use(apiPrefix, apiV1Routes);
 
 // Errors
 app.use(notFoundHandler);

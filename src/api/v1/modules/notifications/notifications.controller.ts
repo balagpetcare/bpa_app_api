@@ -6,18 +6,41 @@ import prisma from "../../../../infrastructure/db/prismaClient";
 const PRODUCER_DISPLAY_PRIORITY: Record<string, "HIGH" | "MEDIUM" | "LOW"> = {
   VERIFICATION_CASE_REJECTED: "HIGH",
   BATCH_SUSPICIOUS_ACTIVITY: "HIGH",
+  ENFORCEMENT_CODE_BLOCKED: "HIGH",
+  ENFORCEMENT_BATCH_QUARANTINED: "HIGH",
+  ENFORCEMENT_PRODUCT_DEACTIVATED: "HIGH",
+  ENFORCEMENT_ORG_SUSPENDED: "HIGH",
+  ENFORCEMENT_ACTION_REVERTED: "MEDIUM",
+  PRODUCT_REJECTED: "HIGH",
   STAFF_INVITE_ACCEPTED: "MEDIUM",
   VERIFICATION_CASE_APPROVED: "MEDIUM",
+  PRODUCT_APPROVED: "MEDIUM",
   SYSTEM_INFO: "LOW",
   SYSTEM: "LOW",
 };
-const ACTION_REQUIRED_TYPES: NotificationType[] = [NotificationType.VERIFICATION_CASE_REJECTED, NotificationType.BATCH_SUSPICIOUS_ACTIVITY];
+const ACTION_REQUIRED_TYPES: NotificationType[] = [
+  NotificationType.VERIFICATION_CASE_REJECTED,
+  NotificationType.BATCH_SUSPICIOUS_ACTIVITY,
+  NotificationType.PRODUCT_REJECTED,
+  NotificationType.ENFORCEMENT_CODE_BLOCKED,
+  NotificationType.ENFORCEMENT_BATCH_QUARANTINED,
+  NotificationType.ENFORCEMENT_PRODUCT_DEACTIVATED,
+  NotificationType.ENFORCEMENT_ORG_SUSPENDED,
+];
 
 const producerPanelOr = [
   { actionUrl: { startsWith: "/producer" } },
   { source: "producer" },
+  { source: "enforcement" },
   { type: NotificationType.STAFF_INVITE },
   { type: NotificationType.BATCH_SUSPICIOUS_ACTIVITY },
+  { type: NotificationType.PRODUCT_APPROVED },
+  { type: NotificationType.PRODUCT_REJECTED },
+  { type: NotificationType.ENFORCEMENT_CODE_BLOCKED },
+  { type: NotificationType.ENFORCEMENT_BATCH_QUARANTINED },
+  { type: NotificationType.ENFORCEMENT_PRODUCT_DEACTIVATED },
+  { type: NotificationType.ENFORCEMENT_ORG_SUSPENDED },
+  { type: NotificationType.ENFORCEMENT_ACTION_REVERTED },
 ];
 
 function getProducerDisplayPriority(type: string): "HIGH" | "MEDIUM" | "LOW" {

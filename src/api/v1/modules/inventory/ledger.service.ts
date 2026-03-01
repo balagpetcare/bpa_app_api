@@ -62,10 +62,11 @@ function applyBalanceDelta(
 
 /**
  * Internal: record ledger entry using given transaction client.
- * Rejects expired lots for outbound operations (quantityDelta < 0).
+ * Rejects expired lots for outbound operations (quantityDelta < 0), except when
+ * type is EXPIRED (expiry job writing off expired stock).
  */
 async function recordLedgerEntryInTx(tx: any, data: LedgerEntryInput) {
-    if (data.lotId && data.quantityDelta < 0) {
+    if (data.lotId && data.quantityDelta < 0 && data.type !== "EXPIRED") {
       const lot = await tx.stockLot.findUnique({
         where: { id: data.lotId },
         select: { expDate: true, lotCode: true },
