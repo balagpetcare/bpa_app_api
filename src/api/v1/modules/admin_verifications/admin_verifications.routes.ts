@@ -3,6 +3,8 @@ const authenticateToken = require("../../../../middleware/auth.middleware");
 const adminOnly = require("../../../../middleware/admin.middleware");
 const ctrl = require("./admin_verifications.controller");
 
+router.get("/stats", authenticateToken, adminOnly, ctrl.getVerificationStats);
+
 // Owners
 router.get("/owners", authenticateToken, adminOnly, ctrl.listOwnerKycs);
 router.get("/owners/:id", authenticateToken, adminOnly, ctrl.getOwnerKyc);
@@ -76,6 +78,12 @@ router.post("/staff/:id/reject", authenticateToken, adminOnly, ctrl.rejectStaffV
 router.post("/staff/:id/request-changes", authenticateToken, adminOnly, ctrl.requestChangesStaffVerification);
 router.post("/staff/:id/suspend", authenticateToken, adminOnly, ctrl.suspendStaffVerification);
 router.post("/staff/:id/comment", authenticateToken, adminOnly, ctrl.commentStaffVerification);
+
+// Doctor verification (clinic doctor KYC queue)
+router.get("/doctors", authenticateToken, adminOnly, ctrl.listDoctorVerifications);
+router.get("/doctors/:id", authenticateToken, adminOnly, ctrl.getDoctorVerification);
+router.post("/doctors/:id/approve", authenticateToken, adminOnly, ctrl.approveDoctorVerification);
+router.post("/doctors/:id/reject", authenticateToken, adminOnly, ctrl.rejectDoctorVerification);
 
 module.exports = router;
 

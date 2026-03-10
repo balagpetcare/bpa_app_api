@@ -63,6 +63,18 @@ app.use(
 
 app.use(cookieParser());
 
+/**
+ * Socket.IO upgrade path: do not let Express handle or respond so the HTTP server
+ * upgrade listener (Socket.IO in index.ts) can take the connection.
+ */
+app.use((req, res, next) => {
+  const url = (req.originalUrl || req.url || "").split("?")[0];
+  if (url.startsWith("/api/v1/socket.io")) {
+    return; // do not call next(), do not send; leave connection for Socket.IO upgrade
+  }
+  next();
+});
+
 // Body parsing
 app.use(express.json({ limit: "20mb" }));
 app.use(express.urlencoded({ extended: true }));

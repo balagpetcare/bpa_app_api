@@ -27,6 +27,8 @@ router.use(auth);
 // Onboarding: profile + KYC — allow any authenticated user (USER, OWNER, ADMIN) so users
 // without OwnerProfile yet can complete onboarding and create profile/kyc
 router.get('/me', ctrl.getOwnerMe);
+router.get('/me/pets', ctrl.listMyPets);
+router.get('/me/pets/:petId', ctrl.getMyPet);
 router.get('/profile', ctrl.getOwnerProfile);
 router.put('/profile', ctrl.upsertOwnerProfile);
 router.get('/kyc', ctrl.getOwnerKyc);
@@ -37,7 +39,20 @@ router.post('/kyc/submit', ctrl.submitOwnerKyc);
 
 // Rest of owner panel — allow OWNER, ADMIN, STAFF, TEAM (RBAC applied per-route / per-handler)
 router.use(ownerPanelGuard());
-
+// #region agent log
+router.use((req, res, next) => {
+  if ((req.path || req.url || '').includes('catalog/import')) {
+    fetch('http://127.0.0.1:7242/ingest/8587e4aa-5cb6-4181-b813-5bca1da63be3', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '7204b9' }, body: JSON.stringify({ sessionId: '7204b9', hypothesisId: 'B_C', location: 'owner.routes.ts:ownerRouter', message: 'request reached owner router', data: { method: req.method, path: req.path, url: req.url, baseUrl: req.baseUrl, originalUrl: req.originalUrl }, timestamp: Date.now() }) }).catch(() => {});
+  }
+  next();
+});
+// #endregion
+// Master catalog (browse + add-from-master) — register first so GET .../catalog/master/* always matches
+const clinicCtrl = require('./ownerClinic.controller');
+router.get('/clinic/branches/:branchId/catalog/master/categories', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.listMasterCatalogCategories);
+router.get('/clinic/branches/:branchId/catalog/master/items', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.listMasterCatalogItems);
+router.post('/clinic/branches/:branchId/catalog/add-from-master/preview', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.previewAddFromMasterCatalog);
+router.post('/clinic/branches/:branchId/catalog/add-from-master/execute', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.executeAddFromMasterCatalog);
 // ------------------------------
 // V2: Universal Verification (Owner/Org/Branch) — add-only, non-breaking
 // Owner Panel should use these endpoints. Flutter/public APIs remain untouched.
@@ -104,6 +119,187 @@ router.post('/branches/:id/cancel', ctrl.cancelBranch);
 
 // Nested branch details (Org -> Branch)
 router.get('/organizations/:orgId/branches/:branchId', ctrl.getBranchInOrg);
+
+// ------------------------------
+// Clinic Setup (Owner Panel: clinic branches, settings, services, staff)
+// ------------------------------
+// Catalog import: mount sub-router so POST .../catalog/import/preview and .../execute are matched
+const catalogImportRouter = require('express').Router({ mergeParams: true });
+// #region agent log
+catalogImportRouter.use((req, res, next) => {
+  fetch('http://127.0.0.1:7242/ingest/8587e4aa-5cb6-4181-b813-5bca1da63be3', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '7204b9' }, body: JSON.stringify({ sessionId: '7204b9', hypothesisId: 'D', location: 'owner.routes.ts:catalogImportRouter', message: 'request reached catalog import sub-router', data: { method: req.method, path: req.path, url: req.url, baseUrl: req.baseUrl }, timestamp: Date.now() }) }).catch(() => {});
+  next();
+});
+// #endregion
+catalogImportRouter.post('/preview', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.previewCatalogImport);
+catalogImportRouter.post('/execute', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.executeCatalogImport);
+router.use('/clinic/branches/:branchId/catalog/import', catalogImportRouter);
+router.get('/clinic/branches', requireOwnerPermission('clinic.overview.read', null), clinicCtrl.listClinicBranches);
+router.get('/clinic/network-stats', requireOwnerPermission('clinic.overview.read', null), clinicCtrl.getClinicNetworkStats);
+router.get('/clinic/branches/:branchId/dashboard-stats', requireOwnerPermission('clinic.overview.read', 'branch'), clinicCtrl.getClinicDashboardStats);
+router.get('/clinic/branches/:branchId/modules/clinic', requireOwnerPermission('clinic.settings.read', 'branch'), clinicCtrl.getClinicModule);
+router.patch('/clinic/branches/:branchId/modules/clinic', requireOwnerPermission('clinic.settings.write', 'branch'), clinicCtrl.updateClinicModule);
+router.get('/clinic/branches/:branchId/settings', requireOwnerPermission('clinic.settings.read', 'branch'), clinicCtrl.getClinicSettings);
+router.put('/clinic/branches/:branchId/settings', requireOwnerPermission('clinic.settings.write', 'branch'), clinicCtrl.updateClinicSettings);
+// Catalog: templates, install, import (register early so /catalog/import/preview is matched)
+router.get('/clinic/branches/:branchId/catalog/templates', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.listCatalogTemplates);
+router.get('/clinic/branches/:branchId/catalog/templates/:templateId', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.getCatalogTemplateById);
+router.post('/clinic/branches/:branchId/catalog/install/preview', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.previewCatalogInstall);
+router.post('/clinic/branches/:branchId/catalog/install', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.installCatalogTemplate);
+router.get('/clinic/branches/:branchId/catalog/install-history', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.getCatalogInstallHistory);
+router.get('/clinic/branches/:branchId/catalog/install/upgrade-check/:templateId', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.getCatalogUpgradeCheck);
+router.get('/clinic/branches/:branchId/services', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.listClinicServices);
+router.post('/clinic/branches/:branchId/services', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.createClinicService);
+router.patch('/clinic/branches/:branchId/services/:serviceId', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.updateClinicService);
+router.delete('/clinic/branches/:branchId/services/:serviceId', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.deleteClinicService);
+router.get('/clinic/branches/:branchId/services/:serviceId/variants', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.getClinicServiceVariants);
+router.put('/clinic/branches/:branchId/services/:serviceId/variants', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.putClinicServiceVariants);
+router.get('/clinic/branches/:branchId/service-proposals', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.listClinicServiceProposals);
+router.post('/clinic/branches/:branchId/service-proposals/:proposalId/review', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.reviewClinicServiceProposal);
+router.get('/clinic/branches/:branchId/staff', requireOwnerPermission('clinic.overview.read', 'branch'), clinicCtrl.listClinicStaff);
+router.get('/clinic/branches/:branchId/staff/:memberId/profile', requireOwnerPermission('clinic.staff.manage', 'branch'), clinicCtrl.getClinicStaffProfile);
+router.put('/clinic/branches/:branchId/staff/:memberId/profile', requireOwnerPermission('clinic.staff.manage', 'branch'), clinicCtrl.upsertClinicStaffProfile);
+router.post('/clinic/branches/:branchId/staff/:memberId/assign-template', requireOwnerPermission('clinic.staff.manage', 'branch'), clinicCtrl.assignClinicRoleTemplate);
+router.patch('/clinic/branches/:branchId/staff/:memberId/permissions', requireOwnerPermission('clinic.staff.manage', 'branch'), clinicCtrl.updateClinicStaffPermissions);
+router.get('/clinic/branches/:branchId/rooms', requireOwnerPermission('clinic.rooms.manage', null), clinicCtrl.listClinicRooms);
+router.post('/clinic/branches/:branchId/rooms', requireOwnerPermission('clinic.rooms.manage', null), clinicCtrl.createClinicRoom);
+router.patch('/clinic/branches/:branchId/rooms/:roomId', requireOwnerPermission('clinic.rooms.manage', null), clinicCtrl.updateClinicRoom);
+router.delete('/clinic/branches/:branchId/rooms/:roomId', requireOwnerPermission('clinic.rooms.manage', null), clinicCtrl.deleteClinicRoom);
+router.get('/clinic/branches/:branchId/schedule/templates', requireOwnerPermission('clinic.schedule.manage', 'branch'), clinicCtrl.getScheduleTemplates);
+router.put('/clinic/branches/:branchId/schedule/templates', requireOwnerPermission('clinic.schedule.manage', 'branch'), clinicCtrl.putScheduleTemplates);
+router.get('/clinic/branches/:branchId/holidays', requireOwnerPermission('clinic.holidays.manage', 'branch'), clinicCtrl.listHolidays);
+router.post('/clinic/branches/:branchId/holidays', requireOwnerPermission('clinic.holidays.manage', 'branch'), clinicCtrl.createHoliday);
+router.delete('/clinic/branches/:branchId/holidays/:holidayId', requireOwnerPermission('clinic.holidays.manage', 'branch'), clinicCtrl.deleteHoliday);
+router.get('/clinic/branches/:branchId/policy/emergency', requireOwnerPermission('clinic.emergency.manage', 'branch'), clinicCtrl.getEmergencyPolicy);
+router.put('/clinic/branches/:branchId/policy/emergency', requireOwnerPermission('clinic.emergency.manage', 'branch'), clinicCtrl.updateEmergencyPolicy);
+router.get('/clinic/branches/:branchId/fees', requireOwnerPermission('clinic.fees.manage', 'branch'), clinicCtrl.getClinicFees);
+router.put('/clinic/branches/:branchId/fees', requireOwnerPermission('clinic.fees.manage', 'branch'), clinicCtrl.updateClinicFees);
+
+// Clinic Phase 2: Appointments + Schedule Exceptions
+router.get('/clinic/branches/:branchId/appointments', requireOwnerPermission('clinic.appointments.read', 'branch'), clinicCtrl.listClinicAppointments);
+router.get('/clinic/branches/:branchId/slots', requireOwnerPermission('clinic.appointments.read', 'branch'), clinicCtrl.getClinicSlots);
+router.post('/clinic/branches/:branchId/appointments', requireOwnerPermission('clinic.appointments.manage', 'branch'), clinicCtrl.createClinicAppointment);
+router.post('/clinic/branches/:branchId/appointments/:appointmentId/cancel', requireOwnerPermission('clinic.appointments.manage', 'branch'), clinicCtrl.cancelClinicAppointment);
+router.post('/clinic/branches/:branchId/appointments/:appointmentId/reschedule', requireOwnerPermission('clinic.appointments.manage', 'branch'), clinicCtrl.rescheduleClinicAppointment);
+router.get('/clinic/branches/:branchId/schedule/exceptions', requireOwnerPermission('clinic.schedule.manage', 'branch'), clinicCtrl.listClinicScheduleExceptions);
+router.post('/clinic/branches/:branchId/schedule/exceptions', requireOwnerPermission('clinic.schedule.manage', 'branch'), clinicCtrl.createClinicScheduleException);
+router.delete('/clinic/branches/:branchId/schedule/exceptions/:exceptionId', requireOwnerPermission('clinic.schedule.manage', 'branch'), clinicCtrl.deleteClinicScheduleException);
+// Doctor management (CP1)
+router.get('/clinic/branches/:branchId/doctors', requireOwnerPermission('clinic.staff.manage', 'branch'), clinicCtrl.listClinicDoctors);
+router.post('/clinic/branches/:branchId/doctors/invite', requireOwnerPermission('clinic.staff.manage', 'branch'), clinicCtrl.inviteClinicDoctor);
+router.get('/clinic/branches/:branchId/doctors/:memberId', requireOwnerPermission('clinic.staff.manage', 'branch'), clinicCtrl.getClinicDoctorDetail);
+router.patch('/clinic/branches/:branchId/doctors/:memberId/terms', requireOwnerPermission('clinic.staff.manage', 'branch'), clinicCtrl.patchClinicDoctorTerms);
+router.put('/clinic/branches/:branchId/doctors/:memberId/services', requireOwnerPermission('clinic.staff.manage', 'branch'), clinicCtrl.putClinicDoctorServices);
+router.get('/clinic/branches/:branchId/doctors/:memberId/metrics', requireOwnerPermission('clinic.staff.manage', 'branch'), clinicCtrl.getClinicDoctorMetrics);
+router.get('/clinic/branches/:branchId/doctors/:memberId/capacity', requireOwnerPermission('clinic.staff.manage', 'branch'), clinicCtrl.getClinicDoctorCapacity);
+router.get('/clinic/branches/:branchId/doctors/:memberId/settlement-ledger', requireOwnerPermission('clinic.staff.manage', 'branch'), clinicCtrl.listClinicDoctorSettlementLedger);
+router.get('/clinic/branches/:branchId/doctors/:memberId/audit-log', requireOwnerPermission('clinic.staff.manage', 'branch'), clinicCtrl.listClinicDoctorAuditLog);
+// Clinic Enterprise: Surgery packages
+router.get('/clinic/branches/:branchId/packages', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.listClinicPackages);
+router.get('/clinic/branches/:branchId/packages/:packageId', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.getClinicPackageById);
+router.post('/clinic/branches/:branchId/packages', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.createClinicPackage);
+router.patch('/clinic/branches/:branchId/packages/:packageId', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.updateClinicPackage);
+router.delete('/clinic/branches/:branchId/packages/:packageId', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.deleteClinicPackage);
+router.get('/clinic/branches/:branchId/packages/:packageId/items', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.listClinicPackageItems);
+router.post('/clinic/branches/:branchId/packages/:packageId/items/batch', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.createClinicPackageItemsBatch);
+router.put('/clinic/branches/:branchId/packages/:packageId/items', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.upsertClinicPackageItem);
+router.post('/clinic/branches/:branchId/packages/:packageId/items', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.upsertClinicPackageItem);
+router.delete('/clinic/branches/:branchId/packages/:packageId/items/:itemId', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.deleteClinicPackageItem);
+router.get('/clinic/branches/:branchId/packages/:packageId/price-rules', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.listClinicPackagePriceRules);
+router.post('/clinic/branches/:branchId/packages/:packageId/price-rules', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.createClinicPackagePriceRule);
+router.delete('/clinic/branches/:branchId/packages/:packageId/price-rules/:ruleId', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.deleteClinicPackagePriceRule);
+router.get('/clinic/branches/:branchId/packages/:packageId/composition', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.getClinicPackageComposition);
+router.get('/clinic/branches/:branchId/packages/:packageId/impact', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.getClinicPackageImpact);
+router.get('/clinic/branches/:branchId/packages/:packageId/audit-log', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.getClinicPackageAuditLog);
+router.post('/clinic/branches/:branchId/packages/:packageId/duplicate', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.duplicateClinicPackage);
+router.get('/clinic/branches/:branchId/package-templates', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.listClinicPackageTemplates);
+router.get('/clinic/branches/:branchId/package-templates/:templateId', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.getClinicPackageTemplateById);
+router.post('/clinic/branches/:branchId/package-templates', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.createClinicPackageTemplate);
+router.patch('/clinic/branches/:branchId/package-templates/:templateId', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.updateClinicPackageTemplate);
+router.delete('/clinic/branches/:branchId/package-templates/:templateId', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.deleteClinicPackageTemplate);
+// Clinical Item Master (catalog)
+router.get('/clinic/branches/:branchId/items', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.listClinicItems);
+router.get('/clinic/branches/:branchId/items/search', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.searchClinicItems);
+router.get('/clinic/branches/:branchId/items/:itemId', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.getClinicItemById);
+router.post('/clinic/branches/:branchId/items', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.createClinicItem);
+router.patch('/clinic/branches/:branchId/items/:itemId', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.updateClinicItem);
+router.post('/clinic/branches/:branchId/items/:itemId/activate', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.activateClinicItem);
+router.post('/clinic/branches/:branchId/items/:itemId/deactivate', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.deactivateClinicItem);
+router.post('/clinic/branches/:branchId/items/:itemId/variants', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.createClinicItemVariant);
+router.patch('/clinic/branches/:branchId/items/:itemId/variants/:variantId', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.updateClinicItemVariant);
+router.post('/clinic/branches/:branchId/items/:itemId/media', requireOwnerPermission('clinic.services.manage', 'branch'), upload.single('file'), clinicCtrl.uploadClinicItemMedia);
+router.delete('/clinic/branches/:branchId/items/:itemId/media/:mediaId', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.deleteClinicItemMedia);
+router.get('/clinic/branches/:branchId/item-categories', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.listClinicItemCategories);
+router.get('/clinic/branches/:branchId/item-categories/tree', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.getClinicItemCategoryTree);
+router.post('/clinic/branches/:branchId/item-categories', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.createClinicItemCategory);
+router.patch('/clinic/branches/:branchId/item-categories/:categoryId', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.updateClinicItemCategory);
+router.delete('/clinic/branches/:branchId/item-categories/:categoryId', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.deleteClinicItemCategory);
+router.get('/clinic/branches/:branchId/item-stock', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.getClinicBranchItemStock);
+router.get('/clinic/branches/:branchId/item-stock/alerts', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.getClinicLowStockAlerts);
+router.get('/clinic/branches/:branchId/item-stock/ledger', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.getClinicItemStockLedger);
+router.get('/clinic/branches/:branchId/item-stock/consumption', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.getClinicItemStockConsumption);
+router.post('/clinic/branches/:branchId/item-stock/adjust', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.postClinicItemStockAdjust);
+router.post('/clinic/branches/:branchId/item-stock/receive', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.postClinicItemStockReceive);
+router.get('/clinic/supply-requests', requireOwnerPermission('clinic.services.manage', null), clinicCtrl.listClinicSupplyRequests);
+router.get('/clinic/supply-requests/:requestId', requireOwnerPermission('clinic.services.manage', null), clinicCtrl.getClinicSupplyRequestById);
+router.put('/clinic/supply-requests/:requestId/review', requireOwnerPermission('clinic.services.manage', null), clinicCtrl.reviewClinicSupplyRequest);
+router.post('/clinic/supply-requests/:requestId/transfer', requireOwnerPermission('clinic.services.manage', null), clinicCtrl.createClinicTransferFromRequest);
+router.get('/clinic/transfers', requireOwnerPermission('clinic.services.manage', null), clinicCtrl.listClinicTransfers);
+router.get('/clinic/transfers/:transferId', requireOwnerPermission('clinic.services.manage', null), clinicCtrl.getClinicTransferById);
+router.post('/clinic/transfers/:transferId/dispatch', requireOwnerPermission('clinic.services.manage', null), clinicCtrl.dispatchClinicTransfer);
+router.get('/clinic/branches/:branchId/instrument-issues', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.listClinicInstrumentIssueLogs);
+router.post('/clinic/branches/:branchId/instrument-issues', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.createClinicInstrumentIssueLog);
+router.patch('/clinic/branches/:branchId/instrument-issues/:logId/return', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.returnClinicInstrumentIssueLog);
+router.get('/clinic/branches/:branchId/sterilization/cycles', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.listClinicSterilizationCycles);
+router.get('/clinic/branches/:branchId/sterilization/cycles/:cycleId', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.getClinicSterilizationCycleById);
+router.post('/clinic/branches/:branchId/sterilization/cycles', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.postClinicSterilizationCycleStart);
+router.post('/clinic/branches/:branchId/sterilization/cycles/:cycleId/complete', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.postClinicSterilizationCycleComplete);
+router.post('/clinic/branches/:branchId/sterilization/cycles/:cycleId/fail', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.postClinicSterilizationCycleFail);
+router.get('/clinic/branches/:branchId/sterilization/instruments', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.listClinicInstrumentInstances);
+router.get('/clinic/branches/:branchId/sterilization/instruments/due', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.getClinicSterilizationDueAlerts);
+router.get('/clinic/branches/:branchId/audits', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.listClinicStockAudits);
+router.get('/clinic/branches/:branchId/audits/:auditId', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.getClinicStockAuditById);
+router.post('/clinic/branches/:branchId/audits/:auditId/approve', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.postClinicStockAuditApprove);
+router.get('/clinic/branches/:branchId/wastage', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.listClinicWastageLogs);
+router.get('/clinic/branches/:branchId/wastage/:wastageId', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.getClinicWastageLogById);
+router.post('/clinic/branches/:branchId/wastage/:wastageId/approve', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.postClinicWastageApprove);
+router.get('/clinic/branches/:branchId/replenishment', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.listClinicReplenishmentRecommendations);
+router.post('/clinic/branches/:branchId/replenishment/generate', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.postClinicReplenishmentGenerate);
+// Clinic Enterprise: Discount policies
+router.get('/clinic/branches/:branchId/discount-policies', requireOwnerPermission('clinic.settings.write', 'branch'), clinicCtrl.listClinicDiscountPolicies);
+router.get('/clinic/branches/:branchId/discount-policies/:policyId', requireOwnerPermission('clinic.settings.write', 'branch'), clinicCtrl.getClinicDiscountPolicyById);
+router.post('/clinic/branches/:branchId/discount-policies', requireOwnerPermission('clinic.settings.write', 'branch'), clinicCtrl.createClinicDiscountPolicy);
+router.patch('/clinic/branches/:branchId/discount-policies/:policyId', requireOwnerPermission('clinic.settings.write', 'branch'), clinicCtrl.updateClinicDiscountPolicy);
+router.get('/clinic/branches/:branchId/discount-approval-rules', requireOwnerPermission('clinic.settings.write', 'branch'), clinicCtrl.getClinicDiscountApprovalRules);
+router.put('/clinic/branches/:branchId/discount-approval-rules', requireOwnerPermission('clinic.settings.write', 'branch'), clinicCtrl.upsertClinicDiscountApprovalRule);
+router.get('/clinic/branches/:branchId/discount-audit', requireOwnerPermission('clinic.settings.write', 'branch'), clinicCtrl.getClinicDiscountAuditLog);
+// Clinic Enterprise: Doctor contracts
+router.get('/clinic/branches/:branchId/doctors/:memberId/contract', requireOwnerPermission('clinic.staff.manage', 'branch'), clinicCtrl.getClinicDoctorContract);
+router.get('/clinic/branches/:branchId/doctors/:memberId/contracts', requireOwnerPermission('clinic.staff.manage', 'branch'), clinicCtrl.listClinicDoctorContracts);
+router.post('/clinic/branches/:branchId/doctors/:memberId/contract', requireOwnerPermission('clinic.staff.manage', 'branch'), clinicCtrl.createClinicDoctorContract);
+router.patch('/clinic/branches/:branchId/doctors/:memberId/contract/:contractId', requireOwnerPermission('clinic.staff.manage', 'branch'), clinicCtrl.updateClinicDoctorContract);
+router.get('/clinic/branches/:branchId/doctors/:memberId/contract/rate-preview', requireOwnerPermission('clinic.staff.manage', 'branch'), clinicCtrl.getClinicDoctorContractRatePreview);
+// Clinic Enterprise: Settlement batches
+router.post('/clinic/branches/:branchId/settlement-batches/generate', requireOwnerPermission('clinic.staff.manage', 'branch'), clinicCtrl.generateClinicSettlementBatches);
+router.get('/clinic/branches/:branchId/settlement-batches', requireOwnerPermission('clinic.staff.manage', 'branch'), clinicCtrl.listClinicSettlementBatches);
+router.get('/clinic/branches/:branchId/settlement-batches/:batchId', requireOwnerPermission('clinic.staff.manage', 'branch'), clinicCtrl.getClinicSettlementBatchById);
+router.put('/clinic/branches/:branchId/settlement-batches/:batchId/review', requireOwnerPermission('clinic.staff.manage', 'branch'), clinicCtrl.reviewClinicSettlementBatch);
+router.put('/clinic/branches/:branchId/settlement-batches/:batchId/approve', requireOwnerPermission('clinic.staff.manage', 'branch'), clinicCtrl.approveClinicSettlementBatch);
+router.post('/clinic/branches/:branchId/settlement-batches/:batchId/pay', requireOwnerPermission('clinic.staff.manage', 'branch'), clinicCtrl.payClinicSettlementBatch);
+router.post('/clinic/branches/:branchId/settlement-batches/:batchId/adjustments', requireOwnerPermission('clinic.staff.manage', 'branch'), clinicCtrl.addClinicSettlementBatchAdjustment);
+router.get('/clinic/branches/:branchId/doctors/:memberId/settlement-summary', requireOwnerPermission('clinic.staff.manage', 'branch'), clinicCtrl.getClinicDoctorSettlementSummary);
+// Clinic Enterprise: Reports
+router.get('/clinic/branches/:branchId/reports/profitability', requireOwnerPermission('clinic.settings.read', 'branch'), clinicCtrl.getClinicProfitabilityReport);
+router.get('/clinic/branches/:branchId/reports/settlement-summary', requireOwnerPermission('clinic.settings.read', 'branch'), clinicCtrl.getClinicSettlementSummaryReport);
+router.get('/clinic/branches/:branchId/reports/discount-analysis', requireOwnerPermission('clinic.settings.read', 'branch'), clinicCtrl.getClinicDiscountAnalysisReport);
+router.get('/clinic/branches/:branchId/reports/inventory-variance', requireOwnerPermission('clinic.settings.read', 'branch'), clinicCtrl.getClinicInventoryVarianceReport);
+router.get('/clinic/branches/:branchId/reports/doctor-contribution', requireOwnerPermission('clinic.settings.read', 'branch'), clinicCtrl.getClinicDoctorContributionReport);
+// Clinic Enterprise: Finance config
+router.get('/clinic/branches/:branchId/finance-config', requireOwnerPermission('clinic.settings.read', 'branch'), clinicCtrl.getClinicFinanceConfig);
+router.put('/clinic/branches/:branchId/finance-config', requireOwnerPermission('clinic.settings.write', 'branch'), clinicCtrl.updateClinicFinanceConfig);
+// Schedule proposals (CP3A)
+router.get('/clinic/branches/:branchId/schedule-proposals', requireOwnerPermission('clinic.schedule.manage', 'branch'), clinicCtrl.listClinicScheduleProposals);
+router.post('/clinic/branches/:branchId/schedule-proposals/:proposalId/review', requireOwnerPermission('clinic.schedule.manage', 'branch'), clinicCtrl.reviewClinicScheduleProposal);
 
 // Branch documents (aliases to satisfy UI calls)
 router.get('/branches/:id/documents', ctrl.listBranchDocuments);
@@ -258,6 +454,14 @@ router.get('/overview/logs', delegationCtrl.getOverviewLogs);
 const onboardingCtrl = require('./onboarding.controller');
 router.get('/onboarding/status', onboardingCtrl.getOnboardingStatus);
 router.post('/onboarding/start', ensureOwnerKyc, onboardingCtrl.startOnboarding);
+
+// Branch Manager Control: policy and escalations (owner only)
+const ownerPolicyCtrl = require('./ownerPolicy.controller');
+router.get('/branch-policy/:branchId', requireOwnerPermission('branch.write', 'branch'), ownerPolicyCtrl.getBranchPolicyHandler);
+router.put('/branch-policy/:branchId', requireOwnerPermission('branch.write', 'branch'), ownerPolicyCtrl.updateBranchPolicyHandler);
+router.get('/escalations', ownerPolicyCtrl.listEscalationsHandler);
+router.put('/escalations/:id/decide', ownerPolicyCtrl.decideEscalationHandler);
+router.get('/manager-activity/:branchId', requireOwnerPermission('branch.read', 'branch'), ownerPolicyCtrl.getManagerActivityHandler);
 
 module.exports = router;
 

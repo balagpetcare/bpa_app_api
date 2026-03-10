@@ -3,7 +3,7 @@
  * Multi-context: list contexts for user, set current (default), create context.
  */
 
-const prisma = require("../../../infrastructure/db/prismaClient").default;
+const prisma = require("../../../infrastructure/db/prismaClient").default ?? require("../../../infrastructure/db/prismaClient");
 
 /**
  * List all contexts for a user (owner, branch, team, roles, scopes).

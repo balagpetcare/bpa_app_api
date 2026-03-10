@@ -566,6 +566,23 @@ exports.getProfile = async (req, res) => {
     const hasStaffAccess =
       Boolean(ownerProfile || ownedOrgs.length > 0) || branchMemberCount > 0;
 
+    const doctorProfileCount = await prisma.clinicStaffProfile.count({
+      where: {
+        branchMember: { userId: user.id },
+        staffType: "DOCTOR",
+      },
+    });
+    const doctorVerification =
+      typeof prisma.doctorVerification?.findUnique === "function"
+        ? await prisma.doctorVerification.findUnique({
+            where: { userId: user.id },
+            select: { verificationStatus: true },
+          })
+        : null;
+    const hasDoctorAccess =
+      doctorVerification?.verificationStatus === "VERIFIED" ||
+      (doctorProfileCount > 0 && (!doctorVerification || doctorVerification.verificationStatus === "VERIFIED"));
+
     const kycApproved =
       ownerKyc && ["VERIFIED", "APPROVED"].includes(String(ownerKyc.verificationStatus || "").toUpperCase());
 
@@ -575,6 +592,7 @@ exports.getProfile = async (req, res) => {
       partner: Boolean(user?.partnerStatus && user.partnerStatus !== "NOT_APPLIED"),
       country: countryRoles.length > 0,
       staff: hasStaffAccess,
+      doctor: hasDoctorAccess,
     };
 
     const userContextService = require("../../services/userContext.service");
@@ -592,6 +610,8 @@ exports.getProfile = async (req, res) => {
 
     const authContexts = await resolveAuthContexts(userId);
     let default_redirect = await decideRedirect(userId, authContexts);
+    if (panels.doctor === true) default_redirect = "/doctor/dashboard";
+    else if (doctorProfileCount > 0 && String(doctorVerification?.verificationStatus ?? "").toUpperCase() !== "VERIFIED") default_redirect = "/doctor/verification";
     const needsActivitySelection = default_redirect === "/choose-activity";
 
     // Routing decision payload for post-auth-landing
@@ -618,6 +638,7 @@ exports.getProfile = async (req, res) => {
       owner: "/owner/onboarding",
       producer: "/producer/kyc",
       clinic: "/clinic",
+      doctor: "/doctor/dashboard",
       shop: "/shop",
       customer: "/mother",
     };
@@ -630,6 +651,9 @@ exports.getProfile = async (req, res) => {
     const ownerNeedsKyc =
       panels.owner &&
       (ownerKycStatus === "UNSUBMITTED" || ownerKycStatus === "REJECTED" || ownerKycStatus === "SUBMITTED");
+    const ownerIsDoctorCandidate =
+      doctorProfileCount > 0 &&
+      String(doctorVerification?.verificationStatus ?? "").toUpperCase() !== "VERIFIED";
     const verificationRequired = ownerNeedsKyc || producerPending;
     const verificationStatus =
       producerPending
@@ -644,7 +668,9 @@ exports.getProfile = async (req, res) => {
     const verificationRedirect = producerPending
       ? "/producer/kyc"
       : ownerNeedsKyc
-        ? "/owner/kyc"
+        ? ownerIsDoctorCandidate
+          ? "/doctor/verification"
+          : "/owner/kyc"
         : null;
 
     const debugReasons = [];
@@ -669,12 +695,18 @@ exports.getProfile = async (req, res) => {
       ...(process.env.NODE_ENV !== "production" && { debugReason: debugReasons.join("; ") }),
     };
 
+    const doctorVerificationStatus =
+      doctorVerification != null
+        ? (doctorVerification.verificationStatus ?? "UNSUBMITTED")
+        : null;
+
     return res.status(200).json({
       success: true,
       data: user,
       role,
       permissions,
       panels,
+      doctorVerificationStatus,
       countryRoles,
       contexts,
       defaultContext: defaultContext
@@ -690,7 +722,8 @@ exports.getProfile = async (req, res) => {
                       const kyc = ownerKyc?.verificationStatus
                         ? String(ownerKyc.verificationStatus).toUpperCase()
                         : "";
-                      return kyc === "UNSUBMITTED" || kyc === "REJECTED" ? "/owner/kyc" : "/owner/dashboard";
+                      if (kyc !== "UNSUBMITTED" && kyc !== "REJECTED") return "/owner/dashboard";
+                      return ownerIsDoctorCandidate ? "/doctor/verification" : "/owner/kyc";
                     })()
                   : "/owner/dashboard";
             return {
@@ -731,7 +764,13 @@ exports.getProfile = async (req, res) => {
     });
   } catch (error) {
     console.error("getProfile Error:", error);
-    return res.status(500).json({ success: false, message: "Server Error" });
+    const message = process.env.NODE_ENV !== "production" ? (error as Error)?.message : "Server Error";
+    const details = process.env.NODE_ENV !== "production" && (error as Error)?.stack ? { stack: (error as Error).stack } : undefined;
+    return res.status(500).json({
+      success: false,
+      message,
+      ...(details && { details }),
+    });
   }
 };
 
@@ -993,7 +1032,7 @@ exports.acceptInvite = async (req, res) => {
           uid = created.id;
         }
 
-        await tx.branchMember.upsert({
+        const member = await tx.branchMember.upsert({
           where: { branchId_userId: { branchId: staffInvite.branchId, userId: uid } },
           update: { role: staffInvite.role, status: "ACTIVE" },
           create: {
@@ -1004,7 +1043,32 @@ exports.acceptInvite = async (req, res) => {
             status: "ACTIVE",
             invitedByUserId: staffInvite.invitedByUserId,
           },
+          select: { id: true },
         });
+
+        if (staffInvite.inviteAsDoctor) {
+          const branchWithTypes = await tx.branch.findUnique({
+            where: { id: staffInvite.branchId },
+            select: { types: { select: { type: { select: { code: true } } } } },
+          });
+          const isClinic = branchWithTypes?.types?.some(
+            (t) => String(t?.type?.code || "").toUpperCase() === "CLINIC"
+          );
+          if (isClinic) {
+            await tx.clinicStaffProfile.upsert({
+              where: { branchMemberId: member.id },
+              create: {
+                orgId: staffInvite.orgId,
+                branchId: staffInvite.branchId,
+                branchMemberId: member.id,
+                staffType: "DOCTOR",
+                status: "ACTIVE",
+                onboardingStatus: "PENDING",
+              },
+              update: { staffType: "DOCTOR", status: "ACTIVE", onboardingStatus: "PENDING" },
+            });
+          }
+        }
 
         await tx.staffInvite.update({
           where: { id: staffInvite.id },
@@ -1031,7 +1095,21 @@ exports.acceptInvite = async (req, res) => {
       });
 
       const staffContexts = await resolveAuthContexts(userId);
-      const staffRedirect = await decideRedirect(userId, staffContexts, { forceStaffPanel: true });
+      let staffRedirect = await decideRedirect(userId, staffContexts, { forceStaffPanel: true });
+
+      let onboardingRequired = false;
+      let onboardingPath = null;
+      if (staffInvite.inviteAsDoctor) {
+        const profile = await prisma.clinicStaffProfile.findFirst({
+          where: { branchMember: { userId, branchId: staffInvite.branchId }, staffType: "DOCTOR" },
+          select: { onboardingStatus: true },
+        });
+        if (profile?.onboardingStatus === "PENDING") {
+          onboardingRequired = true;
+          onboardingPath = `/doctor/onboarding/${staffInvite.branchId}`;
+          staffRedirect = onboardingPath;
+        }
+      }
 
       return res.json({
         success: true,
@@ -1046,6 +1124,8 @@ exports.acceptInvite = async (req, res) => {
         },
         data: { branchId: staffInvite.branchId, role: staffInvite.role },
         default_redirect: staffRedirect,
+        onboardingRequired: onboardingRequired || undefined,
+        onboardingPath: onboardingPath || undefined,
       });
     }
 

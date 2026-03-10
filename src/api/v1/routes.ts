@@ -49,6 +49,7 @@ router.use("/admin/verification-cases", require("./modules/admin_verification_ca
 router.use("/admin/organizations", require("./modules/admin_organizations/admin_organizations.routes"));
 router.use("/admin/branches", require("./modules/admin_branches/admin_branches.routes"));
 router.use("/admin/audit", require("./modules/admin_audit/admin_audit.routes"));
+router.use("/admin/clinical-catalog", require("./modules/admin_clinical_catalog/admin_clinical_catalog.routes"));
 router.use("/admin/inventory", require("./modules/admin_inventory/admin_inventory.routes"));
 router.use("/admin/users", require("./modules/admin_users/admin_users.routes"));
 router.use("/admin/staff", require("./modules/admin_staff/admin_staff.routes"));
@@ -101,6 +102,65 @@ router.use('/webhooks', require('./modules/webhooks/payout_webhooks.routes'));
 // Partner onboarding (owner application -> org/branch -> publish)
 router.use("/partner", require("./modules/partner_onboarding/partner_onboarding.routes"));
 
+// Owner clinic master catalog (browse) — register on main router so GET always matches (fix 404)
+const auth = require("../../middlewares/auth");
+const ownerPanelGuard = require("../../middlewares/ownerPanelGuard");
+const { requireOwnerPermission } = require("../../middlewares/requireOwnerScope");
+const ownerClinicCtrl = require("./modules/owner/ownerClinic.controller");
+const ownerMasterCatalogChain = [
+  auth,
+  countryScopeGuard,
+  ownerPanelGuard(),
+  requireOwnerPermission("clinic.services.manage", "branch"),
+];
+router.get(
+  "/owner/clinic/branches/:branchId/catalog/master/categories",
+  ownerMasterCatalogChain,
+  ownerClinicCtrl.listMasterCatalogCategories
+);
+router.get(
+  "/owner/clinic/branches/:branchId/catalog/master/items",
+  ownerMasterCatalogChain,
+  ownerClinicCtrl.listMasterCatalogItems
+);
+router.post(
+  "/owner/clinic/branches/:branchId/catalog/add-from-master/preview",
+  ownerMasterCatalogChain,
+  ownerClinicCtrl.previewAddFromMasterCatalog
+);
+router.post(
+  "/owner/clinic/branches/:branchId/catalog/add-from-master/execute",
+  ownerMasterCatalogChain,
+  ownerClinicCtrl.executeAddFromMasterCatalog
+);
+router.get(
+  "/owner/clinic/branches/:branchId/catalog/templates",
+  ownerMasterCatalogChain,
+  ownerClinicCtrl.listCatalogTemplates
+);
+router.get(
+  "/owner/clinic/branches/:branchId/catalog/templates/:templateId",
+  ownerMasterCatalogChain,
+  ownerClinicCtrl.getCatalogTemplateById
+);
+router.get(
+  "/owner/clinic/branches/:branchId/catalog/install-history",
+  ownerMasterCatalogChain,
+  ownerClinicCtrl.getCatalogInstallHistory
+);
+// Package by id — register on main router so GET always matches (fix 404 for detail/edit)
+router.get(
+  "/owner/clinic/branches/:branchId/packages/:packageId",
+  ownerMasterCatalogChain,
+  ownerClinicCtrl.getClinicPackageById
+);
+// Package audit log — register on main router so GET always matches (fix 404)
+router.get(
+  "/owner/clinic/branches/:branchId/packages/:packageId/audit-log",
+  ownerMasterCatalogChain,
+  ownerClinicCtrl.getClinicPackageAuditLog
+);
+
 // Owner panel (organizations, branches, staff) — separate namespace
 router.use("/owner", countryScopeGuard, require("./modules/owner/owner.routes"));
 
@@ -119,6 +179,9 @@ router.use("/branches", countryScopeGuard, require("./modules/branch_manager/bra
 
 // Branch Access Permissions (multi-branch staff permission system)
 router.use("/branch-access", countryScopeGuard, require("./modules/branch_access/branch_access.routes"));
+
+// Manager API (dashboard, staff, reports, escalations — branch manager control)
+router.use("/manager", countryScopeGuard, require("./modules/manager/manager.routes"));
 
 // BPA Admin approval endpoints (uses env allowlists)
 router.use("/admin", require("./modules/partner_onboarding/admin_onboarding.routes"));
@@ -158,6 +221,16 @@ router.use("/orders", countryScopeGuard, require("./modules/orders/orders.routes
 
 // POS System (MVP Core Feature)
 router.use("/pos", countryScopeGuard, require("./modules/pos/pos.routes"));
+
+// Clinic (Appointment + Queue) — staff panel: /api/v1/clinic/branches/:branchId/...
+router.use("/clinic", countryScopeGuard, require("./modules/clinic/clinic.routes"));
+
+// Vet reference (public): countries, regulatory bodies, doc types for doctor verification
+router.use("/vet-reference", require("./modules/doctor/vetReference.routes"));
+// Doctor panel auth (login/logout) — must be before /doctor so /doctor/auth/* is matched
+router.use("/doctor/auth", require("./modules/doctor_auth/doctor_auth.routes"));
+// Doctor panel — unified view across all clinics
+router.use("/doctor", countryScopeGuard, require("./modules/doctor/doctor.routes"));
 
 // Services (Clinic MVP Feature)
 router.use("/services", countryScopeGuard, require("./modules/services/services.routes"));

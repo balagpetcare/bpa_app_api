@@ -22,6 +22,7 @@ export type CreateStaffInviteBody = {
   permissions?: unknown;
   name?: string | null;
   message?: string | null;
+  inviteAsDoctor?: boolean;
 };
 
 export type CreateStaffInviteResult = {
@@ -48,7 +49,7 @@ export async function createStaffInvite(
   invitedByUserId: number,
   inviterRole: string | null | undefined
 ): Promise<CreateStaffInviteResult> {
-  const { phone, email, displayName, role } = body;
+  const { phone, email, displayName, role, inviteAsDoctor } = body;
 
   if (!role) throw new Error("role is required");
 
@@ -92,6 +93,7 @@ export async function createStaffInvite(
       email: emailNorm,
       phone: phoneNorm,
       displayName: displayName ? String(displayName) : null,
+      inviteAsDoctor: Boolean(inviteAsDoctor),
       tokenHash,
       expiresAt,
       invitedByUserId,

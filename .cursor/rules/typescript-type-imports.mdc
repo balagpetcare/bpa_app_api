@@ -1,0 +1,31 @@
+---
+description: Use import type for TypeScript types; never mix type in normal imports
+globs: "**/*.ts,**/*.tsx"
+alwaysApply: false
+---
+
+# TypeScript type imports
+
+- **Always use `import type { ... }`** for TypeScript-only symbols (interfaces, type aliases, type-only enums).
+- **Never mix `type` inside normal import blocks.** Do not use inline `type` (e.g. `import { type Foo, bar }` or `import { Foo, type Bar }`).
+
+Use two separate statements: one for types, one for values.
+
+```typescript
+// ❌ BAD – type mixed with value import
+import { type UserDto, getUsers } from './api';
+
+// ❌ BAD – types in value import block
+import { UserDto, getUsers } from './api';
+
+// ✅ GOOD – type-only import and value import separate
+import type { UserDto } from './api';
+import { getUsers } from './api';
+```
+
+When a file only needs types from a module, use a single type-only import:
+
+```typescript
+// ✅ GOOD
+import type { UserDto, ApiResponse } from './api';
+```

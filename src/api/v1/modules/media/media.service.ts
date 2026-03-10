@@ -75,7 +75,17 @@ async function uploadToStorage({ buffer, mimeType, key, originalname }) {
     Body: buffer,
     ContentType: ct,
   });
-  await s3Client.send(cmd);
+  // #region agent log
+  fetch('http://127.0.0.1:7242/ingest/b9a50c8d-67c2-4353-bdac-e3b81804031b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'4e348a'},body:JSON.stringify({sessionId:'4e348a',runId:'run1',hypothesisId:'H2',location:'media.service.ts:uploadToStorage:beforeSend',message:'about to send PutObject',data:{endpoint:String(appConfig?.storage?.endpoint||''),bucket:String(appConfig?.storage?.bucketName||''),forcePathStyle:!!appConfig?.storage?.forcePathStyle,keyPrefix:String(key||'').split('/').slice(0,2).join('/')},timestamp:Date.now()})}).catch(()=>{});
+  // #endregion
+  try {
+    await s3Client.send(cmd);
+  } catch (err) {
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/b9a50c8d-67c2-4353-bdac-e3b81804031b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'4e348a'},body:JSON.stringify({sessionId:'4e348a',runId:'run1',hypothesisId:'H1',location:'media.service.ts:uploadToStorage:sendError',message:'PutObject failed',data:{errorName:String((err as any)?.name||''),errorCode:String((err as any)?.code||''),errorMessage:String((err as any)?.message||''),hostname:String((err as any)?.hostname||'')},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    throw err;
+  }
   return buildPublicUrl(key);
 }
 

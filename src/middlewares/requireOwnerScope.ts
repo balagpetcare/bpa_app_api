@@ -21,7 +21,13 @@ async function getOwnerContext(
     return uid ? { ownerUserId: Number(uid) } : null;
   }
 
-  const idParam = req.params?.id ? Number(req.params.id) : NaN;
+  // Branch routes use :branchId (e.g. /clinic/branches/:branchId/dashboard-stats), others use :id
+  const idParam =
+    req.params?.branchId != null
+      ? Number(req.params.branchId)
+      : req.params?.id != null
+        ? Number(req.params.id)
+        : NaN;
   if (!Number.isFinite(idParam)) return null;
 
   if (resourceType === "organization") {

@@ -318,6 +318,12 @@ export async function resolveBranchAccessProfile(
     where: {
       branchId_userId: { branchId, userId },
     },
+    select: {
+      status: true,
+      expiresAt: true,
+      id: true,
+      permissionOverrides: true,
+    },
   });
 
   if (!permission || permission.status !== "APPROVED") {
@@ -346,19 +352,27 @@ export async function resolveBranchAccessProfile(
     },
   });
 
+  // Prefer Role from join table (e.g. CLINIC_STAFF) when present; MemberRole enum does not include CLINIC_STAFF.
   const roleKey =
-    (member?.role as string) ||
     member?.roles?.[0]?.role?.key ||
+    (member?.role as string) ||
     BRANCH_DEFAULT_ROLE;
-  const permissions =
+  const basePermissions =
     BRANCH_ROLE_PERMISSIONS[roleKey] ||
     BRANCH_DEFAULT_PERMISSIONS;
+  const overridesRaw = permission.permissionOverrides;
+  const overrides = Array.isArray(overridesRaw)
+    ? overridesRaw.filter((k): k is string => typeof k === "string")
+    : overridesRaw && typeof overridesRaw === "object" && !Array.isArray(overridesRaw)
+    ? Object.keys(overridesRaw)
+    : [];
+  const permissions = [...new Set([...basePermissions, ...overrides])];
   const scopes = ["branch"];
 
   return {
     status: permission.status,
     role: roleKey,
-    permissions: [...new Set(permissions)],
+    permissions,
     scopes,
     branchMeta: { branchId },
   };
@@ -367,9 +381,10 @@ export async function resolveBranchAccessProfile(
 /**
  * Resolve branch access profile for a permission row (e.g. for my-requests enrichment).
  * Returns role + permissions even when status is PENDING (for display); permissions may be minimal.
+ * If permission.permissionOverrides is provided (array of strings), merged additively into permissions.
  */
 export async function resolveBranchAccessProfileFromPermission(
-  permission: { branchId: number; userId: number; status: string }
+  permission: { branchId: number; userId: number; status: string; permissionOverrides?: unknown }
 ): Promise<{ role: string; permissions: string[]; scopes: string[] }> {
   const member = await prisma.branchMember.findUnique({
     where: {
@@ -388,17 +403,25 @@ export async function resolveBranchAccessProfileFromPermission(
     },
   });
 
+  // Prefer Role from join table (e.g. CLINIC_STAFF) when present.
   const roleKey =
-    (member?.role as string) ||
     member?.roles?.[0]?.role?.key ||
+    (member?.role as string) ||
     BRANCH_DEFAULT_ROLE;
-  const permissions =
+  const basePermissions =
     BRANCH_ROLE_PERMISSIONS[roleKey] ||
     BRANCH_DEFAULT_PERMISSIONS;
+  const overridesRaw = permission.permissionOverrides;
+  const overrides = Array.isArray(overridesRaw)
+    ? overridesRaw.filter((k): k is string => typeof k === "string")
+    : overridesRaw && typeof overridesRaw === "object" && !Array.isArray(overridesRaw)
+    ? Object.keys(overridesRaw)
+    : [];
+  const permissions = [...new Set([...basePermissions, ...overrides])];
 
   return {
     role: roleKey,
-    permissions: [...new Set(permissions)],
+    permissions,
     scopes: ["branch"],
   };
 }

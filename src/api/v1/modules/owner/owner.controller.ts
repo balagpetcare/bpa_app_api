@@ -319,6 +319,50 @@ exports.getOwnerProfile = async (req, res) => {
   }
 };
 
+/** GET /owner/me/pets — list current owner's pets (My Pets). */
+exports.listMyPets = async (req, res) => {
+  try {
+    const prisma = getPrisma(req);
+    const ownerUserId = asIntId(req.user?.id || req.auth?.userId);
+    if (!ownerUserId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+    const pets = await prisma.pet.findMany({
+      where: { userId: ownerUserId, deleted: false },
+      include: {
+        animalType: { select: { id: true, name: true } },
+        breed: { select: { id: true, name: true } },
+      },
+      orderBy: { updatedAt: 'desc' },
+    });
+    res.json({ success: true, data: { pets } });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e?.message || 'Server error' });
+  }
+};
+
+/** GET /owner/me/pets/:petId — get one pet for current owner. */
+exports.getMyPet = async (req, res) => {
+  try {
+    const prisma = getPrisma(req);
+    const ownerUserId = asIntId(req.user?.id || req.auth?.userId);
+    const petId = asIntId(req.params.petId);
+    if (!ownerUserId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+    if (!petId) return res.status(400).json({ success: false, message: 'petId is required' });
+
+    const pet = await prisma.pet.findFirst({
+      where: { id: petId, userId: ownerUserId, deleted: false },
+      include: {
+        animalType: { select: { id: true, name: true } },
+        breed: { select: { id: true, name: true } },
+      },
+    });
+    if (!pet) return res.status(404).json({ success: false, message: 'Pet not found' });
+    res.json({ success: true, data: pet });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e?.message || 'Server error' });
+  }
+};
+
 exports.upsertOwnerProfile = async (req, res) => {
   try {
     const prisma = getPrisma(req);
@@ -2876,7 +2920,27 @@ exports.getStaff = async (req, res) => {
     const effectiveOrgIds = await getEffectiveOrgIdsForOwnerPanel(prisma, ownerUserId);
     if (!effectiveOrgIds.length || !effectiveOrgIds.includes(row.orgId)) return res.status(403).json({ success: false, message: 'Forbidden' });
 
-    res.json({ success: true, data: row });
+    // Attach dashboard access (BranchAccessPermission) for this member's branch
+    let branchAccess = null;
+    if (row.branchId != null && row.userId != null && prisma.branchAccessPermission) {
+      const perm = await prisma.branchAccessPermission.findUnique({
+        where: {
+          branchId_userId: { branchId: row.branchId, userId: row.userId },
+        },
+        select: { id: true, status: true, role: true, expiresAt: true },
+      });
+      if (perm) {
+        branchAccess = {
+          id: perm.id,
+          status: perm.status,
+          role: perm.role,
+          expiresAt: perm.expiresAt,
+        };
+      }
+    }
+
+    const data = { ...row, branchAccess };
+    res.json({ success: true, data });
   } catch (e) {
     res.status(500).json({ success: false, message: e?.message || 'Server error' });
   }

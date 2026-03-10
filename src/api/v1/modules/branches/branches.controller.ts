@@ -336,16 +336,22 @@ exports.getBranchMe = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Branch not found' });
     }
 
+    const featuresJson = branch.featuresJson && typeof branch.featuresJson === 'object' ? branch.featuresJson : {};
+    const clinicEnabled = featuresJson.clinicEnabled === true;
+    const typeFromTypes = branch.types?.[0]?.type?.code ?? null;
+    const type = typeFromTypes ?? (clinicEnabled ? 'CLINIC' : null);
+
     const branchPayload = {
       id: branch.id,
       name: branch.name,
       orgId: branch.orgId,
-      type: branch.types?.[0]?.type?.code ?? null,
+      type,
       address: branch.addressJson ?? branch.address,
       lat: branch.lat ?? branch.latitude,
       lng: branch.lng ?? branch.longitude,
       org: branch.org,
       types: branch.types,
+      clinicEnabled,
       ...branch,
     };
 

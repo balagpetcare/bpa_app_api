@@ -1,10 +1,12 @@
-import { Router, type Request, type Response } from "express";
+import type { Request, Response } from "express";
+import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
 import { fail, ok } from "../lib/http";
 import { hashPassword, signToken, verifyPassword } from "../lib/auth";
 import { phoneSchema, passwordSchema } from "../validators/common";
-import { authRequired, type AuthedRequest } from "../middleware/auth";
+import type { AuthedRequest } from "../middleware/auth";
+import { authRequired } from "../middleware/auth";
 
 export function authRoutes() {
   const r = Router();

@@ -6,7 +6,8 @@ import "dotenv/config";
 import { Worker, Job } from "bullmq";
 import prisma from "../../../infrastructure/db/prismaClient";
 import { sendInviteEmail } from "../../email/email.service";
-import { QUEUE_NAME, type ProducerStaffInviteEmailJobPayload } from "../queues";
+import type { ProducerStaffInviteEmailJobPayload } from "../queues";
+import { QUEUE_NAME } from "../queues";
 
 const REDIS_URL = process.env.REDIS_URL || "";
 const REDIS_ENABLED =

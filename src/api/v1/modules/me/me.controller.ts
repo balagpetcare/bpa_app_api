@@ -274,9 +274,9 @@ export async function acceptInviteFromNotification(req: Request, res: Response, 
       });
     }
 
-    // Create or update BranchMember
-    await prisma.$transaction([
-      prisma.branchMember.upsert({
+    // Create or update BranchMember, and ClinicStaffProfile when inviteAsDoctor
+    const member = await prisma.$transaction(async (tx) => {
+      const m = await (tx as any).branchMember.upsert({
         where: { branchId_userId: { branchId: invite.branchId, userId: userId } },
         update: { role: invite.role, status: "ACTIVE" },
         create: {
@@ -287,27 +287,67 @@ export async function acceptInviteFromNotification(req: Request, res: Response, 
           status: "ACTIVE",
           invitedByUserId: invite.invitedByUserId,
         },
-      }),
-      prisma.staffInvite.update({
+        select: { id: true },
+      });
+
+      if ((invite as any).inviteAsDoctor) {
+        const branchWithTypes = await (tx as any).branch.findUnique({
+          where: { id: invite.branchId },
+          select: { types: { select: { type: { select: { code: true } } } } },
+        });
+        const isClinic = branchWithTypes?.types?.some(
+          (t: any) => String(t?.type?.code || "").toUpperCase() === "CLINIC"
+        );
+        if (isClinic) {
+          await (tx as any).clinicStaffProfile.upsert({
+            where: { branchMemberId: m.id },
+            create: {
+              orgId: invite.orgId,
+              branchId: invite.branchId,
+              branchMemberId: m.id,
+              staffType: "DOCTOR",
+              status: "ACTIVE",
+              onboardingStatus: "PENDING",
+            },
+            update: { staffType: "DOCTOR", status: "ACTIVE", onboardingStatus: "PENDING" },
+          });
+        }
+      }
+
+      await (tx as any).staffInvite.update({
         where: { id: invite.id },
         data: { status: "ACCEPTED", acceptedByUserId: userId },
-      }),
-      prisma.notification.update({
+      });
+      await (tx as any).notification.update({
         where: { id: notificationId },
         data: { readAt: new Date() },
-      }),
-    ]);
+      });
+
+      return m;
+    });
+
+    const responseData: any = {
+      branchId: invite.branchId,
+      branchName: invite.branch?.name,
+      orgId: invite.orgId,
+      orgName: invite.org?.name,
+      role: invite.role,
+    };
+    if ((invite as any).inviteAsDoctor) {
+      const profile = await prisma.clinicStaffProfile.findFirst({
+        where: { branchMemberId: member.id, staffType: "DOCTOR" },
+        select: { onboardingStatus: true },
+      });
+      if (profile?.onboardingStatus === "PENDING") {
+        responseData.onboardingRequired = true;
+        responseData.onboardingPath = `/doctor/onboarding/${invite.branchId}`;
+      }
+    }
 
     return res.json({
       success: true,
       message: "Invitation accepted successfully",
-      data: {
-        branchId: invite.branchId,
-        branchName: invite.branch?.name,
-        orgId: invite.orgId,
-        orgName: invite.org?.name,
-        role: invite.role,
-      },
+      data: responseData,
     });
   } catch (err) {
     return next(err);

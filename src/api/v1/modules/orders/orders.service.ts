@@ -1,4 +1,15 @@
 const prisma = require("../../../../infrastructure/db/prismaClient");
+let domainEvents: { emit: (name: string, payload: Record<string, unknown>) => void; DOMAIN_EVENTS: Record<string, string> } | null = null;
+function getDomainEvents() {
+  if (!domainEvents) {
+    try {
+      domainEvents = require("../services/domainEvents.service");
+    } catch {
+      domainEvents = { emit: () => {}, DOMAIN_EVENTS: {} };
+    }
+  }
+  return domainEvents;
+}
 
 /**
  * Generate unique order number
@@ -191,8 +202,9 @@ async function createOrder(data: {
   branchId: number;
   customerId?: number;
   items: Array<{
-    productId: number;
-    variantId?: number;
+    productId?: number | null;
+    variantId?: number | null;
+    serviceId?: number | null;
     quantity: number;
     price: number;
   }>;
@@ -201,13 +213,13 @@ async function createOrder(data: {
   createdByUserId?: number;
   fulfilmentInventoryLocationId?: number | null;
   orderSource?: string | null;
+  visitId?: number | null;
 }) {
-  // Calculate total
+  // Each item must have either productId or serviceId
   const totalAmount = data.items.reduce((sum, item) => {
     return sum + item.price * item.quantity;
   }, 0);
 
-  // Generate order number
   const orderNumber = generateOrderNumber();
 
   const orderData: any = {
@@ -222,8 +234,9 @@ async function createOrder(data: {
     createdByUserId: data.createdByUserId || null,
     items: {
       create: data.items.map((item) => ({
-        productId: item.productId,
-        variantId: item.variantId || null,
+        productId: item.productId ?? null,
+        variantId: item.variantId ?? null,
+        serviceId: item.serviceId ?? null,
         quantity: item.quantity,
         price: item.price,
         total: item.price * item.quantity,
@@ -235,6 +248,9 @@ async function createOrder(data: {
   }
   if (data.orderSource != null && ["ONLINE", "POS", "CLINIC", "OTHER"].includes(data.orderSource)) {
     orderData.orderSource = data.orderSource;
+  }
+  if (data.visitId != null) {
+    orderData.visitId = data.visitId;
   }
 
   // Create order with items
@@ -256,6 +272,7 @@ async function createOrder(data: {
         include: {
           product: true,
           variant: true,
+          service: true,
         },
       },
     },
@@ -341,6 +358,15 @@ async function processPayment(
     },
   });
 
+  if (data.paymentStatus === "COMPLETED" && order.visitId) {
+    try {
+      const { createSettlementLedgerForOrder } = require("../clinic/doctorSettlement.service");
+      createSettlementLedgerForOrder(orderId).catch(() => {});
+    } catch (_) {
+      // clinic module optional for non-clinic orders
+    }
+  }
+
   return order;
 }
 
@@ -394,6 +420,19 @@ async function cancelOrder(orderId: number, reason?: string, branchId?: number) 
       },
     },
   });
+
+  if (existing.paymentStatus === "COMPLETED") {
+    try {
+      const { emit, DOMAIN_EVENTS } = getDomainEvents();
+      if (DOMAIN_EVENTS.REFUND_PROCESSED) {
+        emit(DOMAIN_EVENTS.REFUND_PROCESSED, {
+          orderId,
+          branchId: order.branchId,
+          reason: reason ?? null,
+        });
+      }
+    } catch (_) {}
+  }
 
   return { order, performedCancel: true };
 }

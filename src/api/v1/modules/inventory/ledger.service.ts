@@ -324,6 +324,103 @@ async function recordMultipleLedgerEntries(
 }
 
 /**
+ * Get available lots FEFO using transaction client (for use inside $transaction).
+ */
+async function getAvailableLotsFEFOWithTx(tx: any, locationId: number, variantId: number) {
+  const now = new Date();
+  const lotBalances = await tx.stockLotBalance.findMany({
+    where: {
+      locationId,
+      lot: {
+        variantId,
+        expDate: { gt: now },
+      },
+      onHandQty: { gt: 0 },
+    },
+    include: {
+      lot: {
+        select: {
+          id: true,
+          lotCode: true,
+          mfgDate: true,
+          expDate: true,
+          variantId: true,
+        },
+      },
+    },
+    orderBy: {
+      lot: { expDate: "asc" },
+    },
+  });
+  return lotBalances.map((lb: any) => ({
+    lotId: lb.lotId,
+    lot: lb.lot,
+    onHandQty: lb.onHandQty,
+    reservedQty: lb.reservedQty,
+    availableQty: lb.onHandQty - lb.reservedQty,
+  }));
+}
+
+/**
+ * Commit sale using FEFO inside an existing transaction (for POS atomicity).
+ */
+async function saleFEFOInTx(
+  tx: any,
+  params: {
+    locationId: number;
+    variantId: number;
+    quantity: number;
+    saleType: "SALE_POS" | "SALE_ONLINE" | "SALE_CLINIC";
+    refType?: string;
+    refId?: string;
+    createdByUserId?: number;
+  }
+) {
+  const lots = await getAvailableLotsFEFOWithTx(tx, params.locationId, params.variantId);
+  let remaining = params.quantity;
+  const entries: LedgerEntryInput[] = [];
+
+  for (const item of lots) {
+    if (remaining <= 0) break;
+    const take = Math.min(remaining, item.onHandQty);
+    if (take <= 0) continue;
+    entries.push({
+      locationId: params.locationId,
+      variantId: params.variantId,
+      lotId: item.lotId,
+      type: params.saleType,
+      quantityDelta: -take,
+      refType: params.refType || "ORDER",
+      refId: params.refId || null,
+      createdByUserId: params.createdByUserId,
+    });
+    remaining -= take;
+  }
+
+  if (remaining > 0) {
+    throw new Error(
+      `Insufficient stock for sale. Requested: ${params.quantity}, Available: ${params.quantity - remaining}`
+    );
+  }
+
+  for (const entry of entries) {
+    await recordLedgerEntryInTx(tx, entry);
+  }
+}
+
+/**
+ * Record multiple ledger entries using existing transaction client.
+ */
+async function recordMultipleLedgerEntriesInTx(tx: any, entries: Array<LedgerEntryInput>) {
+  const ledgerIds: number[] = [];
+  for (const entry of entries) {
+    const ledger = await recordLedgerEntryInTx(tx, entry);
+    ledgerIds.push(ledger.id);
+  }
+  return ledgerIds;
+}
+
+/**
  * Get stock balance for a location + variant (aggregated)
  */
 async function getStockBalance(locationId: number, variantId: number) {
@@ -616,11 +713,14 @@ module.exports = {
   recordLedgerEntry,
   recordLedgerEntryInTx,
   recordMultipleLedgerEntries,
+  recordMultipleLedgerEntriesInTx,
   getStockBalance,
   getLedgerHistory,
   getAvailableLotsFEFO,
+  getAvailableLotsFEFOWithTx,
   reserveFEFO,
   saleFEFO,
+  saleFEFOInTx,
   restoreStockForOrderCancel,
   assertLotNotExpired,
   INVENTORY_ERROR_CODES,

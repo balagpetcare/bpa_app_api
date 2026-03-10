@@ -18,6 +18,10 @@ import { runGlobalLocationSeed } from "./seeders/location";
 import seedCountryPolicies from "./seeders/seedCountryPolicies";
 import seedGlobalCountryRoles from "./seeders/seedGlobalCountryRoles";
 import seedOrganizationCountries from "./seeders/seedOrganizationCountries";
+import seedVetRegulatoryBodies from "./seeders/seedVetRegulatoryBodies";
+import seedClinicalItemCategories from "./seeders/seedClinicalItemCategories";
+import seedMasterClinicalCatalog from "./seeders/seedMasterClinicalCatalog";
+import seedMasterCatalog from "./seeds/seed-master-catalog";
 
 const prisma = new PrismaClient();
 
@@ -75,6 +79,18 @@ async function main() {
 
   // 15) Phase 4: Global + Country roles and permissions
   await seedGlobalCountryRoles(prisma);
+
+  // 16) Vet reference: countries + regulatory bodies for doctor verification
+  await seedVetRegulatoryBodies(prisma);
+
+  // 17) Default clinical item categories per org (Medicines, Surgical Consumables, Instruments, OT Supplies)
+  await seedClinicalItemCategories(prisma);
+
+  // 18) Master Catalog from canonical CSV first (so template seed can reference CSV categories)
+  await seedMasterCatalog(prisma);
+
+  // 19) Master Clinical Catalog (global categories, items, templates for clinic catalog installer)
+  await seedMasterClinicalCatalog(prisma);
 }
 
 main()

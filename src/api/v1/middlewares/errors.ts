@@ -4,6 +4,22 @@ import type { NextFunction, Request, Response } from "express";
  * 404 handler
  */
 function notFoundHandler(req: Request, res: Response, next: NextFunction) {
+  // #region agent log
+  if ((req.originalUrl || "").includes("catalog/import")) {
+    fetch("http://127.0.0.1:7242/ingest/8587e4aa-5cb6-4181-b813-5bca1da63be3", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "7204b9" },
+      body: JSON.stringify({
+        sessionId: "7204b9",
+        hypothesisId: "A",
+        location: "errors.ts:notFoundHandler",
+        message: "404 sent for catalog/import",
+        data: { method: req.method, originalUrl: req.originalUrl, path: req.path, baseUrl: req.baseUrl },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+  }
+  // #endregion
   res.status(404).json({
     success: false,
     message: `Route not found: ${req.method} ${req.originalUrl}`,

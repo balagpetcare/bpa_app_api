@@ -1,5 +1,7 @@
-import { Router, type Request, type Response } from "express";
-import { authRequired, type AuthedRequest } from "../middleware/auth";
+import type { Request, Response } from "express";
+import { Router } from "express";
+import type { AuthedRequest } from "../middleware/auth";
+import { authRequired } from "../middleware/auth";
 import { fail, ok } from "../lib/http";
 import * as partnerSvc from "../modules/partner/partner.service";
 

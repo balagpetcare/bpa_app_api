@@ -1,4 +1,5 @@
 const prisma = require("../../../../infrastructure/db/prismaClient");
+const serviceCatalog = require("../clinic/serviceCatalog.service");
 
 /**
  * Get services with pagination and filters
@@ -69,6 +70,7 @@ async function getServices(options: {
             },
           },
         },
+        pricingVariants: true,
       },
       orderBy: { createdAt: "desc" },
     }),
@@ -120,6 +122,7 @@ async function getServiceById(serviceId: number, branchId?: number) {
           },
         },
       },
+      pricingVariants: true,
     },
   });
 
@@ -131,7 +134,7 @@ async function getServiceById(serviceId: number, branchId?: number) {
 }
 
 /**
- * Create new service
+ * Create new service. Auto-generates serviceCode if not provided.
  */
 async function createService(data: {
   orgId: number;
@@ -144,7 +147,24 @@ async function createService(data: {
   isRecurring?: boolean;
   status?: string;
   createdByUserId: number;
+  department?: string;
+  paymentGateRule?: string;
+  serviceCode?: string | null;
+  prerequisiteRule?: object | null;
+  allowDiscount?: boolean;
+  maxDiscountPct?: number | null;
+  discountNeedsApproval?: boolean;
+  taxRuleJson?: object | null;
+  applicableSpecies?: string[] | null;
+  isCustom?: boolean;
+  proposedByUserId?: number | null;
+  approvalStatus?: string | null;
 }) {
+  const serviceCode =
+    data.serviceCode != null && data.serviceCode !== ""
+      ? data.serviceCode
+      : await serviceCatalog.generateServiceCode(data.branchId, data.category);
+
   const service = await prisma.service.create({
     data: {
       orgId: data.orgId,
@@ -157,6 +177,18 @@ async function createService(data: {
       isRecurring: data.isRecurring || false,
       status: data.status || "ACTIVE",
       createdByUserId: data.createdByUserId,
+      department: data.department || "DOCTOR_DESK",
+      paymentGateRule: data.paymentGateRule || "PAY_BEFORE_SERVICE",
+      serviceCode,
+      prerequisiteRule: data.prerequisiteRule ?? undefined,
+      allowDiscount: data.allowDiscount !== false,
+      maxDiscountPct: data.maxDiscountPct ?? undefined,
+      discountNeedsApproval: data.discountNeedsApproval || false,
+      taxRuleJson: data.taxRuleJson ?? undefined,
+      applicableSpecies: data.applicableSpecies ?? undefined,
+      isCustom: data.isCustom || false,
+      proposedByUserId: data.proposedByUserId ?? undefined,
+      approvalStatus: data.approvalStatus ?? undefined,
     },
     include: {
       org: true,
@@ -180,6 +212,16 @@ async function updateService(
     duration?: number;
     isRecurring?: boolean;
     status?: string;
+    department?: string;
+    paymentGateRule?: string;
+    serviceCode?: string | null;
+    prerequisiteRule?: object | null;
+    allowDiscount?: boolean;
+    maxDiscountPct?: number | null;
+    discountNeedsApproval?: boolean;
+    taxRuleJson?: object | null;
+    applicableSpecies?: string[] | null;
+    approvalStatus?: string | null;
   },
   branchId?: number
 ) {
@@ -195,33 +237,23 @@ async function updateService(
 
   const updateData: any = {};
 
-  if (data.name !== undefined) {
-    updateData.name = data.name.trim();
-  }
-
-  if (data.description !== undefined) {
-    updateData.description = data.description?.trim() || null;
-  }
-
-  if (data.category !== undefined) {
-    updateData.category = data.category;
-  }
-
-  if (data.price !== undefined) {
-    updateData.price = data.price;
-  }
-
-  if (data.duration !== undefined) {
-    updateData.duration = data.duration || null;
-  }
-
-  if (data.isRecurring !== undefined) {
-    updateData.isRecurring = data.isRecurring;
-  }
-
-  if (data.status !== undefined) {
-    updateData.status = data.status;
-  }
+  if (data.name !== undefined) updateData.name = data.name.trim();
+  if (data.description !== undefined) updateData.description = data.description?.trim() || null;
+  if (data.category !== undefined) updateData.category = data.category;
+  if (data.price !== undefined) updateData.price = data.price;
+  if (data.duration !== undefined) updateData.duration = data.duration || null;
+  if (data.isRecurring !== undefined) updateData.isRecurring = data.isRecurring;
+  if (data.status !== undefined) updateData.status = data.status;
+  if (data.department !== undefined) updateData.department = data.department;
+  if (data.paymentGateRule !== undefined) updateData.paymentGateRule = data.paymentGateRule;
+  if (data.serviceCode !== undefined) updateData.serviceCode = data.serviceCode || null;
+  if (data.prerequisiteRule !== undefined) updateData.prerequisiteRule = data.prerequisiteRule;
+  if (data.allowDiscount !== undefined) updateData.allowDiscount = data.allowDiscount;
+  if (data.maxDiscountPct !== undefined) updateData.maxDiscountPct = data.maxDiscountPct;
+  if (data.discountNeedsApproval !== undefined) updateData.discountNeedsApproval = data.discountNeedsApproval;
+  if (data.taxRuleJson !== undefined) updateData.taxRuleJson = data.taxRuleJson;
+  if (data.applicableSpecies !== undefined) updateData.applicableSpecies = data.applicableSpecies;
+  if (data.approvalStatus !== undefined) updateData.approvalStatus = data.approvalStatus;
 
   const service = await prisma.service.update({
     where: { id: serviceId },
