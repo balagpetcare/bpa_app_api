@@ -3,6 +3,9 @@
  */
 
 const clinicService = require("./ownerClinic.service");
+const doctorRequestService = require("../doctor/doctorRequest.service");
+const appointmentAvailabilityService = require("../../services/appointmentAvailability.service");
+const appointmentService = require("../clinic/appointment.service");
 const { writeAudit: writeClinicAudit } = require("../../../../middlewares/auditWriter");
 
 function getPrisma(req: any) {
@@ -474,10 +477,79 @@ exports.listClinicRooms = async (req: any, res: any) => {
     const prisma = getPrisma(req);
     const userId = getUserId(req);
     const branchId = asInt(req.params.branchId);
+    const q = req.query || {};
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
     if (!branchId) return res.status(400).json({ success: false, message: "Invalid branchId" });
 
-    const data = await clinicService.listClinicRooms(prisma, userId, branchId);
+    const filters: any = {};
+    if (q.roomType) filters.roomType = String(q.roomType);
+    if (q.status) filters.status = String(q.status);
+    if (q.operationalStatus) filters.operationalStatus = String(q.operationalStatus);
+    if (q.zone) filters.zone = String(q.zone);
+    if (q.floor) filters.floor = String(q.floor);
+    if (q.activeOnly === "false") filters.activeOnly = false;
+    if (q.bookableOnly === "true") filters.bookableOnly = true;
+
+    const data = await clinicService.listClinicRooms(prisma, userId, branchId, filters);
+    if (data === null) return res.status(404).json({ success: false, message: "Clinic branch not found" });
+
+    if (q.summary === "1" || q.summary === "true") {
+      const summary = await clinicService.getClinicRoomSummary(prisma, userId, branchId);
+      return res.json({ success: true, data, summary: summary ?? undefined });
+    }
+    return res.json({ success: true, data });
+  } catch (e: any) {
+    console.error(e);
+    const isProd = String(process.env.NODE_ENV || "").toLowerCase() === "production";
+    return res.status(500).json({
+      success: false,
+      message: isProd ? "Server error" : (e?.message || "Server error"),
+    });
+  }
+};
+
+// GET /api/v1/owner/clinic/branches/:branchId/rooms/:roomId
+exports.getClinicRoom = async (req: any, res: any) => {
+  try {
+    const prisma = getPrisma(req);
+    const userId = getUserId(req);
+    const branchId = asInt(req.params.branchId);
+    const roomId = asInt(req.params.roomId);
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    if (!branchId || !roomId) return res.status(400).json({ success: false, message: "Invalid branchId or roomId" });
+
+    const data = await clinicService.getClinicRoom(prisma, userId, branchId, roomId);
+    if (data === null) return res.status(404).json({ success: false, message: "Clinic branch or room not found" });
+    return res.json({ success: true, data });
+  } catch (e: any) {
+    console.error(e);
+    const isProd = String(process.env.NODE_ENV || "").toLowerCase() === "production";
+    return res.status(500).json({
+      success: false,
+      message: isProd ? "Server error" : (e?.message || "Server error"),
+    });
+  }
+};
+
+// GET /api/v1/owner/clinic/branches/:branchId/schedule-board
+exports.getScheduleBoard = async (req: any, res: any) => {
+  try {
+    const prisma = getPrisma(req);
+    const userId = getUserId(req);
+    const branchId = asInt(req.params.branchId);
+    const dateFrom = req.query.dateFrom ? new Date(String(req.query.dateFrom)) : new Date();
+    const dateTo = req.query.dateTo ? new Date(String(req.query.dateTo)) : new Date(dateFrom.getTime() + 7 * 24 * 60 * 60 * 1000);
+    const roomId = req.query.roomId != null ? asInt(String(req.query.roomId)) : undefined;
+    const doctorId = req.query.doctorId != null ? asInt(String(req.query.doctorId)) : undefined;
+    const serviceId = req.query.serviceId != null ? asInt(String(req.query.serviceId)) : undefined;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    if (!branchId) return res.status(400).json({ success: false, message: "Invalid branchId" });
+
+    const data = await clinicService.getScheduleBoard(prisma, userId, branchId, dateFrom, dateTo, {
+      roomId: roomId ?? undefined,
+      doctorId: doctorId ?? undefined,
+      serviceId: serviceId ?? undefined,
+    });
     if (data === null) return res.status(404).json({ success: false, message: "Clinic branch not found" });
     return res.json({ success: true, data });
   } catch (e: any) {
@@ -487,6 +559,147 @@ exports.listClinicRooms = async (req: any, res: any) => {
       success: false,
       message: isProd ? "Server error" : (e?.message || "Server error"),
     });
+  }
+};
+
+// GET /api/v1/owner/clinic/branches/:branchId/rooms/:roomId/schedule
+exports.getRoomSchedule = async (req: any, res: any) => {
+  try {
+    const prisma = getPrisma(req);
+    const userId = getUserId(req);
+    const branchId = asInt(req.params.branchId);
+    const roomId = asInt(req.params.roomId);
+    const dateStr = req.query.date;
+    const date = dateStr ? new Date(String(dateStr)) : new Date();
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    if (!branchId || !roomId) return res.status(400).json({ success: false, message: "Invalid branchId or roomId" });
+
+    const data = await clinicService.getRoomTodaySchedule(prisma, userId, branchId, roomId, date);
+    if (data === null) return res.status(404).json({ success: false, message: "Clinic branch or room not found" });
+    return res.json({ success: true, data });
+  } catch (e: any) {
+    console.error(e);
+    const isProd = String(process.env.NODE_ENV || "").toLowerCase() === "production";
+    return res.status(500).json({
+      success: false,
+      message: isProd ? "Server error" : (e?.message || "Server error"),
+    });
+  }
+};
+
+// GET /api/v1/owner/clinic/branches/:branchId/rooms/:roomId/audit
+exports.getClinicRoomAudit = async (req: any, res: any) => {
+  try {
+    const prisma = getPrisma(req);
+    const userId = getUserId(req);
+    const branchId = asInt(req.params.branchId);
+    const roomId = asInt(req.params.roomId);
+    const limit = req.query?.limit != null ? parseInt(String(req.query.limit), 10) : 50;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    if (!branchId || !roomId) return res.status(400).json({ success: false, message: "Invalid branchId or roomId" });
+
+    const data = await clinicService.getClinicRoomAudit(prisma, userId, branchId, roomId, limit);
+    if (data === null) return res.status(404).json({ success: false, message: "Clinic branch or room not found" });
+    return res.json({ success: true, data });
+  } catch (e: any) {
+    console.error(e);
+    const isProd = String(process.env.NODE_ENV || "").toLowerCase() === "production";
+    return res.status(500).json({
+      success: false,
+      message: isProd ? "Server error" : (e?.message || "Server error"),
+    });
+  }
+};
+
+// GET /api/v1/owner/clinic/branches/:branchId/rooms/live
+exports.getRoomsLiveState = async (req: any, res: any) => {
+  try {
+    const prisma = getPrisma(req);
+    const userId = getUserId(req);
+    const branchId = asInt(req.params.branchId);
+    const at = req.query?.at ? new Date(String(req.query.at)) : undefined;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    if (!branchId) return res.status(400).json({ success: false, message: "Invalid branchId" });
+
+    const data = await clinicService.getRoomsLiveState(prisma, userId, branchId, at);
+    if (data === null) return res.status(404).json({ success: false, message: "Clinic branch not found" });
+    return res.json({ success: true, data });
+  } catch (e: any) {
+    console.error(e);
+    const isProd = String(process.env.NODE_ENV || "").toLowerCase() === "production";
+    return res.status(500).json({ success: false, message: isProd ? "Server error" : (e?.message || "Server error") });
+  }
+};
+
+// GET /api/v1/owner/clinic/branches/:branchId/rooms/:roomId/live
+exports.getRoomLiveState = async (req: any, res: any) => {
+  try {
+    const prisma = getPrisma(req);
+    const userId = getUserId(req);
+    const branchId = asInt(req.params.branchId);
+    const roomId = asInt(req.params.roomId);
+    const at = req.query?.at ? new Date(String(req.query.at)) : undefined;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    if (!branchId || !roomId) return res.status(400).json({ success: false, message: "Invalid branchId or roomId" });
+
+    const data = await clinicService.getRoomLiveState(prisma, userId, branchId, roomId, at);
+    if (data === null) return res.status(404).json({ success: false, message: "Clinic branch or room not found" });
+    return res.json({ success: true, data });
+  } catch (e: any) {
+    console.error(e);
+    const isProd = String(process.env.NODE_ENV || "").toLowerCase() === "production";
+    return res.status(500).json({ success: false, message: isProd ? "Server error" : (e?.message || "Server error") });
+  }
+};
+
+// POST /api/v1/owner/clinic/branches/:branchId/rooms/:roomId/blocks
+exports.createRoomBlock = async (req: any, res: any) => {
+  try {
+    const prisma = getPrisma(req);
+    const userId = getUserId(req);
+    const branchId = asInt(req.params.branchId);
+    const roomId = asInt(req.params.roomId);
+    const body = req.body || {};
+    const startAt = body.startAt ? new Date(body.startAt) : null;
+    const endAt = body.endAt ? new Date(body.endAt) : null;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    if (!branchId || !roomId || !startAt || !endAt || startAt >= endAt) {
+      return res.status(400).json({ success: false, message: "startAt and endAt (ISO) required with startAt < endAt" });
+    }
+    const type = body.type && ["CLEANING", "MAINTENANCE", "BLOCKED", "EMERGENCY_UNAVAILABLE"].includes(body.type) ? body.type : "BLOCKED";
+    const data = await clinicService.createRoomBlock(prisma, userId, branchId, roomId, {
+      type,
+      startAt,
+      endAt,
+      reason: body.reason ?? null,
+    });
+    if (data === null) return res.status(404).json({ success: false, message: "Clinic branch or room not found" });
+    return res.status(201).json({ success: true, data });
+  } catch (e: any) {
+    console.error(e);
+    const isProd = String(process.env.NODE_ENV || "").toLowerCase() === "production";
+    return res.status(500).json({ success: false, message: isProd ? "Server error" : (e?.message || "Server error") });
+  }
+};
+
+// DELETE /api/v1/owner/clinic/branches/:branchId/rooms/blocks/:blockId
+exports.releaseRoomBlock = async (req: any, res: any) => {
+  try {
+    const prisma = getPrisma(req);
+    const userId = getUserId(req);
+    const branchId = asInt(req.params.branchId);
+    const blockId = asInt(req.params.blockId);
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    if (!branchId || !blockId) return res.status(400).json({ success: false, message: "Invalid branchId or blockId" });
+
+    const data = await clinicService.releaseRoomBlock(prisma, userId, branchId, blockId);
+    if (data === null) return res.status(404).json({ success: false, message: "Clinic branch not found" });
+    if (data === false) return res.status(404).json({ success: false, message: "Block not found" });
+    return res.json({ success: true, data: { released: true } });
+  } catch (e: any) {
+    console.error(e);
+    const isProd = String(process.env.NODE_ENV || "").toLowerCase() === "production";
+    return res.status(500).json({ success: false, message: isProd ? "Server error" : (e?.message || "Server error") });
   }
 };
 
@@ -506,9 +719,20 @@ exports.createClinicRoom = async (req: any, res: any) => {
     const data = await clinicService.createClinicRoom(prisma, userId, branchId, {
       name: String(body.name).trim(),
       roomType: body.roomType != null ? String(body.roomType) : "GENERAL",
+      code: body.code != null ? String(body.code) : undefined,
+      floor: body.floor != null ? String(body.floor) : undefined,
+      zone: body.zone != null ? String(body.zone) : undefined,
       capacity: body.capacity != null ? Number(body.capacity) : undefined,
       status: body.status != null ? String(body.status) : "ACTIVE",
       notes: body.notes != null ? String(body.notes) : undefined,
+      bookable: body.bookable !== false,
+      cleaningBufferMinutes: body.cleaningBufferMinutes != null ? Number(body.cleaningBufferMinutes) : undefined,
+      maintenanceBufferMinutes: body.maintenanceBufferMinutes != null ? Number(body.maintenanceBufferMinutes) : undefined,
+      supportsWalkIns: body.supportsWalkIns !== false,
+      emergencyOverrideAllowed: body.emergencyOverrideAllowed === true,
+      preferredDoctorIds: Array.isArray(body.preferredDoctorIds) ? body.preferredDoctorIds : undefined,
+      allowedServiceIds: Array.isArray(body.allowedServiceIds) ? body.allowedServiceIds : undefined,
+      allowedPackageIds: Array.isArray(body.allowedPackageIds) ? body.allowedPackageIds : undefined,
     });
     if (data === null) return res.status(404).json({ success: false, message: "Clinic branch not found" });
 
@@ -545,14 +769,26 @@ exports.updateClinicRoom = async (req: any, res: any) => {
 
     const before = await prisma.branchRoom.findFirst({
       where: { id: roomId, branchId },
-      select: { id: true, name: true, roomType: true, status: true },
+      select: { id: true, name: true, roomType: true, status: true, operationalStatus: true },
     });
     const data = await clinicService.updateClinicRoom(prisma, userId, branchId, roomId, {
       name: body.name != null ? String(body.name).trim() : undefined,
       roomType: body.roomType != null ? String(body.roomType) : undefined,
+      code: body.code !== undefined ? (body.code == null ? null : String(body.code).trim()) : undefined,
+      floor: body.floor !== undefined ? (body.floor == null ? null : String(body.floor).trim()) : undefined,
+      zone: body.zone !== undefined ? (body.zone == null ? null : String(body.zone).trim()) : undefined,
       capacity: body.capacity !== undefined ? (body.capacity == null ? undefined : Number(body.capacity)) : undefined,
       status: body.status != null ? String(body.status) : undefined,
+      operationalStatus: body.operationalStatus != null ? String(body.operationalStatus) : undefined,
       notes: body.notes !== undefined ? (body.notes == null ? null : String(body.notes).trim()) : undefined,
+      bookable: body.bookable !== undefined ? Boolean(body.bookable) : undefined,
+      cleaningBufferMinutes: body.cleaningBufferMinutes !== undefined ? (body.cleaningBufferMinutes == null ? undefined : Number(body.cleaningBufferMinutes)) : undefined,
+      maintenanceBufferMinutes: body.maintenanceBufferMinutes !== undefined ? (body.maintenanceBufferMinutes == null ? undefined : Number(body.maintenanceBufferMinutes)) : undefined,
+      supportsWalkIns: body.supportsWalkIns !== undefined ? Boolean(body.supportsWalkIns) : undefined,
+      emergencyOverrideAllowed: body.emergencyOverrideAllowed !== undefined ? Boolean(body.emergencyOverrideAllowed) : undefined,
+      preferredDoctorIds: Array.isArray(body.preferredDoctorIds) ? body.preferredDoctorIds : undefined,
+      allowedServiceIds: Array.isArray(body.allowedServiceIds) ? body.allowedServiceIds : undefined,
+      allowedPackageIds: Array.isArray(body.allowedPackageIds) ? body.allowedPackageIds : undefined,
     });
     if (data === null) return res.status(404).json({ success: false, message: "Clinic branch or room not found" });
 
@@ -893,13 +1129,15 @@ exports.listClinicAppointments = async (req: any, res: any) => {
     const prisma = getPrisma(req);
     const userId = getUserId(req);
     const branchId = asInt(req.params.branchId);
-    const { date, doctorId, status, limit, offset } = req.query;
+    const { date, doctorId, status, serviceId, appointmentType, limit, offset } = req.query;
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
     if (!branchId) return res.status(400).json({ success: false, message: "Invalid branchId" });
     const data = await clinicService.listAppointmentsForOwner(prisma, userId, branchId, {
       date: date ? String(date) : undefined,
       doctorId: doctorId ? Number(doctorId) : undefined,
       status: status ? String(status) : undefined,
+      serviceId: serviceId ? Number(serviceId) : undefined,
+      appointmentType: appointmentType ? String(appointmentType) : undefined,
       limit: limit ? Number(limit) : undefined,
       offset: offset ? Number(offset) : undefined,
     });
@@ -929,6 +1167,95 @@ exports.getClinicSlots = async (req: any, res: any) => {
   } catch (e: any) {
     console.error(e);
     return res.status(500).json({ success: false, message: e?.message || "Server error" });
+  }
+};
+
+exports.getClinicBookingAvailableSlots = async (req: any, res: any) => {
+  try {
+    const branchId = asInt(req.params.branchId);
+    const { date, serviceId, packageId, doctorId, durationMinutes } = req.query;
+    if (!branchId || !date) return res.status(400).json({ success: false, message: "branchId and date required" });
+    const slots = await appointmentAvailabilityService.getAvailableSlots(branchId, String(date), {
+      serviceId: serviceId ? Number(serviceId) : undefined,
+      packageId: packageId ? Number(packageId) : undefined,
+      doctorId: doctorId ? Number(doctorId) : undefined,
+      durationMinutes: durationMinutes ? Number(durationMinutes) : undefined,
+    });
+    return res.json({ success: true, data: { slots } });
+  } catch (e: any) {
+    console.error(e);
+    return res.status(500).json({ success: false, message: e?.message || "Server error" });
+  }
+};
+
+exports.getClinicBookingEligibleDoctors = async (req: any, res: any) => {
+  try {
+    const branchId = asInt(req.params.branchId);
+    const { serviceId, packageId } = req.query;
+    if (!branchId) return res.status(400).json({ success: false, message: "branchId required" });
+    const doctors = await appointmentAvailabilityService.getEligibleDoctors(branchId, {
+      serviceId: serviceId ? Number(serviceId) : undefined,
+      packageId: packageId ? Number(packageId) : undefined,
+    });
+    return res.json({ success: true, data: { doctors } });
+  } catch (e: any) {
+    console.error(e);
+    return res.status(500).json({ success: false, message: e?.message || "Server error" });
+  }
+};
+
+exports.getClinicBookingPricePreview = async (req: any, res: any) => {
+  try {
+    const branchId = asInt(req.params.branchId);
+    const { serviceId, packageId, doctorId, species } = req.query;
+    if (!branchId) return res.status(400).json({ success: false, message: "branchId required" });
+    const preview = await appointmentAvailabilityService.getPricePreview(branchId, {
+      serviceId: serviceId ? Number(serviceId) : undefined,
+      packageId: packageId ? Number(packageId) : undefined,
+      doctorId: doctorId ? Number(doctorId) : undefined,
+      species: species ? String(species) : undefined,
+    });
+    return res.json({ success: true, data: preview });
+  } catch (e: any) {
+    console.error(e);
+    return res.status(500).json({ success: false, message: e?.message || "Server error" });
+  }
+};
+
+exports.getClinicBookingConstraints = async (req: any, res: any) => {
+  try {
+    const branchId = asInt(req.params.branchId);
+    const { date } = req.query;
+    if (!branchId) return res.status(400).json({ success: false, message: "branchId required" });
+    const constraints = await appointmentAvailabilityService.getBookingConstraints(
+      branchId,
+      date ? String(date) : undefined
+    );
+    return res.json({ success: true, data: constraints });
+  } catch (e: any) {
+    console.error(e);
+    return res.status(500).json({ success: false, message: e?.message || "Server error" });
+  }
+};
+
+exports.confirmClinicAppointment = async (req: any, res: any) => {
+  try {
+    const userId = getUserId(req);
+    const branchId = asInt(req.params.branchId);
+    const appointmentId = asInt(req.params.appointmentId);
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    if (!branchId || !appointmentId) return res.status(400).json({ success: false, message: "Invalid branchId or appointmentId" });
+    const prisma = getPrisma(req);
+    const branch = await prisma.branch.findUnique({ where: { id: branchId }, select: { orgId: true } });
+    if (!branch) return res.status(404).json({ success: false, message: "Branch not found" });
+    const updated = await appointmentService.confirmAppointment(appointmentId, userId, {
+      orgId: branch.orgId,
+      branchId,
+    });
+    return res.json({ success: true, data: updated });
+  } catch (e: any) {
+    console.error(e);
+    return res.status(e?.statusCode === 409 ? 409 : 500).json({ success: false, message: e?.message || "Server error" });
   }
 };
 
@@ -1127,6 +1454,57 @@ exports.getClinicDoctorDetail = async (req: any, res: any) => {
     if (!branchId || !memberId) return res.status(400).json({ success: false, message: "Invalid branchId or memberId" });
     const data = await clinicService.getClinicDoctorDetail(prisma, userId, branchId, memberId);
     if (data === null) return res.status(404).json({ success: false, message: "Doctor not found" });
+    return res.json({ success: true, data });
+  } catch (e: any) {
+    console.error(e);
+    const isProd = String(process.env.NODE_ENV || "").toLowerCase() === "production";
+    return res.status(500).json({ success: false, message: isProd ? "Server error" : (e?.message || "Server error") });
+  }
+};
+
+exports.listDoctorRequests = async (req: any, res: any) => {
+  try {
+    const userId = getUserId(req);
+    const branchId = asInt(req.params.branchId);
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    if (!branchId) return res.status(400).json({ success: false, message: "Invalid branchId" });
+    const status = req.query?.status ? String(req.query.status) : undefined;
+    const data = await doctorRequestService.listForBranch(branchId, { status });
+    return res.json({ success: true, data });
+  } catch (e: any) {
+    console.error(e);
+    const isProd = String(process.env.NODE_ENV || "").toLowerCase() === "production";
+    return res.status(500).json({ success: false, message: isProd ? "Server error" : (e?.message || "Server error") });
+  }
+};
+
+exports.approveDoctorRequest = async (req: any, res: any) => {
+  try {
+    const userId = getUserId(req);
+    const branchId = asInt(req.params.branchId);
+    const requestId = asInt(req.params.requestId);
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    if (!branchId || !requestId) return res.status(400).json({ success: false, message: "Invalid branchId or requestId" });
+    const data = await doctorRequestService.approve(requestId, userId);
+    if (!data) return res.status(404).json({ success: false, message: "Request not found or not pending" });
+    return res.json({ success: true, data });
+  } catch (e: any) {
+    console.error(e);
+    const isProd = String(process.env.NODE_ENV || "").toLowerCase() === "production";
+    return res.status(500).json({ success: false, message: isProd ? "Server error" : (e?.message || "Server error") });
+  }
+};
+
+exports.rejectDoctorRequest = async (req: any, res: any) => {
+  try {
+    const userId = getUserId(req);
+    const branchId = asInt(req.params.branchId);
+    const requestId = asInt(req.params.requestId);
+    const rejectionNote = req.body?.rejectionNote != null ? String(req.body.rejectionNote) : undefined;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    if (!branchId || !requestId) return res.status(400).json({ success: false, message: "Invalid branchId or requestId" });
+    const data = await doctorRequestService.reject(requestId, userId, rejectionNote);
+    if (!data) return res.status(404).json({ success: false, message: "Request not found or not pending" });
     return res.json({ success: true, data });
   } catch (e: any) {
     console.error(e);
@@ -2597,6 +2975,60 @@ exports.reviewClinicSupplyRequest = async (req: any, res: any) => {
       decision as "APPROVED" | "PARTIAL_APPROVED" | "REJECTED",
       { reviewNote: body.reviewNote, items: body.items }
     );
+    return res.json({ success: true, data });
+  } catch (e: any) {
+    console.error(e);
+    return res.status(500).json({ success: false, message: (e as Error)?.message || "Server error" });
+  }
+};
+
+exports.markClinicSupplyRequestOrdered = async (req: any, res: any) => {
+  try {
+    const prisma = getPrisma(req);
+    const orgId = await getOwnerOrgIdOrFail(prisma, req);
+    const userId = getUserId(req);
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const requestId = asInt(req.params.requestId);
+    if (!requestId) return res.status(400).json({ success: false, message: "Invalid requestId" });
+    const data = await clinicalSupplyRequestService.markOrdered(requestId, orgId, userId);
+    return res.json({ success: true, data });
+  } catch (e: any) {
+    console.error(e);
+    return res.status(500).json({ success: false, message: (e as Error)?.message || "Server error" });
+  }
+};
+
+exports.markClinicSupplyRequestReceived = async (req: any, res: any) => {
+  try {
+    const prisma = getPrisma(req);
+    const orgId = await getOwnerOrgIdOrFail(prisma, req);
+    const userId = getUserId(req);
+    const requestId = asInt(req.params.requestId);
+    if (!requestId) return res.status(400).json({ success: false, message: "Invalid requestId" });
+    const body = req.body || {};
+    const items = Array.isArray(body.items) ? body.items : [];
+    const request = await clinicalSupplyRequestService.getSupplyRequestById(requestId, { orgId });
+    if (!request) return res.status(404).json({ success: false, message: "Supply request not found" });
+    const branchId = request.branchId;
+    const data = await clinicalSupplyRequestService.markReceived(requestId, branchId, { items }, {
+      actorId: userId ?? undefined,
+      postToInventory: body.postToInventory !== false,
+    });
+    return res.json({ success: true, data });
+  } catch (e: any) {
+    console.error(e);
+    return res.status(500).json({ success: false, message: (e as Error)?.message || "Server error" });
+  }
+};
+
+exports.cancelClinicSupplyRequest = async (req: any, res: any) => {
+  try {
+    const prisma = getPrisma(req);
+    const orgId = await getOwnerOrgIdOrFail(prisma, req);
+    const userId = getUserId(req);
+    const requestId = asInt(req.params.requestId);
+    if (!requestId) return res.status(400).json({ success: false, message: "Invalid requestId" });
+    const data = await clinicalSupplyRequestService.cancelSupplyRequestByOrg(requestId, orgId, userId ?? undefined);
     return res.json({ success: true, data });
   } catch (e: any) {
     console.error(e);

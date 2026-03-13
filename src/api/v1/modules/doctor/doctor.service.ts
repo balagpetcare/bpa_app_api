@@ -28,11 +28,14 @@ async function getDoctorBranchMemberIds(userId: number): Promise<number[]> {
  */
 async function listAppointments(doctorBranchMemberIds: number[], opts: {
   date?: string;
+  fromDate?: string;
+  toDate?: string;
   branchId?: number;
   status?: string;
   statuses?: string; // comma-separated for multi-status filter
   visitType?: string;
   priority?: string;
+  appointmentType?: string;
   search?: string;
   limit?: number;
   offset?: number;
@@ -42,7 +45,12 @@ async function listAppointments(doctorBranchMemberIds: number[], opts: {
   }
 
   const where: any = { doctorId: { in: doctorBranchMemberIds } };
-  if (opts.date) {
+  if (opts.fromDate != null || opts.toDate != null) {
+    const range: { gte?: Date; lte?: Date } = {};
+    if (opts.fromDate) range.gte = new Date(opts.fromDate + "T00:00:00.000Z");
+    if (opts.toDate) range.lte = new Date(opts.toDate + "T23:59:59.999Z");
+    if (Object.keys(range).length) where.scheduledStartAt = range;
+  } else if (opts.date) {
     const d = new Date(opts.date + "T00:00:00.000Z");
     const dEnd = new Date(opts.date + "T23:59:59.999Z");
     where.scheduledStartAt = { gte: d, lte: dEnd };
@@ -55,6 +63,7 @@ async function listAppointments(doctorBranchMemberIds: number[], opts: {
   }
   if (opts.visitType) where.visitType = opts.visitType;
   if (opts.priority) where.priority = opts.priority;
+  if (opts.appointmentType) where.appointmentType = opts.appointmentType;
   if (opts.search && opts.search.trim()) {
     const term = opts.search.trim();
     where.OR = [
@@ -112,8 +121,12 @@ async function listAppointments(doctorBranchMemberIds: number[], opts: {
 
 /**
  * Get appointment stats for the doctor: total, status counts, emergency count, follow-up count.
+ * Supports single date or date range (fromDate/toDate).
  */
-async function getAppointmentStats(doctorBranchMemberIds: number[], opts: { date?: string; branchId?: number }) {
+async function getAppointmentStats(
+  doctorBranchMemberIds: number[],
+  opts: { date?: string; fromDate?: string; toDate?: string; branchId?: number }
+) {
   if (doctorBranchMemberIds.length === 0) {
     return {
       total: 0,
@@ -125,7 +138,12 @@ async function getAppointmentStats(doctorBranchMemberIds: number[], opts: { date
   }
 
   const where: any = { doctorId: { in: doctorBranchMemberIds } };
-  if (opts.date) {
+  if (opts.fromDate != null || opts.toDate != null) {
+    const range: { gte?: Date; lte?: Date } = {};
+    if (opts.fromDate) range.gte = new Date(opts.fromDate + "T00:00:00.000Z");
+    if (opts.toDate) range.lte = new Date(opts.toDate + "T23:59:59.999Z");
+    if (Object.keys(range).length) where.scheduledStartAt = range;
+  } else if (opts.date) {
     const d = new Date(opts.date + "T00:00:00.000Z");
     const dEnd = new Date(opts.date + "T23:59:59.999Z");
     where.scheduledStartAt = { gte: d, lte: dEnd };
@@ -443,18 +461,30 @@ async function listVisits(doctorBranchMemberIds: number[], opts: {
 
 /**
  * Get doctor profile: branches, clinics, schedule summary.
+ * Includes profile-level onboardingCompleted (DoctorVerification) and displayName (User.profile).
+ * Per-clinic onboardingStatus does not drive redirect.
  */
 async function getDoctorProfile(userId: number) {
-  const profiles = await prisma.clinicStaffProfile.findMany({
-    where: {
-      branchMember: { userId },
-      staffType: "DOCTOR",
-    },
-    include: {
-      branch: { select: { id: true, name: true } },
-      branchMember: { select: { id: true } },
-    },
-  });
+  const [profiles, verification, user] = await Promise.all([
+    prisma.clinicStaffProfile.findMany({
+      where: {
+        branchMember: { userId },
+        staffType: "DOCTOR",
+      },
+      include: {
+        branch: { select: { id: true, name: true } },
+        branchMember: { select: { id: true } },
+      },
+    }),
+    prisma.doctorVerification.findUnique({
+      where: { userId },
+      select: { onboardingCompleted: true },
+    }),
+    prisma.user.findUnique({
+      where: { id: userId },
+      select: { profile: { select: { displayName: true } } },
+    }),
+  ]);
 
   const branches = profiles.map((p) => ({
     branchId: p.branch.id,
@@ -469,6 +499,8 @@ async function getDoctorProfile(userId: number) {
   return {
     doctorBranchMemberIds: profiles.map((p) => p.branchMember.id),
     branches,
+    onboardingCompleted: verification?.onboardingCompleted ?? false,
+    displayName: user?.profile?.displayName ?? null,
   };
 }
 
@@ -708,6 +740,7 @@ async function getMySettlementBatches(
   if (opts?.to) options.to = new Date(opts.to + "T23:59:59.999Z");
   if (opts?.page != null) options.page = opts.page;
   if (opts?.limit != null) options.limit = opts.limit;
+  const settlementBatchService = require("../clinic/settlementBatch.service");
   return settlementBatchService.listBatches(options);
 }
 
@@ -780,6 +813,23 @@ async function completeOnboarding(userId: number, branchId: number) {
     data: { onboardingStatus: "COMPLETED" },
   });
   return getOnboarding(userId, branchId);
+}
+
+/**
+ * Complete profile-level onboarding (DoctorVerification.onboardingCompleted).
+ * Does not depend on clinic membership; per-clinic onboarding is separate.
+ */
+async function completeProfileOnboarding(userId: number) {
+  const v = await prisma.doctorVerification.findUnique({
+    where: { userId },
+    select: { id: true },
+  });
+  if (!v) return null;
+  await prisma.doctorVerification.update({
+    where: { userId },
+    data: { onboardingCompleted: true },
+  });
+  return getDoctorProfile(userId);
 }
 
 /**
@@ -1660,6 +1710,7 @@ module.exports = {
   getMyContract,
   getOnboarding,
   completeOnboarding,
+  completeProfileOnboarding,
   getMyServices,
   putMyServices,
   getMySchedule,

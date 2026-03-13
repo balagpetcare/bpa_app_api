@@ -356,7 +356,7 @@ export async function acceptInviteFromNotification(req: Request, res: Response, 
 
 /**
  * POST /api/v1/me/notifications/:notificationId/decline-invite
- * Declines a staff invitation from a notification
+ * Declines a staff invitation from a notification. Updates invite status to REVOKED.
  */
 export async function declineInviteFromNotification(req: Request, res: Response, next: NextFunction) {
   try {
@@ -371,7 +371,6 @@ export async function declineInviteFromNotification(req: Request, res: Response,
       return res.status(400).json({ success: false, message: "Invalid notification ID" });
     }
 
-    // Verify notification belongs to user and is STAFF_INVITE type
     const notification = await prisma.notification.findFirst({
       where: {
         id: notificationId,
@@ -384,7 +383,13 @@ export async function declineInviteFromNotification(req: Request, res: Response,
       return res.status(404).json({ success: false, message: "Notification not found" });
     }
 
-    // Mark notification as read (keep invite as PENDING for potential future acceptance)
+    const inviteId = (notification.meta as any)?.inviteId;
+    if (inviteId != null && Number.isFinite(inviteId)) {
+      await prisma.staffInvite.updateMany({
+        where: { id: Number(inviteId), status: "PENDING" },
+        data: { status: "REVOKED" },
+      });
+    }
     await prisma.notification.update({
       where: { id: notificationId },
       data: { readAt: new Date() },
@@ -394,6 +399,258 @@ export async function declineInviteFromNotification(req: Request, res: Response,
       success: true,
       message: "Invitation declined",
     });
+  } catch (err) {
+    return next(err);
+  }
+}
+
+/**
+ * GET /api/v1/me/invitations
+ * List staff invitations for the current user (matched by auth email/phone).
+ */
+export async function getMyInvitations(req: Request, res: Response, next: NextFunction) {
+  try {
+    const userId = getAuthUserId(req as any);
+    if (!userId) {
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+    }
+
+    const userAuth = await prisma.userAuth.findUnique({
+      where: { userId },
+      select: { email: true, phone: true },
+    });
+    const emailNorm = (userAuth?.email ?? "").trim().toLowerCase() || null;
+    const phoneNorm = (userAuth?.phone ?? "").trim().replace(/\D/g, "") || null;
+    if (!emailNorm && !phoneNorm) {
+      return res.json({ success: true, data: [] });
+    }
+
+    const where: any = {
+      status: { in: ["PENDING", "ACCEPTED", "REVOKED", "EXPIRED"] },
+      OR: [],
+    };
+    if (emailNorm) where.OR.push({ email: { equals: emailNorm, mode: "insensitive" } });
+    if (phoneNorm) where.OR.push({ phone: phoneNorm });
+    if (where.OR.length === 0) return res.json({ success: true, data: [] });
+
+    const invites = await prisma.staffInvite.findMany({
+      where,
+      include: {
+        branch: { select: { id: true, name: true } },
+        org: { select: { id: true, name: true } },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 50,
+    });
+
+    const data = invites.map((inv: any) => ({
+      id: inv.id,
+      branchId: inv.branchId,
+      branchName: inv.branch?.name ?? null,
+      orgId: inv.orgId,
+      orgName: inv.org?.name ?? null,
+      role: inv.role,
+      status: inv.status,
+      inviteAsDoctor: inv.inviteAsDoctor ?? false,
+      expiresAt: inv.expiresAt?.toISOString() ?? null,
+      createdAt: inv.createdAt?.toISOString() ?? null,
+    }));
+
+    return res.json({ success: true, data });
+  } catch (err) {
+    return next(err);
+  }
+}
+
+/**
+ * POST /api/v1/me/invitations/:id/accept
+ * Accept a staff invitation by invite id. Invite must match current user's email/phone.
+ */
+export async function acceptInvitationById(req: Request, res: Response, next: NextFunction) {
+  try {
+    const userId = getAuthUserId(req as any);
+    const inviteId = Number(req.params.id);
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    if (!Number.isFinite(inviteId)) return res.status(400).json({ success: false, message: "Invalid invitation ID" });
+
+    const userAuth = await prisma.userAuth.findUnique({
+      where: { userId },
+      select: { email: true, phone: true },
+    });
+    const emailNorm = (userAuth?.email ?? "").trim().toLowerCase() || null;
+    const phoneNorm = (userAuth?.phone ?? "").trim().replace(/\D/g, "") || null;
+
+    const invite = await prisma.staffInvite.findUnique({
+      where: { id: inviteId },
+      include: {
+        branch: { select: { id: true, orgId: true, name: true } },
+        org: { select: { id: true, name: true } },
+      },
+    });
+    if (!invite) return res.status(404).json({ success: false, message: "Invitation not found" });
+
+    const matchEmail = emailNorm && invite.email && invite.email.toLowerCase() === emailNorm;
+    const matchPhone = phoneNorm && invite.phone && invite.phone.replace(/\D/g, "") === phoneNorm;
+    if (!matchEmail && !matchPhone) {
+      return res.status(403).json({ success: false, message: "This invitation is not for your account" });
+    }
+
+    if (invite.status !== "PENDING") {
+      return res.status(400).json({ success: false, message: `Invitation is not pending (${invite.status})` });
+    }
+    if (invite.expiresAt && new Date(invite.expiresAt).getTime() < Date.now()) {
+      await prisma.staffInvite.update({ where: { id: invite.id }, data: { status: "EXPIRED" } });
+      return res.status(400).json({ success: false, message: "Invitation has expired" });
+    }
+
+    const existingMember = await prisma.branchMember.findUnique({
+      where: { branchId_userId: { branchId: invite.branchId, userId } },
+    });
+    if (existingMember && existingMember.status === "ACTIVE") {
+      await prisma.staffInvite.update({
+        where: { id: invite.id },
+        data: { status: "ACCEPTED", acceptedByUserId: userId },
+      });
+      const { logStaffInviteAudit } = await import("../../services/staffInvite.service");
+      await logStaffInviteAudit(prisma, {
+        actorId: userId,
+        actorRole: "USER",
+        action: "INVITE_ACCEPTED",
+        inviteId: invite.id,
+        branchId: invite.branchId,
+        after: { status: "ACCEPTED", alreadyMember: true },
+      });
+      return res.json({
+        success: true,
+        message: "You are already a member of this branch",
+        data: { branchId: invite.branchId, branchName: invite.branch?.name, role: invite.role },
+      });
+    }
+
+    const member = await prisma.$transaction(async (tx: any) => {
+      const m = await tx.branchMember.upsert({
+        where: { branchId_userId: { branchId: invite.branchId, userId } },
+        update: { role: invite.role, status: "ACTIVE" },
+        create: {
+          orgId: invite.orgId,
+          branchId: invite.branchId,
+          userId,
+          role: invite.role,
+          status: "ACTIVE",
+          invitedByUserId: invite.invitedByUserId,
+        },
+        select: { id: true },
+      });
+      if ((invite as any).inviteAsDoctor) {
+        const branchWithTypes = await tx.branch.findUnique({
+          where: { id: invite.branchId },
+          select: { types: { select: { type: { select: { code: true } } } } },
+        });
+        const isClinic = branchWithTypes?.types?.some(
+          (t: any) => String(t?.type?.code || "").toUpperCase() === "CLINIC"
+        );
+        if (isClinic) {
+          await tx.clinicStaffProfile.upsert({
+            where: { branchMemberId: m.id },
+            create: {
+              orgId: invite.orgId,
+              branchId: invite.branchId,
+              branchMemberId: m.id,
+              staffType: "DOCTOR",
+              status: "ACTIVE",
+              onboardingStatus: "PENDING",
+            },
+            update: { staffType: "DOCTOR", status: "ACTIVE", onboardingStatus: "PENDING" },
+          });
+        }
+      }
+      await tx.staffInvite.update({
+        where: { id: invite.id },
+        data: { status: "ACCEPTED", acceptedByUserId: userId },
+      });
+      return m;
+    });
+
+    const { logStaffInviteAudit } = await import("../../services/staffInvite.service");
+    await logStaffInviteAudit(prisma, {
+      actorId: userId,
+      actorRole: "USER",
+      action: "INVITE_ACCEPTED",
+      inviteId: invite.id,
+      branchId: invite.branchId,
+      after: { status: "ACCEPTED", inviteAsDoctor: (invite as any).inviteAsDoctor },
+    });
+
+    const responseData: any = {
+      branchId: invite.branchId,
+      branchName: invite.branch?.name,
+      orgId: invite.orgId,
+      orgName: invite.org?.name,
+      role: invite.role,
+    };
+    if ((invite as any).inviteAsDoctor) {
+      const profile = await prisma.clinicStaffProfile.findFirst({
+        where: { branchMemberId: member.id, staffType: "DOCTOR" },
+        select: { onboardingStatus: true },
+      });
+      if (profile?.onboardingStatus === "PENDING") {
+        responseData.onboardingRequired = true;
+        responseData.onboardingPath = `/doctor/onboarding/${invite.branchId}`;
+      }
+    }
+    return res.json({
+      success: true,
+      message: "Invitation accepted successfully",
+      data: responseData,
+    });
+  } catch (err) {
+    return next(err);
+  }
+}
+
+/**
+ * POST /api/v1/me/invitations/:id/decline
+ * Decline a staff invitation by invite id. Sets invite status to REVOKED.
+ */
+export async function declineInvitationById(req: Request, res: Response, next: NextFunction) {
+  try {
+    const userId = getAuthUserId(req as any);
+    const inviteId = Number(req.params.id);
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    if (!Number.isFinite(inviteId)) return res.status(400).json({ success: false, message: "Invalid invitation ID" });
+
+    const userAuth = await prisma.userAuth.findUnique({
+      where: { userId },
+      select: { email: true, phone: true },
+    });
+    const emailNorm = (userAuth?.email ?? "").trim().toLowerCase() || null;
+    const phoneNorm = (userAuth?.phone ?? "").trim().replace(/\D/g, "") || null;
+
+    const invite = await prisma.staffInvite.findFirst({
+      where: { id: inviteId, status: "PENDING" },
+    });
+    if (!invite) return res.status(404).json({ success: false, message: "Invitation not found or already resolved" });
+
+    const matchEmail = emailNorm && invite.email && invite.email.toLowerCase() === emailNorm;
+    const matchPhone = phoneNorm && invite.phone && invite.phone.replace(/\D/g, "") === phoneNorm;
+    if (!matchEmail && !matchPhone) {
+      return res.status(403).json({ success: false, message: "This invitation is not for your account" });
+    }
+
+    await prisma.staffInvite.update({
+      where: { id: inviteId },
+      data: { status: "REVOKED" },
+    });
+    const { logStaffInviteAudit } = await import("../../services/staffInvite.service");
+    await logStaffInviteAudit(prisma, {
+      actorId: userId,
+      actorRole: "USER",
+      action: "INVITE_DECLINED",
+      inviteId,
+      branchId: invite.branchId,
+      after: { status: "REVOKED" },
+    });
+    return res.json({ success: true, message: "Invitation declined" });
   } catch (err) {
     return next(err);
   }
@@ -582,6 +839,9 @@ export default getMe;
   getNotifications,
   acceptInviteFromNotification,
   declineInviteFromNotification,
+  getMyInvitations,
+  acceptInvitationById,
+  declineInvitationById,
   getPermissions,
   getLocation,
   setLocation,

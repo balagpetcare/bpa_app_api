@@ -13,6 +13,10 @@ export type CreateDispenseRequestInput = {
   visitId?: number | null;
   surgeryCaseId?: number | null;
   treatmentCourseId?: number | null;
+  requestType?: string | null; // OPEN_NEW_VIAL, ADDITIONAL_VIAL, REPLACEMENT_VIAL, EXPIRED_VIAL_REPLACEMENT, STANDARD
+  requestReason?: string | null;
+  tokenId?: number | null;
+  treatmentDayItemId?: number | null;
   urgencyLevel?: "NORMAL" | "URGENT" | "EMERGENCY";
   items: { variantId: number; requestedQty: number; unit?: string | null; reason?: string | null }[];
 };
@@ -30,6 +34,10 @@ export async function createRequest(data: CreateDispenseRequestInput): Promise<a
       visitId: data.visitId ?? null,
       surgeryCaseId: data.surgeryCaseId ?? null,
       treatmentCourseId: data.treatmentCourseId ?? null,
+      requestType: data.requestType ?? "STANDARD",
+      requestReason: data.requestReason ?? null,
+      tokenId: data.tokenId ?? null,
+      treatmentDayItemId: data.treatmentDayItemId ?? null,
       status: "PENDING",
       urgencyLevel: data.urgencyLevel ?? "NORMAL",
       items: {
@@ -44,9 +52,47 @@ export async function createRequest(data: CreateDispenseRequestInput): Promise<a
     include: {
       items: { include: { variant: { select: { id: true, title: true, sku: true } } } },
       requestedBy: { select: { id: true }, profile: { select: { displayName: true } } },
+      token: { select: { id: true, tokenCode: true } },
+      treatmentDayItem: { select: { id: true, medicineName: true } },
     },
   });
   return request;
+}
+
+export type CreateInternalOrderInput = {
+  branchId: number;
+  orgId: number;
+  requestedByUserId: number;
+  patientId?: number | null;
+  visitId?: number | null;
+  treatmentCourseId?: number | null;
+  tokenId?: number | null;
+  treatmentDayItemId?: number | null;
+  requestReason?: string | null;
+  items: { variantId: number; requestedQty: number; unit?: string | null; reason?: string | null }[];
+};
+
+/**
+ * Create internal order when no open vial (or not enough). Checks open vial per variant and sets requestType.
+ */
+export async function createInternalOrder(data: CreateInternalOrderInput): Promise<any> {
+  const requestTypeByVariant: Record<number, string> = {};
+  for (const item of data.items) {
+    const existing = await checkExistingActiveVial(data.branchId, item.variantId);
+    if (existing) {
+      const remaining = Number(existing.remainingQty ?? 0);
+      if (remaining < item.requestedQty) requestTypeByVariant[item.variantId] = "ADDITIONAL_VIAL";
+      else requestTypeByVariant[item.variantId] = "OPEN_NEW_VIAL"; // already have one but creating order anyway (e.g. explicit request)
+    } else {
+      requestTypeByVariant[item.variantId] = "OPEN_NEW_VIAL";
+    }
+  }
+  const primaryType = Object.values(requestTypeByVariant).includes("ADDITIONAL_VIAL") ? "ADDITIONAL_VIAL" : "OPEN_NEW_VIAL";
+  return createRequest({
+    ...data,
+    requestType: primaryType,
+    requestReason: data.requestReason ?? "No suitable open vial for treatment day",
+  });
 }
 
 /**
@@ -206,15 +252,16 @@ export async function issueItems(
 }
 
 /**
- * List dispense requests for branch with filters.
+ * List dispense requests for branch with filters (including internal orders by requestType).
  */
 export async function listRequests(
   branchId: number,
-  opts?: { status?: string; visitId?: number; skip?: number; take?: number }
+  opts?: { status?: string; visitId?: number; requestType?: string; skip?: number; take?: number }
 ): Promise<{ list: any[]; total: number }> {
   const where: any = { branchId };
   if (opts?.status) where.status = opts.status;
   if (opts?.visitId != null) where.visitId = opts.visitId;
+  if (opts?.requestType) where.requestType = opts.requestType;
   const [list, total] = await Promise.all([
     prisma.dispenseRequest.findMany({
       where,
@@ -223,7 +270,10 @@ export async function listRequests(
       include: {
         items: { include: { variant: { select: { id: true, title: true, sku: true } }, vialInstance: true } },
         requestedBy: { select: { id: true }, profile: { select: { displayName: true } } },
+        receivedBy: { select: { id: true }, profile: { select: { displayName: true } } },
         visit: { select: { id: true, treatmentCode: true } },
+        token: { select: { id: true, tokenCode: true } },
+        treatmentDayItem: { select: { id: true, medicineName: true, treatmentDay: { select: { dayNumber: true } } } },
       },
       orderBy: { createdAt: "desc" },
     }),
@@ -232,13 +282,85 @@ export async function listRequests(
   return { list, total };
 }
 
+/**
+ * Internal order dashboard: aggregated counts by status (and optionally by requestType).
+ */
+export async function getInternalOrderDashboard(
+  branchId: number,
+  opts?: { requestType?: string }
+): Promise<{ pending: number; approved: number; rejected: number; issued: number; activated: number; closed: number; byRequestType: Record<string, number> }> {
+  const where: any = { branchId };
+  if (opts?.requestType) where.requestType = opts.requestType;
+  const [pending, approved, issued, list] = await Promise.all([
+    prisma.dispenseRequest.count({ where: { ...where, status: "PENDING" } }),
+    prisma.dispenseRequest.count({ where: { ...where, status: "APPROVED" } }),
+    prisma.dispenseRequest.count({ where: { ...where, status: { in: ["ISSUED", "PARTIALLY_ISSUED"] } } }),
+    prisma.dispenseRequest.findMany({
+      where: { ...where, requestType: { not: "STANDARD" } },
+      select: { status: true, requestType: true, id: true },
+    }),
+  ]);
+  const [rejected, closed] = await Promise.all([
+    prisma.dispenseRequest.count({ where: { ...where, status: "REJECTED" } }),
+    prisma.dispenseRequest.count({ where: { ...where, status: "CANCELLED" } }),
+  ]);
+  const activated = await prisma.vialSession.count({
+    where: { branchId, activatedFromDispenseRequestId: { not: null } },
+  });
+  const byRequestType: Record<string, number> = {};
+  for (const r of list) {
+    const key = (r.requestType as string) || "STANDARD";
+    byRequestType[key] = (byRequestType[key] || 0) + 1;
+  }
+  return {
+    pending,
+    approved,
+    rejected,
+    issued,
+    activated,
+    closed,
+    byRequestType,
+  };
+}
+
 export async function getRequestById(requestId: number, branchId: number): Promise<any | null> {
   return prisma.dispenseRequest.findFirst({
     where: { id: requestId, branchId },
     include: {
       items: { include: { variant: true, vialInstance: true } },
       requestedBy: { select: { id: true }, profile: { select: { displayName: true } } },
+      receivedBy: { select: { id: true }, profile: { select: { displayName: true } } },
       visit: true,
+      token: true,
+      treatmentDayItem: { include: { treatmentDay: { select: { dayNumber: true, scheduledDate: true } }, variant: true } },
+    },
+  });
+}
+
+/**
+ * Record injection room receive (handoff acknowledgment). Only when status is ISSUED or PARTIALLY_ISSUED.
+ */
+export async function receiveDispenseRequest(
+  requestId: number,
+  branchId: number,
+  receivedByUserId: number
+): Promise<any> {
+  const req = await prisma.dispenseRequest.findFirst({
+    where: { id: requestId, branchId },
+    select: { id: true, status: true, receivedAt: true },
+  });
+  if (!req) throw new Error("Dispense request not found");
+  if (req.status !== "ISSUED" && req.status !== "PARTIALLY_ISSUED") {
+    throw new Error("Only issued or partially issued requests can be received");
+  }
+  if (req.receivedAt) throw new Error("Request already received");
+  return prisma.dispenseRequest.update({
+    where: { id: requestId },
+    data: { receivedByUserId, receivedAt: new Date() },
+    include: {
+      items: { include: { variant: { select: { id: true, title: true, sku: true } } } },
+      requestedBy: { select: { id: true }, profile: { select: { displayName: true } } },
+      receivedBy: { select: { id: true }, profile: { select: { displayName: true } } },
     },
   });
 }

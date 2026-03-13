@@ -24,6 +24,11 @@ export const CLINIC_AUDIT_ACTIONS = {
   INTAKE_CREATED: "INTAKE_CREATED",
   INTAKE_UPDATED: "INTAKE_UPDATED",
   TREATMENT_CODE_GENERATED: "TREATMENT_CODE_GENERATED",
+  INJECTION_TOKEN_GENERATED: "INJECTION_TOKEN_GENERATED",
+  INJECTION_TOKEN_VALIDATED: "INJECTION_TOKEN_VALIDATED",
+  INJECTION_TOKEN_CANCELLED: "INJECTION_TOKEN_CANCELLED",
+  INJECTION_TOKEN_USED: "INJECTION_TOKEN_USED",
+  MEDICATION_ADMINISTERED: "MEDICATION_ADMINISTERED",
 } as const;
 
 const ENTITY = {
@@ -32,12 +37,16 @@ const ENTITY = {
   QUEUE_TICKET: "QUEUE_TICKET",
   PATIENT: "PATIENT",
   CLINIC_INTAKE: "CLINIC_INTAKE",
+  INJECTION_TOKEN: "INJECTION_TOKEN",
+  MEDICATION_ADMINISTRATION: "MEDICATION_ADMINISTRATION",
 } as const;
+
+export type ClinicAuditEntityType = keyof typeof ENTITY;
 
 export interface WriteClinicAuditParams {
   req: any;
   action: string;
-  entityType?: "APPOINTMENT" | "QUEUE_SESSION" | "QUEUE_TICKET" | "PATIENT" | "CLINIC_INTAKE";
+  entityType?: ClinicAuditEntityType;
   entityId: string | number;
   before?: any;
   after?: any;
@@ -49,9 +58,9 @@ export interface WriteClinicAuditParams {
  */
 async function writeClinicAudit(params: WriteClinicAuditParams): Promise<void> {
   try {
-    const entityType =
-      params.entityType && ENTITY[params.entityType]
-        ? ENTITY[params.entityType]
+    const entityType: string =
+      params.entityType && ENTITY[params.entityType as keyof typeof ENTITY]
+        ? ENTITY[params.entityType as keyof typeof ENTITY]
         : ENTITY.APPOINTMENT;
     await writeAudit({
       prisma,

@@ -3,9 +3,9 @@ const controller = require("./reports.controller");
 const authenticateToken = require("../../../../middleware/auth.middleware");
 const requirePermission = require("../../../../middlewares/requirePermission");
 
-// All routes require authentication + reports.read permission
+// All routes require authentication + reports.read or reports.view (branch staff) permission
 router.use(authenticateToken);
-router.use(requirePermission("reports.read", "org.read", "branches.read"));
+router.use(requirePermission("reports.read", "reports.view", "org.read", "branches.read"));
 
 // GET /api/v1/reports/sales - Sales report
 router.get("/sales", controller.getSalesReport);

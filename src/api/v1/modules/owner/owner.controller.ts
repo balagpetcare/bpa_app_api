@@ -2597,6 +2597,51 @@ exports.rejectOwnerInvitation = async (req, res) => {
   }
 };
 
+exports.resendOwnerInvitation = async (req, res) => {
+  try {
+    const prisma = getPrisma(req);
+    const ownerUserId = asIntId(req.user?.id || req.auth?.userId);
+    if (!ownerUserId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+    const id = Number(req.params.id);
+    if (!id || !Number.isFinite(id)) return res.status(400).json({ success: false, message: 'Invalid id' });
+
+    const invite = await prisma.staffInvite.findFirst({
+      where: { id, org: { ownerUserId }, status: 'PENDING' },
+      include: { branch: { select: { id: true, name: true } } },
+    });
+    if (!invite) return res.status(404).json({ success: false, message: 'Invitation not found or not pending' });
+
+    const { resendStaffInviteForBranch } = require('../../services/staffInvite.service');
+    const data = await resendStaffInviteForBranch(prisma, invite.branchId, id, ownerUserId);
+    return res.json({ success: true, data, message: 'Invitation resent' });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e?.message || 'Server error' });
+  }
+};
+
+exports.cancelOwnerInvitation = async (req, res) => {
+  try {
+    const prisma = getPrisma(req);
+    const ownerUserId = asIntId(req.user?.id || req.auth?.userId);
+    if (!ownerUserId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+    const id = Number(req.params.id);
+    if (!id || !Number.isFinite(id)) return res.status(400).json({ success: false, message: 'Invalid id' });
+
+    const invite = await prisma.staffInvite.findFirst({
+      where: { id, org: { ownerUserId }, status: 'PENDING' },
+    });
+    if (!invite) return res.status(404).json({ success: false, message: 'Invitation not found or not pending' });
+
+    const { cancelStaffInviteForBranch } = require('../../services/staffInvite.service');
+    const data = await cancelStaffInviteForBranch(prisma, invite.branchId, id, ownerUserId);
+    return res.json({ success: true, data, message: 'Invitation cancelled' });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e?.message || 'Server error' });
+  }
+};
+
 exports.listOwnerNotifications = async (req, res) => {
   try {
     const ownerUserId = asIntId(req.user?.id || req.auth?.userId);

@@ -30,7 +30,7 @@ export async function createTransferFromRequest(
     },
   });
   if (!request) throw new Error("Supply request not found");
-  if (request.status !== "APPROVED" && request.status !== "PARTIAL_APPROVED")
+  if (request.status !== "APPROVED" && request.status !== "PARTIAL_APPROVED" && request.status !== "PARTIALLY_APPROVED")
     throw new Error("Only approved supply requests can be dispatched");
   const toBranchId = request.branchId;
 

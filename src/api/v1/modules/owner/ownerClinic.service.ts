@@ -1045,22 +1045,112 @@ async function upsertClinicStaffProfile(
 
 // --- Clinic Rooms (BranchRoom) ---
 
-async function listClinicRooms(prisma: any, userId: number, branchId: number) {
+const roomManagement = require("../../services/roomManagement.service");
+const roomAudit = require("../../services/roomAudit.service");
+const roomScheduling = require("../../services/roomScheduling.service");
+const roomOccupancy = require("../../services/roomOccupancy.service");
+
+async function listClinicRooms(prisma: any, userId: number, branchId: number, filters?: any) {
   const branch = await ensureClinicBranchForOwner(prisma, userId, branchId);
   if (!branch) return null;
 
-  const rooms = await prisma.branchRoom.findMany({
-    where: { orgId: branch.orgId, branchId },
-    orderBy: [{ status: "asc" }, { name: "asc" }],
-  });
+  const rooms = await roomManagement.listRooms(branchId, filters);
   return rooms;
+}
+
+async function getClinicRoom(prisma: any, userId: number, branchId: number, roomId: number) {
+  const branch = await ensureClinicBranchForOwner(prisma, userId, branchId);
+  if (!branch) return null;
+  return roomManagement.getRoomDetail(branchId, roomId);
+}
+
+async function getClinicRoomSummary(prisma: any, userId: number, branchId: number) {
+  const branch = await ensureClinicBranchForOwner(prisma, userId, branchId);
+  if (!branch) return null;
+  return roomManagement.getRoomSummary(branchId);
+}
+
+async function getClinicRoomAudit(prisma: any, userId: number, branchId: number, roomId: number, limit?: number) {
+  const branch = await ensureClinicBranchForOwner(prisma, userId, branchId);
+  if (!branch) return null;
+  const room = await roomManagement.getRoomDetail(branchId, roomId);
+  if (!room) return null;
+  return roomAudit.getRoomAudit(branchId, roomId, limit ?? 50);
+}
+
+async function getScheduleBoard(
+  prisma: any,
+  userId: number,
+  branchId: number,
+  dateFrom: Date,
+  dateTo: Date,
+  filters?: { roomId?: number; doctorId?: number; serviceId?: number }
+) {
+  const branch = await ensureClinicBranchForOwner(prisma, userId, branchId);
+  if (!branch) return null;
+  return roomScheduling.getScheduleBoard(branchId, dateFrom, dateTo, filters);
+}
+
+async function getRoomTodaySchedule(prisma: any, userId: number, branchId: number, roomId: number, date: Date) {
+  const branch = await ensureClinicBranchForOwner(prisma, userId, branchId);
+  if (!branch) return null;
+  const room = await roomManagement.getRoomDetail(branchId, roomId);
+  if (!room) return null;
+  return roomScheduling.getRoomTodaySchedule(branchId, roomId, date);
+}
+
+async function getRoomsLiveState(prisma: any, userId: number, branchId: number, at?: Date) {
+  const branch = await ensureClinicBranchForOwner(prisma, userId, branchId);
+  if (!branch) return null;
+  return roomOccupancy.getAllRoomsLiveState(branchId, at ?? new Date());
+}
+
+async function getRoomLiveState(prisma: any, userId: number, branchId: number, roomId: number, at?: Date) {
+  const branch = await ensureClinicBranchForOwner(prisma, userId, branchId);
+  if (!branch) return null;
+  return roomOccupancy.getRoomLiveState(branchId, roomId, at ?? new Date());
+}
+
+async function createRoomBlock(
+  prisma: any,
+  userId: number,
+  branchId: number,
+  roomId: number,
+  data: { type: string; startAt: Date; endAt: Date; reason?: string | null }
+) {
+  const branch = await ensureClinicBranchForOwner(prisma, userId, branchId);
+  if (!branch) return null;
+  return roomOccupancy.createRoomBlock(branchId, roomId, data, userId);
+}
+
+async function releaseRoomBlock(prisma: any, userId: number, branchId: number, blockId: number) {
+  const branch = await ensureClinicBranchForOwner(prisma, userId, branchId);
+  if (!branch) return null;
+  return roomOccupancy.releaseRoomBlock(blockId, branchId);
 }
 
 async function createClinicRoom(
   prisma: any,
   userId: number,
   branchId: number,
-  data: { name: string; roomType: string; capacity?: number; status?: string; notes?: string }
+  data: {
+    name: string;
+    roomType: string;
+    code?: string;
+    floor?: string;
+    zone?: string;
+    capacity?: number;
+    status?: string;
+    notes?: string;
+    bookable?: boolean;
+    cleaningBufferMinutes?: number;
+    maintenanceBufferMinutes?: number;
+    supportsWalkIns?: boolean;
+    emergencyOverrideAllowed?: boolean;
+    preferredDoctorIds?: number[];
+    allowedServiceIds?: number[];
+    allowedPackageIds?: number[];
+  }
 ) {
   const branch = await ensureClinicBranchForOwner(prisma, userId, branchId);
   if (!branch) return null;
@@ -1070,10 +1160,22 @@ async function createClinicRoom(
       orgId: branch.orgId,
       branchId,
       name: data.name.trim(),
+      code: data.code?.trim() || null,
       roomType: data.roomType || "GENERAL",
+      floor: data.floor?.trim() || null,
+      zone: data.zone?.trim() || null,
       capacity: data.capacity != null ? data.capacity : undefined,
       status: data.status || "ACTIVE",
+      operationalStatus: "AVAILABLE",
       notes: data.notes?.trim() || null,
+      bookable: data.bookable !== false,
+      cleaningBufferMinutes: data.cleaningBufferMinutes ?? undefined,
+      maintenanceBufferMinutes: data.maintenanceBufferMinutes ?? undefined,
+      supportsWalkIns: data.supportsWalkIns !== false,
+      emergencyOverrideAllowed: data.emergencyOverrideAllowed === true,
+      preferredDoctorIds: data.preferredDoctorIds?.length ? data.preferredDoctorIds : undefined,
+      allowedServiceIds: data.allowedServiceIds?.length ? data.allowedServiceIds : undefined,
+      allowedPackageIds: data.allowedPackageIds?.length ? data.allowedPackageIds : undefined,
     },
   });
   return room;
@@ -1084,7 +1186,25 @@ async function updateClinicRoom(
   userId: number,
   branchId: number,
   roomId: number,
-  data: { name?: string; roomType?: string; capacity?: number; status?: string; notes?: string }
+  data: {
+    name?: string;
+    roomType?: string;
+    code?: string;
+    floor?: string;
+    zone?: string;
+    capacity?: number;
+    status?: string;
+    operationalStatus?: string;
+    notes?: string;
+    bookable?: boolean;
+    cleaningBufferMinutes?: number;
+    maintenanceBufferMinutes?: number;
+    supportsWalkIns?: boolean;
+    emergencyOverrideAllowed?: boolean;
+    preferredDoctorIds?: number[];
+    allowedServiceIds?: number[];
+    allowedPackageIds?: number[];
+  }
 ) {
   const branch = await ensureClinicBranchForOwner(prisma, userId, branchId);
   if (!branch) return null;
@@ -1094,15 +1214,29 @@ async function updateClinicRoom(
   });
   if (!existing) return null;
 
+  const updateData: any = {
+    ...(data.name !== undefined && { name: data.name.trim() }),
+    ...(data.roomType !== undefined && { roomType: data.roomType }),
+    ...(data.code !== undefined && { code: data.code?.trim() || null }),
+    ...(data.floor !== undefined && { floor: data.floor?.trim() || null }),
+    ...(data.zone !== undefined && { zone: data.zone?.trim() || null }),
+    ...(data.capacity !== undefined && { capacity: data.capacity }),
+    ...(data.status !== undefined && { status: data.status }),
+    ...(data.operationalStatus !== undefined && { operationalStatus: data.operationalStatus }),
+    ...(data.notes !== undefined && { notes: data.notes?.trim() || null }),
+    ...(data.bookable !== undefined && { bookable: data.bookable }),
+    ...(data.cleaningBufferMinutes !== undefined && { cleaningBufferMinutes: data.cleaningBufferMinutes }),
+    ...(data.maintenanceBufferMinutes !== undefined && { maintenanceBufferMinutes: data.maintenanceBufferMinutes }),
+    ...(data.supportsWalkIns !== undefined && { supportsWalkIns: data.supportsWalkIns }),
+    ...(data.emergencyOverrideAllowed !== undefined && { emergencyOverrideAllowed: data.emergencyOverrideAllowed }),
+  };
+  if (data.preferredDoctorIds !== undefined) updateData.preferredDoctorIds = data.preferredDoctorIds;
+  if (data.allowedServiceIds !== undefined) updateData.allowedServiceIds = data.allowedServiceIds;
+  if (data.allowedPackageIds !== undefined) updateData.allowedPackageIds = data.allowedPackageIds;
+
   const room = await prisma.branchRoom.update({
     where: { id: roomId },
-    data: {
-      ...(data.name !== undefined && { name: data.name.trim() }),
-      ...(data.roomType !== undefined && { roomType: data.roomType }),
-      ...(data.capacity !== undefined && { capacity: data.capacity }),
-      ...(data.status !== undefined && { status: data.status }),
-      ...(data.notes !== undefined && { notes: data.notes?.trim() || null }),
-    },
+    data: updateData,
   });
   return room;
 }
@@ -2351,6 +2485,15 @@ module.exports = {
   getClinicStaffProfile,
   upsertClinicStaffProfile,
   listClinicRooms,
+  getClinicRoom,
+  getClinicRoomSummary,
+  getClinicRoomAudit,
+  getScheduleBoard,
+  getRoomTodaySchedule,
+  getRoomsLiveState,
+  getRoomLiveState,
+  createRoomBlock,
+  releaseRoomBlock,
   createClinicRoom,
   updateClinicRoom,
   deleteClinicRoom,

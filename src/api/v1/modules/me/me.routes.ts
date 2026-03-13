@@ -29,6 +29,13 @@ const declineInviteFromNotification =
     ? ctrl.declineInviteFromNotification
     : null;
 
+const getMyInvitations =
+  typeof ctrl?.getMyInvitations === "function" ? ctrl.getMyInvitations : null;
+const acceptInvitationById =
+  typeof ctrl?.acceptInvitationById === "function" ? ctrl.acceptInvitationById : null;
+const declineInvitationById =
+  typeof ctrl?.declineInvitationById === "function" ? ctrl.declineInvitationById : null;
+
 const getPermissions =
   typeof ctrl?.getPermissions === "function"
     ? ctrl.getPermissions
@@ -89,6 +96,16 @@ if (acceptInviteFromNotification) {
 
 if (declineInviteFromNotification) {
   router.post("/notifications/:notificationId/decline-invite", auth, declineInviteFromNotification);
+}
+
+if (getMyInvitations) {
+  router.get("/invitations", auth, getMyInvitations);
+}
+if (acceptInvitationById) {
+  router.post("/invitations/:id/accept", auth, acceptInvitationById);
+}
+if (declineInvitationById) {
+  router.post("/invitations/:id/decline", auth, declineInvitationById);
 }
 
 if (getContexts) {

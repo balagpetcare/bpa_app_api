@@ -77,7 +77,8 @@ const LEGACY_ROLE_PERMS = {
     "branches.read",
     "orders.read","orders.write",
     "inventory.read",
-    "customers.read"
+    "customers.read",
+    "reports.view"
   ],
   SELLER: [
     "orders.read","orders.write",
@@ -124,6 +125,7 @@ async function resolvePermissionsForUser(userId) {
         where: { userId: Number(userId), status: "ACTIVE" },
         select: {
           id: true,
+          branchId: true, // required for approvedBranchIds.has(m.branchId)
           role: true, // legacy
           roles: {
             select: {
@@ -233,41 +235,79 @@ async function resolvePermissionsForUser(userId) {
       for (const rp of (role.rolePermissions || [])) out.add(rp.permission.key);
     }
 
-    // Check branch access permissions for branch members
-    // Only grant permissions if staff has APPROVED access to the branch
-    const branchAccessPermissions = await prisma.branchAccessPermission.findMany({
-      where: {
-        userId: Number(userId),
-        branchId: { in: branchMembers.map((m) => m.branchId || 0).filter(Boolean) },
-        status: "APPROVED",
-      },
-      select: {
-        branchId: true,
-        expiresAt: true,
-      },
-    });
+    // Load all APPROVED BranchAccessPermission for user (covers both branch members and BAP-only staff)
+    let branchAccessPermissions = [];
+    try {
+      if (prisma.branchAccessPermission) {
+        branchAccessPermissions = await prisma.branchAccessPermission.findMany({
+          where: {
+            userId: Number(userId),
+            status: "APPROVED",
+          },
+          select: {
+            branchId: true,
+            expiresAt: true,
+            role: true,
+            permissionOverrides: true,
+          },
+        });
+      }
+    } catch (_) {
+      // model may not exist
+    }
 
-    // Filter out expired permissions
     const now = new Date();
     const activeBranchAccess = branchAccessPermissions.filter((ap) => {
-      if (!ap.expiresAt) return true; // No expiration
+      if (!ap.expiresAt) return true;
       return new Date(ap.expiresAt) > now;
     });
-
     const approvedBranchIds = new Set(activeBranchAccess.map((ap) => ap.branchId));
+
+    let BRANCH_ROLE_PERMISSIONS;
+    let BRANCH_DEFAULT_ROLE;
+    try {
+      const branchRoles = require("../constants/branchRoles");
+      BRANCH_ROLE_PERMISSIONS = branchRoles.BRANCH_ROLE_PERMISSIONS || {};
+      BRANCH_DEFAULT_ROLE = branchRoles.BRANCH_DEFAULT_ROLE || "BRANCH_STAFF";
+    } catch (_) {
+      BRANCH_ROLE_PERMISSIONS = {};
+      BRANCH_DEFAULT_ROLE = "BRANCH_STAFF";
+    }
 
     // Only process branch members with approved access (or owners who have implicit access)
     for (const m of branchMembers) {
-      // Owners have implicit access to all their org branches
       const hasAccess = isOwner || approvedBranchIds.has(m.branchId);
 
       if (hasAccess) {
         for (const r of (m.roles || [])) {
           for (const rp of (r.role.rolePermissions || [])) out.add(rp.permission.key);
         }
-        // legacy fallback
         for (const p of (LEGACY_ROLE_PERMS[m.role] || [])) out.add(p);
+        for (const p of (BRANCH_ROLE_PERMISSIONS[m.role] || [])) out.add(p);
       }
+    }
+
+    // Grant permissions from each active BranchAccessPermission (covers BAP-only users who have no BranchMember)
+    for (const ap of activeBranchAccess) {
+      const member = branchMembers.find((m) => m.branchId === ap.branchId);
+      const roleKey =
+        (member && (member.roles?.[0]?.role?.key || member.role)) ||
+        ap.role ||
+        BRANCH_DEFAULT_ROLE;
+      const basePerms = BRANCH_ROLE_PERMISSIONS[roleKey] || [];
+      for (const p of basePerms) out.add(p);
+      const overridesRaw = ap.permissionOverrides;
+      const overrides = Array.isArray(overridesRaw)
+        ? overridesRaw.filter((k) => typeof k === "string")
+        : [];
+      for (const p of overrides) out.add(p);
+    }
+
+    // Fallback: if user has any active branch access or membership but got no permissions, grant minimal so dashboard/reports work
+    if ((branchMembers.length > 0 || activeBranchAccess.length > 0) && out.size === 0) {
+      out.add("branches.read");
+      out.add("org.read");
+      out.add("reports.view");
     }
 
     // If user is an owner, add OWNER permissions (implicit staff access to all org branches)
@@ -306,36 +346,29 @@ async function resolvePermissionsForUser(userId) {
         }),
         prisma.branchMember.findMany({
           where: { userId: Number(userId), status: "ACTIVE" },
-          select: { role: true },
+          select: { role: true, branchId: true },
         }),
       ]);
 
       const out = new Set();
       for (const m of orgMembers2) for (const p of (LEGACY_ROLE_PERMS[m.role] || [])) out.add(p);
 
-      // Check branch access permissions in fallback mode too
+      // Check branch access permissions in fallback mode: load all APPROVED BAP for user (same as main path)
       try {
-        const branchAccessPermissions2 = await prisma.branchAccessPermission.findMany({
-          where: {
-            userId: Number(userId),
-            branchId: { in: branchMembers2.map((m) => m.branchId || 0).filter(Boolean) },
-            status: "APPROVED",
-          },
-          select: {
-            branchId: true,
-            expiresAt: true,
-          },
-        });
-
+        let branchAccessPermissions2 = [];
+        if (prisma.branchAccessPermission) {
+          branchAccessPermissions2 = await prisma.branchAccessPermission.findMany({
+            where: { userId: Number(userId), status: "APPROVED" },
+            select: { branchId: true, expiresAt: true, role: true, permissionOverrides: true },
+          });
+        }
         const now2 = new Date();
         const activeBranchAccess2 = branchAccessPermissions2.filter((ap) => {
           if (!ap.expiresAt) return true;
           return new Date(ap.expiresAt) > now2;
         });
-
         const approvedBranchIds2 = new Set(activeBranchAccess2.map((ap) => ap.branchId));
 
-        // Check if user is owner
         const ownerProfile2 = await prisma.ownerProfile.findUnique({
           where: { userId: Number(userId) },
           select: { id: true },
@@ -352,9 +385,31 @@ async function resolvePermissionsForUser(userId) {
             for (const p of (LEGACY_ROLE_PERMS[m.role] || [])) out.add(p);
           }
         }
+
+        // BAP-only: grant permissions from each active BAP (align with main path)
+        let BRANCH_ROLE_PERMISSIONS2 = {};
+        let BRANCH_DEFAULT_ROLE2 = "BRANCH_STAFF";
+        try {
+          const branchRoles = require("../constants/branchRoles");
+          BRANCH_ROLE_PERMISSIONS2 = branchRoles.BRANCH_ROLE_PERMISSIONS || {};
+          BRANCH_DEFAULT_ROLE2 = branchRoles.BRANCH_DEFAULT_ROLE || "BRANCH_STAFF";
+        } catch (_) {}
+        for (const ap of activeBranchAccess2) {
+          const member = branchMembers2.find((m) => m.branchId === ap.branchId);
+          const roleKey =
+            (member && member.role) || ap.role || BRANCH_DEFAULT_ROLE2;
+          for (const p of (BRANCH_ROLE_PERMISSIONS2[roleKey] || [])) out.add(p);
+          const overridesRaw = ap.permissionOverrides;
+          const overrides = Array.isArray(overridesRaw) ? overridesRaw.filter((k) => typeof k === "string") : [];
+          for (const p of overrides) out.add(p);
+        }
+
+        if ((branchMembers2.length > 0 || activeBranchAccess2.length > 0) && out.size === 0) {
+          out.add("branches.read");
+          out.add("org.read");
+          out.add("reports.view");
+        }
       } catch (_e3) {
-        // If branch access check fails, fall back to granting all branch member permissions
-        // This maintains backward compatibility
         for (const m of branchMembers2) for (const p of (LEGACY_ROLE_PERMS[m.role] || [])) out.add(p);
       }
 

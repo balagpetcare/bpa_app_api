@@ -3,13 +3,22 @@
  */
 import prisma from "../../../../infrastructure/db/prismaClient";
 import * as openVialService from "./openVial.service";
+import * as injectionTokenService from "./injectionToken.service";
+import * as outsideMedicineService from "./outsideMedicine.service";
+import type { MedicineSource } from "@prisma/client";
 
 export type RecordAdministrationInput = {
+  branchId: number;
   patientId: number;
   visitId?: number | null;
   surgeryCaseId?: number | null;
   variantId: number;
   vialSessionId?: number | null;
+  injectionTokenId?: number | null;
+  medicineSource?: MedicineSource;
+  allowEmergencyBypass?: boolean;
+  emergencyBypassReason?: string | null;
+  medicineApprovalRequestId?: number | null;
   prescribedDose?: number | null;
   administeredDose: number;
   unit?: string | null;
@@ -22,33 +31,167 @@ export type RecordAdministrationInput = {
  * Record a dose administration. If vialSessionId provided, also decrements vial session via openVialService.recordDose.
  */
 export async function recordAdministration(data: RecordAdministrationInput): Promise<any> {
-  if (data.vialSessionId) {
-    await openVialService.recordDose(data.vialSessionId, {
-      quantityDelta: -Number(data.administeredDose),
-      performedByUserId: data.administeredByUserId ?? null,
-      witnessUserId: data.witnessedByUserId ?? null,
-    });
+  if (!data.branchId) throw new Error("branchId is required");
+  if (!data.patientId || !data.variantId || data.administeredDose == null) {
+    throw new Error("patientId, variantId and administeredDose are required");
   }
-  const admin = await prisma.medicationAdministration.create({
-    data: {
-      patientId: data.patientId,
-      visitId: data.visitId ?? null,
-      surgeryCaseId: data.surgeryCaseId ?? null,
-      variantId: data.variantId,
-      vialSessionId: data.vialSessionId ?? null,
-      prescribedDose: data.prescribedDose != null ? data.prescribedDose : null,
-      administeredDose: data.administeredDose,
-      unit: data.unit ?? null,
-      route: data.route ?? null,
-      administeredByUserId: data.administeredByUserId ?? null,
-      witnessedByUserId: data.witnessedByUserId ?? null,
-    },
-    include: {
-      variant: { select: { id: true, title: true, sku: true } },
-      vialSession: { select: { id: true, remainingQty: true } },
-    },
+
+  return prisma.$transaction(async (tx) => {
+    let resolvedSource: MedicineSource = data.medicineSource ?? "INTERNAL";
+    let token: any = null;
+    // OUTSIDE medicine always requires token (no emergency bypass) and must not use clinic vial
+    if (data.medicineSource === "OUTSIDE" && data.allowEmergencyBypass) {
+      throw new Error("OUTSIDE medicine cannot use emergency bypass; injection token is required");
+    }
+    if (data.medicineSource === "OUTSIDE" && data.vialSessionId != null) {
+      throw new Error("OUTSIDE medicine cannot be linked to clinic vial session");
+    }
+    if (!data.allowEmergencyBypass) {
+      if (!data.injectionTokenId) {
+        throw new Error("injectionTokenId is required");
+      }
+      token = await injectionTokenService.getUsableTokenById(
+        Number(data.injectionTokenId),
+        Number(data.branchId),
+        {
+          tx,
+          expectedVariantId: Number(data.variantId),
+          expectedVisitId: data.visitId != null ? Number(data.visitId) : undefined,
+        }
+      );
+      if (token.patientId !== Number(data.patientId)) {
+        throw new Error("Injection token does not belong to this patient");
+      }
+      resolvedSource = token.medicineSource;
+    } else if (data.injectionTokenId) {
+      token = await injectionTokenService.getUsableTokenById(
+        Number(data.injectionTokenId),
+        Number(data.branchId),
+        {
+          tx,
+          expectedVariantId: Number(data.variantId),
+          expectedVisitId: data.visitId != null ? Number(data.visitId) : undefined,
+        }
+      );
+      if (token.patientId !== Number(data.patientId)) {
+        throw new Error("Injection token does not belong to this patient");
+      }
+      resolvedSource = token.medicineSource;
+    }
+
+    // EXTERNAL is take-home sale and should never be used as injection source.
+    if (resolvedSource === "EXTERNAL") {
+      throw new Error("EXTERNAL medicine source is not valid for injection administration");
+    }
+
+    // OUTSIDE requires pharmacy verification (receive entry with batch/expiry) before injection.
+    if (resolvedSource === "OUTSIDE") {
+      const valid = await outsideMedicineService.hasValidOutsideReceive(
+        Number(data.branchId),
+        Number(data.variantId)
+      );
+      if (!valid) {
+        throw new Error(
+          "OUTSIDE medicine requires a pharmacy verification (receive) record for this branch and variant before injection"
+        );
+      }
+    }
+
+    // Room mismatch: token had a pre-selected vial in a room; selected vial must be in same room.
+    if (token != null && data.vialSessionId != null) {
+      const [tokenWithVial, vialSession] = await Promise.all([
+        (tx as any).injectionToken.findFirst({
+          where: { id: Number(data.injectionTokenId), branchId: data.branchId },
+          select: {
+            selectedVialSessionId: true,
+            selectedVialSession: { select: { roomId: true } },
+          },
+        }),
+        (tx as any).vialSession.findFirst({
+          where: { id: Number(data.vialSessionId), branchId: data.branchId },
+          select: { roomId: true },
+        }),
+      ]);
+      const tokenRoomId = tokenWithVial?.selectedVialSession?.roomId ?? null;
+      const selectedRoomId = vialSession?.roomId ?? null;
+      if (tokenRoomId != null && selectedRoomId != null && tokenRoomId !== selectedRoomId) {
+        throw new Error("ROOM_MISMATCH");
+      }
+    }
+
+    // Resolve treatment day item when token is linked to a treatment course (auto-complete day item on record).
+    let treatmentDayItemId: number | null = null;
+    if (token?.treatmentDayId != null && token?.treatmentCourseId != null) {
+      const dayItem = await (tx as any).treatmentDayItem.findFirst({
+        where: {
+          treatmentDayId: token.treatmentDayId,
+          variantId: data.variantId,
+          status: "DUE",
+        },
+      });
+      if (dayItem) treatmentDayItemId = dayItem.id;
+    }
+
+    if (data.vialSessionId) {
+      await openVialService.recordDose(
+        data.vialSessionId,
+        {
+          quantityDelta: -Number(data.administeredDose),
+          performedByUserId: data.administeredByUserId ?? null,
+          witnessUserId: data.witnessedByUserId ?? null,
+        },
+        tx
+      );
+    }
+
+    const admin = await (tx as any).medicationAdministration.create({
+      data: {
+        patientId: data.patientId,
+        visitId: data.visitId ?? null,
+        surgeryCaseId: data.surgeryCaseId ?? null,
+        variantId: data.variantId,
+        vialSessionId: data.vialSessionId ?? null,
+        injectionTokenId: data.injectionTokenId ?? null,
+        treatmentCourseId: token?.treatmentCourseId ?? null,
+        treatmentDayItemId: treatmentDayItemId ?? null,
+        prescribedDose: data.prescribedDose != null ? data.prescribedDose : null,
+        administeredDose: data.administeredDose,
+        unit: data.unit ?? null,
+        medicineSource: resolvedSource,
+        route: data.route ?? null,
+        administeredByUserId: data.administeredByUserId ?? null,
+        witnessedByUserId: data.witnessedByUserId ?? null,
+        emergencyBypassReason: data.emergencyBypassReason ?? null,
+        medicineApprovalRequestId: data.medicineApprovalRequestId ?? null,
+      },
+      include: {
+        variant: { select: { id: true, title: true, sku: true } },
+        vialSession: { select: { id: true, remainingQty: true } },
+        injectionToken: { select: { id: true, tokenCode: true, status: true } },
+      },
+    });
+
+    if (data.injectionTokenId) {
+      await injectionTokenService.consumeToken(
+        Number(data.injectionTokenId),
+        data.administeredByUserId ?? null,
+        {
+          tx,
+          expectedVariantId: Number(data.variantId),
+          expectedVisitId: data.visitId != null ? Number(data.visitId) : undefined,
+        }
+      );
+    }
+
+    if (treatmentDayItemId) {
+      await (tx as any).treatmentDayItem.update({
+        where: { id: treatmentDayItemId },
+        data: { status: "ADMINISTERED" },
+      });
+    }
+
+    return admin;
   });
-  return admin;
 }
 
 export async function getConsumptionByVisit(visitId: number): Promise<any[]> {

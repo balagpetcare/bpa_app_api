@@ -1,0 +1,50 @@
+{"sessionId":"b45714","location":"owner/layout.jsx:checkAuth","message":"owner auth/me request","data":{"url":"/api/v1/auth/me","pathname":"/owner/staffs"},"timestamp":1773327303196,"hypothesisId":"H4"}
+{"sessionId":"b45714","location":"route.js:proxyRequest","message":"proxy hit for auth","data":{"path":"auth/me","method":"GET"},"timestamp":1773327303262,"hypothesisId":"H1"}
+{"sessionId":"b45714","location":"route.js:proxyRequest","message":"proxy hit for auth","data":{"path":"auth/me","method":"GET"},"timestamp":1773327303704,"hypothesisId":"H1"}
+{"sessionId":"b45714","location":"login/page.jsx:onSubmit","message":"login submit","data":{"loginPath":"/api/v1/auth/login","app":null,"isStaffFlow":null,"isOwner":true},"timestamp":1773327483580,"hypothesisId":"H2"}
+{"sessionId":"b45714","location":"route.js:proxyRequest","message":"proxy hit for auth","data":{"path":"auth/login","method":"POST"},"timestamp":1773327501379,"hypothesisId":"H1"}
+{"sessionId":"b45714","location":"route.js:auth response","message":"auth login response, cookies applied","data":{"path":"auth/login","status":200,"setCookieCount":1},"timestamp":1773327502746,"hypothesisId":"H3"}
+{"sessionId":"b45714","location":"owner/layout.jsx:checkAuth","message":"owner auth/me request","data":{"url":"/api/v1/auth/me","pathname":"/owner/staffs"},"timestamp":1773327517063,"hypothesisId":"H4"}
+{"sessionId":"b45714","location":"route.js:proxyRequest","message":"proxy hit for auth","data":{"path":"auth/me","method":"GET"},"timestamp":1773327517125,"hypothesisId":"H1"}
+{"sessionId":"b45714","location":"route.js:proxyRequest","message":"proxy hit for auth","data":{"path":"auth/me","method":"GET"},"timestamp":1773327517491,"hypothesisId":"H1"}
+{"sessionId":"b45714","location":"owner/layout.jsx:checkAuth","message":"owner auth/me request","data":{"url":"/api/v1/auth/me","pathname":"/owner/staffs"},"timestamp":1773327557254,"hypothesisId":"H4"}
+{"sessionId":"b45714","location":"route.js:proxyRequest","message":"proxy hit for auth","data":{"path":"auth/me","method":"GET"},"timestamp":1773327557298,"hypothesisId":"H1"}
+{"sessionId":"b45714","location":"login/page.jsx:onSubmit","message":"login submit","data":{"loginPath":"/api/v1/auth/staff/login","app":"staff","isStaffFlow":true,"isOwner":false},"timestamp":1773327557651,"hypothesisId":"H2"}
+{"sessionId":"b45714","location":"route.js:proxyRequest","message":"proxy hit for auth","data":{"path":"auth/me","method":"GET"},"timestamp":1773327557686,"hypothesisId":"H1"}
+{"sessionId":"b45714","location":"route.js:proxyRequest","message":"proxy hit for auth","data":{"path":"auth/staff/login","method":"POST"},"timestamp":1773327557767,"hypothesisId":"H1"}
+{"sessionId":"b45714","location":"route.js:auth response","message":"auth login response, cookies applied","data":{"path":"auth/staff/login","status":200,"setCookieCount":1},"timestamp":1773327558077,"hypothesisId":"H3"}
+{"sessionId":"b45714","location":"login/page.jsx:onSubmit","message":"login submit","data":{"loginPath":"/api/v1/auth/staff/login","app":"staff","isStaffFlow":true,"isOwner":false},"timestamp":1773327620543,"hypothesisId":"H2"}
+{"sessionId":"b45714","location":"route.js:proxyRequest","message":"proxy hit for auth","data":{"path":"auth/staff/login","method":"POST"},"timestamp":1773327620585,"hypothesisId":"H1"}
+{"sessionId":"b45714","location":"route.js:auth response","message":"auth login response, cookies applied","data":{"path":"auth/staff/login","status":200,"setCookieCount":1},"timestamp":1773327620801,"hypothesisId":"H3"}
+{"sessionId":"b45714","location":"login/page.jsx:onSubmit","message":"login submit","data":{"loginPath":"/api/v1/auth/staff/login","app":"staff","isStaffFlow":true,"isOwner":false},"timestamp":1773327629148,"hypothesisId":"H2"}
+{"sessionId":"b45714","location":"route.js:proxyRequest","message":"proxy hit for auth","data":{"path":"auth/staff/login","method":"POST"},"timestamp":1773327629186,"hypothesisId":"H1"}
+{"sessionId":"b45714","location":"route.js:auth response","message":"auth login response, cookies applied","data":{"path":"auth/staff/login","status":200,"setCookieCount":1},"timestamp":1773327629367,"hypothesisId":"H3"}
+{"sessionId":"b45714","location":"login/page.jsx:onSubmit","message":"login submit","data":{"loginPath":"/api/v1/auth/staff/login","app":"staff","isStaffFlow":true,"isOwner":false},"timestamp":1773327640831,"hypothesisId":"H2"}
+{"sessionId":"b45714","location":"route.js:proxyRequest","message":"proxy hit for auth","data":{"path":"auth/staff/login","method":"POST"},"timestamp":1773327640867,"hypothesisId":"H1"}
+{"sessionId":"b45714","location":"route.js:auth response","message":"auth login response, cookies applied","data":{"path":"auth/staff/login","status":200,"setCookieCount":1},"timestamp":1773327641026,"hypothesisId":"H3"}
+{"sessionId":"b45714","location":"route.js:proxyRequest","message":"proxy hit for auth","data":{"path":"auth/register","method":"POST"},"timestamp":1773327888840,"hypothesisId":"H1"}
+{"sessionId":"b45714","location":"login/page.jsx:onSubmit","message":"login submit","data":{"loginPath":"/api/v1/auth/login","app":null,"isStaffFlow":null,"isOwner":true},"timestamp":1773327893635,"hypothesisId":"H2"}
+{"sessionId":"b45714","location":"route.js:proxyRequest","message":"proxy hit for auth","data":{"path":"auth/login","method":"POST"},"timestamp":1773327893667,"hypothesisId":"H1"}
+{"sessionId":"b45714","location":"route.js:auth response","message":"auth login response, cookies applied","data":{"path":"auth/login","status":200,"setCookieCount":1},"timestamp":1773327893837,"hypothesisId":"H3"}
+{"sessionId":"b45714","location":"route.js:proxyRequest","message":"proxy hit for auth","data":{"path":"auth/me","method":"GET"},"timestamp":1773327897702,"hypothesisId":"H1"}
+{"sessionId":"b45714","location":"route.js:proxyRequest","message":"proxy hit for auth","data":{"path":"auth/me","method":"GET"},"timestamp":1773327903639,"hypothesisId":"H1"}
+{"sessionId":"b45714","location":"route.js:proxyRequest","message":"proxy hit for auth","data":{"path":"auth/me","method":"GET"},"timestamp":1773327903973,"hypothesisId":"H1"}
+{"sessionId":"b45714","location":"route.js:proxyRequest","message":"proxy hit for auth","data":{"path":"auth/me","method":"GET"},"timestamp":1773327906840,"hypothesisId":"H1"}
+{"sessionId":"b45714","location":"owner/layout.jsx:checkAuth","message":"owner auth/me request","data":{"url":"/api/v1/auth/me","pathname":"/owner/staffs"},"timestamp":1773327908468,"hypothesisId":"H4"}
+{"sessionId":"b45714","location":"route.js:proxyRequest","message":"proxy hit for auth","data":{"path":"auth/me","method":"GET"},"timestamp":1773327908514,"hypothesisId":"H1"}
+{"sessionId":"b45714","location":"route.js:proxyRequest","message":"proxy hit for auth","data":{"path":"auth/me","method":"GET"},"timestamp":1773327908959,"hypothesisId":"H1"}
+{"sessionId":"b45714","location":"login/page.jsx:onSubmit","message":"login submit","data":{"loginPath":"/api/v1/auth/login","app":null,"isStaffFlow":null,"isOwner":true},"timestamp":1773327919569,"hypothesisId":"H2"}
+{"sessionId":"b45714","location":"route.js:proxyRequest","message":"proxy hit for auth","data":{"path":"auth/login","method":"POST"},"timestamp":1773327919620,"hypothesisId":"H1"}
+{"sessionId":"b45714","location":"route.js:auth response","message":"auth login response, cookies applied","data":{"path":"auth/login","status":200,"setCookieCount":1},"timestamp":1773327919789,"hypothesisId":"H3"}
+{"sessionId":"b45714","location":"owner/layout.jsx:checkAuth","message":"owner auth/me request","data":{"url":"/api/v1/auth/me","pathname":"/owner/dashboard"},"timestamp":1773327924638,"hypothesisId":"H4"}
+{"sessionId":"b45714","location":"route.js:proxyRequest","message":"proxy hit for auth","data":{"path":"auth/me","method":"GET"},"timestamp":1773327924900,"hypothesisId":"H1"}
+{"sessionId":"b45714","location":"route.js:proxyRequest","message":"proxy hit for auth","data":{"path":"auth/me","method":"GET"},"timestamp":1773327927820,"hypothesisId":"H1"}
+{"sessionId":"b45714","location":"owner/layout.jsx:checkAuth","message":"owner auth/me request","data":{"url":"/api/v1/auth/me","pathname":"/owner/dashboard"},"timestamp":1773327936032,"hypothesisId":"H4"}
+{"sessionId":"b45714","location":"route.js:proxyRequest","message":"proxy hit for auth","data":{"path":"auth/me","method":"GET"},"timestamp":1773327936114,"hypothesisId":"H1"}
+{"sessionId":"b45714","location":"route.js:proxyRequest","message":"proxy hit for auth","data":{"path":"auth/me","method":"GET"},"timestamp":1773327937813,"hypothesisId":"H1"}
+{"sessionId":"b45714","location":"owner/layout.jsx:checkAuth","message":"owner auth/me request","data":{"url":"/api/v1/auth/me","pathname":"/owner/kyc"},"timestamp":1773327938480,"hypothesisId":"H4"}
+{"sessionId":"b45714","location":"route.js:proxyRequest","message":"proxy hit for auth","data":{"path":"auth/me","method":"GET"},"timestamp":1773327938585,"hypothesisId":"H1"}
+{"sessionId":"b45714","location":"route.js:proxyRequest","message":"proxy hit for auth","data":{"path":"auth/me","method":"GET"},"timestamp":1773327938811,"hypothesisId":"H1"}
+{"sessionId":"b45714","location":"owner/layout.jsx:checkAuth","message":"owner auth/me request","data":{"url":"/api/v1/auth/me","pathname":"/owner/staffs"},"timestamp":1773327940590,"hypothesisId":"H4"}
+{"sessionId":"b45714","location":"route.js:proxyRequest","message":"proxy hit for auth","data":{"path":"auth/me","method":"GET"},"timestamp":1773327940634,"hypothesisId":"H1"}
+{"sessionId":"b45714","location":"route.js:proxyRequest","message":"proxy hit for auth","data":{"path":"auth/me","method":"GET"},"timestamp":1773327940878,"hypothesisId":"H1"}

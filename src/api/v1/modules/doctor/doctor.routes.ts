@@ -32,10 +32,14 @@ router.get("/prescriptions", ctrl.listPrescriptions);
 router.get("/visits", ctrl.listVisits);
 router.get("/visits/:id", ctrl.getVisit);
 router.patch("/profile/branches/:branchMemberId/fee", ctrl.updateBranchFee);
+router.post("/appointments/:id/confirm", ctrl.confirmAppointment);
 router.post("/appointments/:id/cancel", ctrl.cancelAppointment);
 router.post("/appointments/:id/reschedule", ctrl.rescheduleAppointment);
 
-// Onboarding
+// Onboarding (profile-level first; per-clinic below)
+router.post("/onboarding/complete", ctrl.completeProfileOnboarding);
+router.get("/requests", ctrl.listDoctorRequests);
+router.post("/requests", ctrl.createDoctorRequest);
 router.get("/clinics/:branchId/onboarding", ctrl.getOnboarding);
 router.post("/clinics/:branchId/onboarding/complete", ctrl.completeOnboarding);
 

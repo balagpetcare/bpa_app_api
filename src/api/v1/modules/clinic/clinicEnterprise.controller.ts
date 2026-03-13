@@ -91,7 +91,10 @@ exports.createPackage = async (req: any, res: any) => {
     });
     return sendClinicSuccess(res, 201, result);
   } catch (e: any) {
-    return sendClinicError(res, 500, e?.message || "Failed", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    const isDuplicateCode = e?.code === "P2002" && (e?.meta?.target?.includes?.("packageCode") || e?.meta?.target?.includes?.("branchId"));
+    const status = isDuplicateCode ? 400 : 500;
+    const message = isDuplicateCode ? "Package code already in use for this branch. Use a unique code." : (e?.message || "Failed");
+    return sendClinicError(res, status, message, CLINIC_ERROR_CODES.VALIDATION_ERROR);
   }
 };
 
@@ -104,6 +107,8 @@ exports.updatePackage = async (req: any, res: any) => {
       packageName: body.packageName,
       packageType: body.packageType,
       baseSellingPrice: body.baseSellingPrice,
+      serviceId: body.serviceId != null ? Number(body.serviceId) : undefined,
+      description: body.description,
       validFrom: body.validFrom != null ? new Date(body.validFrom) : undefined,
       validTo: body.validTo != null ? new Date(body.validTo) : undefined,
       doctorFeeAmount: body.doctorFeeAmount,

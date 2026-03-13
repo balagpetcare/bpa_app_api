@@ -188,10 +188,150 @@ async function getPrescriptionItemsForOrder(prescriptionId: number): Promise<{ p
   return out;
 }
 
+/**
+ * Get open vial availability for a variant at branch (for Smart Billing open vial panel).
+ * Returns session with remaining mL, usable_until, status (OPEN/LOW_BALANCE/EXPIRED), enough/not enough vs requiredMl.
+ */
+async function getOpenVialAvailability(branchId: number, variantId: number, requiredMl?: number) {
+  const dispenseControl = require("./dispenseControl.service");
+  const session = await dispenseControl.checkExistingActiveVial(branchId, variantId);
+  if (!session) {
+    return { available: false, session: null, enough: false, remainingMl: 0, usableUntil: null, status: null };
+  }
+  const remaining = Number(session.remainingQty ?? 0);
+  const validUntil = session.validUntil ? new Date(session.validUntil) : null;
+  const isExpired = validUntil != null && validUntil < new Date();
+  const status = isExpired ? "EXPIRED" : remaining <= 0 ? "EMPTY" : (requiredMl != null && remaining < requiredMl ? "LOW_BALANCE" : "OPEN");
+  const enough = requiredMl == null ? remaining > 0 : remaining >= requiredMl && !isExpired;
+  return {
+    available: !isExpired && remaining > 0,
+    session: { id: session.id, remainingQty: session.remainingQty, validUntil: session.validUntil, variantId: session.variantId },
+    enough,
+    remainingMl: remaining,
+    usableUntil: validUntil,
+    status,
+  };
+}
+
+/**
+ * Treatment billing summary: today's due medicines from course + open vial availability per item + charge hints.
+ */
+async function getTreatmentBillingSummary(courseId: number, branchId: number) {
+  const dailyDue = require("./dailyDueMedicine.service");
+  const { course, currentDay, todayDueItems, expectedMedicineCount } = await dailyDue.getTodayDueMedicines(courseId, branchId);
+  const openVialByVariant = {};
+  for (const item of todayDueItems) {
+    const availability = await getOpenVialAvailability(branchId, item.variantId, Number(item.dosageMl ?? 0));
+    openVialByVariant[item.variantId] = availability;
+  }
+  const locationPrices = await prisma.locationPrice.findMany({
+    where: {
+      location: { branchId },
+      variantId: { in: todayDueItems.map((i) => i.variantId) },
+    },
+    include: { variant: { select: { id: true, title: true } } },
+  }).catch(() => []);
+  const priceByVariant = {};
+  for (const lp of locationPrices) {
+    if (lp.variantId && lp.sellingPrice != null) priceByVariant[lp.variantId] = Number(lp.sellingPrice);
+  }
+  const lineItems = todayDueItems.map((item) => ({
+    treatmentDayItemId: item.id,
+    variantId: item.variantId,
+    medicineName: item.medicineName,
+    dosageMl: item.dosageMl,
+    route: item.route,
+    quantity: 1,
+    unitPrice: priceByVariant[item.variantId] ?? 0,
+    openVial: openVialByVariant[item.variantId],
+  }));
+  const totalMedicineAmount = lineItems.reduce((sum, i) => sum + (i.unitPrice * (i.quantity || 1)), 0);
+  return {
+    course,
+    currentDay,
+    todayDueItems: lineItems,
+    expectedMedicineCount,
+    totalMedicineAmount,
+    serviceFee: 0,
+    totalAmount: totalMedicineAmount,
+  };
+}
+
+/**
+ * Create order (bill) for today's treatment day: line items from day items + optional service fee.
+ */
+async function createTreatmentDayBill(
+  courseId: number,
+  branchId: number,
+  data: {
+    customerId: number;
+    treatmentDayId: number;
+    serviceFee?: number;
+    visitId?: number | null;
+    paymentMethod?: string;
+    notes?: string;
+  },
+  createdByUserId: number
+) {
+  const dailyDue = require("./dailyDueMedicine.service");
+  const { currentDay, todayDueItems } = await dailyDue.getTodayDueMedicines(courseId, branchId);
+  if (!currentDay || currentDay.id !== data.treatmentDayId) throw new Error("Treatment day not found or not due today");
+  const orderService = require("../orders/orders.service");
+  const locationPrices = await prisma.locationPrice.findMany({
+    where: {
+      location: { branchId },
+      variantId: { in: todayDueItems.map((i) => i.variantId) },
+    },
+  }).catch(() => []);
+  const priceByVariant = {};
+  for (const lp of locationPrices) {
+    if (lp.variantId != null && lp.sellingPrice != null) priceByVariant[lp.variantId] = Number(lp.sellingPrice);
+  }
+  const variantProduct = await prisma.productVariant.findMany({
+    where: { id: { in: todayDueItems.map((i) => i.variantId) } },
+    select: { id: true, productId: true },
+  });
+  const productByVariant = {};
+  for (const v of variantProduct) productByVariant[v.id] = v.productId;
+  const items = todayDueItems
+    .map((item) => ({
+      productId: productByVariant[item.variantId],
+      variantId: item.variantId,
+      quantity: 1,
+      price: priceByVariant[item.variantId] ?? 0,
+    }))
+    .filter((i) => i.productId != null);
+  if (data.serviceFee && data.serviceFee > 0) {
+    const consultService = await prisma.service.findFirst({ where: { branchId }, select: { id: true } });
+    if (consultService) {
+      items.push({ productId: null, variantId: null, quantity: 1, price: data.serviceFee, serviceId: consultService.id });
+    }
+  }
+  const orderItems = items.map((item) =>
+    item.serviceId != null
+      ? { serviceId: item.serviceId, quantity: item.quantity, price: item.price }
+      : { productId: item.productId, variantId: item.variantId, quantity: item.quantity, price: item.price }
+  );
+  const order = await orderService.createOrder({
+    branchId,
+    customerId: data.customerId,
+    items: orderItems,
+    paymentMethod: data.paymentMethod,
+    notes: data.notes ?? `Treatment day #${data.treatmentDayId}`,
+    createdByUserId,
+    orderSource: "CLINIC",
+    visitId: data.visitId ?? undefined,
+  });
+  return order;
+}
+
 module.exports = {
   getBillingSummaryForVisit,
   getVisitServicePaymentStatus,
   createInvoiceFromVisit,
   getOrdersForVisit,
   getPrescriptionItemsForOrder,
+  getOpenVialAvailability,
+  getTreatmentBillingSummary,
+  createTreatmentDayBill,
 };

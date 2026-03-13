@@ -597,7 +597,7 @@ export async function getAvailablePackagesForService(options: {
     where: { id: serviceId, branchId },
     select: { id: true, name: true, packageAllowed: true },
   });
-  if (!service) throw new Error("Service not found");
+  if (!service) return [];
   if (!service.packageAllowed) return [];
 
   const now = new Date();

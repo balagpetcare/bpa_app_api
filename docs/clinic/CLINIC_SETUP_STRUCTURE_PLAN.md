@@ -252,19 +252,48 @@ Add functions in `app/owner/_lib/ownerApi.ts` for clinic branches, settings, ser
 
 ## 9. Step-by-Step Execution Checklist
 
-1. **Create plan doc** -- `docs/clinic/CLINIC_SETUP_STRUCTURE_PLAN.md`
-2. **Migration** -- Add `clinicSettingsJson` to Branch
-3. **Permissions seed** -- Register `clinic.settings.read`, `clinic.settings.write`, `clinic.services.manage`, `clinic.overview.read`
-4. **Backend service** -- Create `ownerClinic.service.ts` with business logic
-5. **Backend controller** -- Create `ownerClinic.controller.ts` with route handlers
-6. **Mount routes** -- Add clinic routes to `owner.routes.ts`
-7. **Backend smoke test** -- Verify with curl
-8. **Frontend API layer** -- Add functions to `ownerApi.ts`
-9. **Clinic overview page** -- `/owner/clinic`
-10. **Clinic branch detail page** -- `/owner/clinic/[branchId]`
-11. **Clinic settings page** -- `/owner/clinic/[branchId]/settings`
-12. **Clinic services pages** -- List + Create
+**Steps 1–12 implementation status:** All implemented. See §10 for Step 7 curl verification.
+
+1. **Create plan doc** -- `docs/clinic/CLINIC_SETUP_STRUCTURE_PLAN.md` ✓
+2. **Migration** -- Add `clinicSettingsJson` to Branch ✓ (`prisma/migrations/20260302150000_add_clinic_settings`)
+3. **Permissions seed** -- Register `clinic.settings.read`, `clinic.settings.write`, `clinic.services.manage`, `clinic.overview.read` ✓ (`seedRolesPermissions.ts`, `permissionsRegistry.service.ts`)
+4. **Backend service** -- Create `ownerClinic.service.ts` with business logic ✓
+5. **Backend controller** -- Create `ownerClinic.controller.ts` with route handlers ✓
+6. **Mount routes** -- Add clinic routes to `owner.routes.ts` ✓
+7. **Backend smoke test** -- Verify with curl ✓ (see §10 below)
+8. **Frontend API layer** -- Add functions to `ownerApi.ts` ✓
+9. **Clinic overview page** -- `/owner/clinic` ✓ (`app/owner/(larkon)/clinic/page.tsx`)
+10. **Clinic branch detail page** -- `/owner/clinic/[branchId]` ✓ (`app/owner/(larkon)/clinic/[branchId]/page.tsx`)
+11. **Clinic settings page** -- `/owner/clinic/[branchId]/settings` ✓ (`app/owner/(larkon)/clinic/[branchId]/settings/page.tsx`)
+12. **Clinic services pages** -- List + Create ✓ (`services/page.tsx`, `services/new/page.tsx`, `services/[serviceId]/edit/page.tsx`)
 13. **Clinic staff page** -- `/owner/clinic/[branchId]/staff`
 14. **Sidebar update** -- Replace Medical placeholder with Clinic
 15. **QA pass** -- Run through checklist above
 16. **Commit and tag** -- `clinic-setup-v1.0.0`
+
+---
+
+## 10. Step 7 – Backend smoke test (curl)
+
+Run with a valid session cookie or Bearer token. Replace `BASE=http://localhost:3000`, `BRANCH_ID`, and auth as needed.
+
+```bash
+# Step 7a – Clinic branches list (requires clinic.overview.read)
+curl -s -b cookies.txt "$BASE/api/v1/owner/clinic/branches" | jq .
+
+# Step 7b – Clinic settings GET (requires clinic.settings.read)
+curl -s -b cookies.txt "$BASE/api/v1/owner/clinic/branches/$BRANCH_ID/settings" | jq .
+
+# Step 7c – Clinic settings PUT (requires clinic.settings.write)
+curl -s -X PUT -b cookies.txt -H "Content-Type: application/json" \
+  -d '{"consultationSlotMinutes":30,"walkInsAllowed":true}' \
+  "$BASE/api/v1/owner/clinic/branches/$BRANCH_ID/settings" | jq .
+
+# Step 7d – Clinic services list (requires clinic.services.manage)
+curl -s -b cookies.txt "$BASE/api/v1/owner/clinic/branches/$BRANCH_ID/services" | jq .
+
+# Step 7e – Clinic staff list (requires clinic.overview.read)
+curl -s -b cookies.txt "$BASE/api/v1/owner/clinic/branches/$BRANCH_ID/staff" | jq .
+```
+
+Pass criteria: each request returns `200` (or `201` for create) with valid JSON; no `500` or unhandled errors.

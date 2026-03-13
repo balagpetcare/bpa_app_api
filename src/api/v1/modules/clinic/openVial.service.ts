@@ -3,6 +3,7 @@
  */
 import prisma from "../../../../infrastructure/db/prismaClient";
 import * as medicinePolicy from "./medicinePolicy.service";
+import { INJECTION_ROOM_TYPES } from "../../constants/roomConstants";
 import type { VialEventType, VialSessionStatus } from "@prisma/client";
 
 /**
@@ -17,9 +18,40 @@ export async function openVial(
     roomId?: number | null;
     openedByUserId: number;
     initialQty: number;
+    requestedDose?: number | null;
+    allowForceOpen?: boolean;
     openPhotoUrl?: string | null;
+    activatedFromDispenseRequestId?: number | null; // internal order that triggered this activation
   }
 ): Promise<any> {
+  // Vial activation only in injection room (or allowed room types).
+  if (params.roomId != null) {
+    const room = await prisma.branchRoom.findFirst({
+      where: { id: params.roomId, branchId: params.branchId },
+      select: { roomType: true },
+    });
+    if (!room) throw new Error("Room not found");
+    if (!INJECTION_ROOM_TYPES.includes(room.roomType as any)) {
+      throw new Error(`Vial activation is allowed only in injection room types: ${INJECTION_ROOM_TYPES.join(", ")}`);
+    }
+  }
+
+  if (!params.allowForceOpen && params.requestedDose != null) {
+    const active = await prisma.vialSession.findFirst({
+      where: {
+        branchId: params.branchId,
+        variantId: params.variantId,
+        status: { in: ["ACTIVE", "PARTIALLY_USED"] },
+        validUntil: { gt: new Date() },
+      },
+      select: { id: true, remainingQty: true },
+      orderBy: { openedAt: "desc" },
+    });
+    if (active && Number(active.remainingQty) >= Number(params.requestedDose)) {
+      throw new Error(`Current vial has sufficient quantity (session ${active.id})`);
+    }
+  }
+
   const policy = await medicinePolicy.getPolicyWithDefaults(params.variantId);
   const validityHours = policy.openVialValidityHours ?? 24;
   const validUntil = new Date();
@@ -39,6 +71,7 @@ export async function openVial(
         initialQty: params.initialQty,
         remainingQty: params.initialQty,
         status: "ACTIVE",
+        activatedFromDispenseRequestId: params.activatedFromDispenseRequestId ?? null,
       },
     });
     await (tx as any).vialSessionEvent.create({
@@ -100,9 +133,11 @@ export async function recordDose(
     witnessUserId?: number | null;
     photoUrl?: string | null;
     notes?: string | null;
-  }
+  },
+  tx?: any
 ): Promise<any> {
-  const session = await prisma.vialSession.findUnique({
+  const db = tx ?? prisma;
+  const session = await db.vialSession.findUnique({
     where: { id: sessionId },
   });
   if (!session) throw new Error("Vial session not found");
@@ -115,9 +150,19 @@ export async function recordDose(
   const used = Math.abs(data.quantityDelta);
   if (used > session.remainingQty) throw new Error("Insufficient remaining quantity in vial");
   const newRemaining = session.remainingQty - used;
+  const policy = await medicinePolicy.getPolicyWithDefaults(session.variantId);
+  const minPct = policy.minRemainingPercent != null ? Number(policy.minRemainingPercent) : null;
+  if (minPct != null && session.initialQty > 0) {
+    const pctRemaining = (newRemaining / session.initialQty) * 100;
+    if (pctRemaining < minPct) {
+      throw new Error(
+        `Minimum remaining threshold (${minPct}%) would be exceeded; current remaining would be ${pctRemaining.toFixed(1)}%`
+      );
+    }
+  }
   const newStatus: VialSessionStatus = newRemaining <= 0 ? "EXHAUSTED" : "PARTIALLY_USED";
 
-  const updated = await prisma.$transaction(async (tx) => {
+  if (tx) {
     await (tx as any).vialSessionEvent.create({
       data: {
         vialSessionId: sessionId,
@@ -129,11 +174,29 @@ export async function recordDose(
         notes: data.notes ?? null,
       },
     });
-    return (tx as any).vialSession.update({
+    await (tx as any).vialSession.update({
       where: { id: sessionId },
       data: { remainingQty: newRemaining, status: newStatus },
     });
-  });
+  } else {
+    await prisma.$transaction(async (tx2) => {
+      await (tx2 as any).vialSessionEvent.create({
+        data: {
+          vialSessionId: sessionId,
+          eventType: "DOSE_USED",
+          quantityDelta: -used,
+          performedByUserId: data.performedByUserId ?? null,
+          witnessUserId: data.witnessUserId ?? null,
+          photoUrl: data.photoUrl ?? null,
+          notes: data.notes ?? null,
+        },
+      });
+      await (tx2 as any).vialSession.update({
+        where: { id: sessionId },
+        data: { remainingQty: newRemaining, status: newStatus },
+      });
+    });
+  }
 
   return prisma.vialSession.findUnique({
     where: { id: sessionId },

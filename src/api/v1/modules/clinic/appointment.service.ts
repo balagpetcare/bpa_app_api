@@ -8,6 +8,8 @@ const prisma = require("../../../../infrastructure/db/prismaClient").default ?? 
 const { CLINIC_ERROR_CODES } = require("./clinic.responses");
 const { assertTransition } = require("./appointments/appointmentStateMachine");
 const { requireAppointmentInBranch } = require("./appointments/appointmentGuards");
+const { getEligibleDoctorIdsForService, getEligibleDoctorIdsForPackage } = require("../../services/appointmentAvailability.service");
+const { validateRoomAssignment } = require("../../services/roomPolicy.service");
 
 const ACTIVE_APPOINTMENT_STATUSES = [
   "DRAFT",
@@ -194,8 +196,100 @@ async function getAvailableSlots(
 }
 
 /**
+ * Validate branch, patient, pet, service, package, doctor eligibility and overlaps before create.
+ */
+async function validateCreateAppointmentData(
+  data: {
+    branchId: number;
+    patientId?: number | null;
+    petId?: number | null;
+    serviceId: number;
+    surgeryPackageId?: number | null;
+    doctorId?: number | null;
+    scheduledStartAt: Date;
+    scheduledEndAt: Date;
+  },
+  tx?: any
+): Promise<void> {
+  const db = tx ?? prisma;
+
+  const branch = await db.branch.findUnique({
+    where: { id: data.branchId },
+    select: { id: true, status: true },
+  });
+  if (!branch) throw new Error(CLINIC_ERROR_CODES.VALIDATION_ERROR + ": Branch not found.");
+  if (branch.status !== "ACTIVE") throw new Error(CLINIC_ERROR_CODES.VALIDATION_ERROR + ": Branch is not active.");
+
+  if (data.patientId != null) {
+    const patient = await db.user.findUnique({ where: { id: data.patientId }, select: { id: true } });
+    if (!patient) throw new Error(CLINIC_ERROR_CODES.VALIDATION_ERROR + ": Patient not found.");
+    if (data.petId != null) {
+      const pet = await db.pet.findFirst({
+        where: { id: data.petId, userId: data.patientId },
+        select: { id: true },
+      });
+      if (!pet) throw new Error(CLINIC_ERROR_CODES.VALIDATION_ERROR + ": Pet not found or does not belong to patient.");
+    }
+  }
+
+  const service = await db.service.findFirst({
+    where: { id: data.serviceId, branchId: data.branchId, status: "ACTIVE" },
+    select: { id: true },
+  });
+  if (!service) throw new Error(CLINIC_ERROR_CODES.VALIDATION_ERROR + ": Service not found or not active for this branch.");
+
+  if (data.surgeryPackageId != null) {
+    const pkg = await db.surgeryPackage.findFirst({
+      where: {
+        id: data.surgeryPackageId,
+        branchId: data.branchId,
+        serviceId: data.serviceId,
+        status: "ACTIVE",
+      },
+      select: { id: true },
+    });
+    if (!pkg) throw new Error(CLINIC_ERROR_CODES.VALIDATION_ERROR + ": Package not found or not active for this branch/service.");
+  }
+
+  if (data.doctorId != null) {
+    const member = await db.branchMember.findFirst({
+      where: { id: data.doctorId, branchId: data.branchId },
+      select: { id: true },
+    });
+    if (!member) throw new Error(CLINIC_ERROR_CODES.VALIDATION_ERROR + ": Doctor not found or not assigned to this branch.");
+    if (data.surgeryPackageId != null) {
+      const eligible = await getEligibleDoctorIdsForPackage(data.branchId, data.surgeryPackageId);
+      if (!eligible.includes(data.doctorId)) throw new Error(CLINIC_ERROR_CODES.VALIDATION_ERROR + ": Doctor is not eligible for this package.");
+    } else {
+      const eligible = await getEligibleDoctorIdsForService(data.branchId, data.serviceId);
+      if (eligible.length > 0 && !eligible.includes(data.doctorId)) throw new Error(CLINIC_ERROR_CODES.VALIDATION_ERROR + ": Doctor is not eligible for this service.");
+    }
+  }
+
+  const start = new Date(data.scheduledStartAt);
+  const end = new Date(data.scheduledEndAt);
+  if (data.patientId != null || data.petId != null) {
+    const orConditions: { patientId?: number; petId?: number }[] = [];
+    if (data.patientId != null) orConditions.push({ patientId: data.patientId });
+    if (data.petId != null) orConditions.push({ petId: data.petId });
+    const patientPetOverlap = await db.appointment.findFirst({
+      where: {
+        branchId: data.branchId,
+        status: { in: ACTIVE_APPOINTMENT_STATUSES },
+        scheduledStartAt: { lt: end },
+        scheduledEndAt: { gt: start },
+        OR: orConditions,
+      },
+      select: { id: true },
+    });
+    if (patientPetOverlap) throw new Error(CLINIC_ERROR_CODES.DOUBLE_BOOKING + ": Patient or pet already has an appointment in this time slot.");
+  }
+}
+
+/**
  * Create appointment. Uses transaction; verifies slot still free when doctorId set.
- * Validates: no past datetime, within advance booking days. Supports Any Doctor (doctorId null).
+ * Validates: branch, patient, pet, service, package, doctor eligibility, no past datetime, within advance booking days, doctor and patient/pet overlap.
+ * Supports Any Doctor (doctorId null). Builds priceSnapshot, packageSnapshot, doctorSnapshot when applicable.
  */
 async function createAppointment(
   data: {
@@ -207,7 +301,7 @@ async function createAppointment(
     serviceId: number;
     scheduledStartAt: Date;
     scheduledEndAt: Date;
-    source?: "MOBILE" | "OWNER_PORTAL" | "WALKIN" | "STAFF" | "PHONE";
+    source?: "MOBILE" | "OWNER_PORTAL" | "WALKIN" | "STAFF" | "PHONE" | "OWNER_PANEL" | "DOCTOR_PANEL" | "ONLINE_BOOKING";
     priority?: "NORMAL" | "EMERGENCY" | "VIP";
     notes?: string;
     channelMeta?: any;
@@ -222,6 +316,16 @@ async function createAppointment(
     paidAt?: Date;
     paidByUserId?: number;
     tokenNo?: string;
+    appointmentType?: string;
+    surgeryPackageId?: number | null;
+    durationMinutes?: number | null;
+    followUpFromId?: number | null;
+    specialInstructions?: string | null;
+    priceSnapshot?: any;
+    packageSnapshot?: any;
+    doctorSnapshot?: any;
+    discountSnapshot?: any;
+    roomId?: number | null;
   },
   createdByUserId?: number
 ) {
@@ -230,6 +334,58 @@ async function createAppointment(
   if (start >= end) throw new Error(CLINIC_ERROR_CODES.VALIDATION_ERROR);
 
   await validateAppointmentDateTime(data.branchId, start);
+  await validateCreateAppointmentData({
+    branchId: data.branchId,
+    patientId: data.patientId,
+    petId: data.petId,
+    serviceId: data.serviceId,
+    surgeryPackageId: data.surgeryPackageId,
+    doctorId: data.doctorId,
+    scheduledStartAt: start,
+    scheduledEndAt: end,
+  });
+
+  if (data.roomId != null) {
+    await validateRoomAssignment(data.branchId, data.roomId, start, end, {
+      serviceId: data.serviceId,
+      surgeryPackageId: data.surgeryPackageId ?? undefined,
+    });
+  }
+
+  let priceSnapshot = data.priceSnapshot ?? null;
+  let packageSnapshot = data.packageSnapshot ?? null;
+  let doctorSnapshot = data.doctorSnapshot ?? null;
+  if (!priceSnapshot || !packageSnapshot || !doctorSnapshot) {
+    if (data.surgeryPackageId && !packageSnapshot) {
+      const pkg = await prisma.surgeryPackage.findUnique({
+        where: { id: data.surgeryPackageId },
+        select: { packageCode: true, packageName: true, baseSellingPrice: true },
+      });
+      if (pkg) packageSnapshot = { packageCode: (pkg as any).packageCode, packageName: (pkg as any).packageName, baseSellingPrice: (pkg as any).baseSellingPrice != null ? Number((pkg as any).baseSellingPrice) : null };
+    }
+    if (data.doctorId && !doctorSnapshot) {
+      const doc = await prisma.branchMember.findUnique({
+        where: { id: data.doctorId },
+        select: { user: { select: { profile: { select: { displayName: true } } } } },
+      });
+      if (doc) doctorSnapshot = { doctorId: data.doctorId, displayName: (doc as any).user?.profile?.displayName ?? `Doctor #${data.doctorId}` };
+    }
+    if (!priceSnapshot && (data.serviceId || data.surgeryPackageId)) {
+      if (data.surgeryPackageId) {
+        const pkg = await prisma.surgeryPackage.findUnique({
+          where: { id: data.surgeryPackageId },
+          select: { baseSellingPrice: true },
+        });
+        if (pkg) priceSnapshot = { basePrice: (pkg as any).baseSellingPrice != null ? Number((pkg as any).baseSellingPrice) : null };
+      } else {
+        const svc = await prisma.service.findUnique({
+          where: { id: data.serviceId },
+          select: { price: true },
+        });
+        if (svc) priceSnapshot = { basePrice: (svc as any).price != null ? Number((svc as any).price) : null };
+      }
+    }
+  }
 
   return await prisma.$transaction(async (tx: any) => {
     if (data.doctorId != null) {
@@ -270,6 +426,16 @@ async function createAppointment(
         paidByUserId: data.paidByUserId ?? null,
         channel: data.channel ?? "COUNTER",
         tokenNo: data.tokenNo ?? null,
+        appointmentType: data.appointmentType ?? "CONSULTATION",
+        surgeryPackageId: data.surgeryPackageId ?? null,
+        durationMinutes: data.durationMinutes ?? null,
+        followUpFromId: data.followUpFromId ?? null,
+        specialInstructions: data.specialInstructions ?? null,
+        priceSnapshot: priceSnapshot ?? undefined,
+        packageSnapshot: packageSnapshot ?? undefined,
+        doctorSnapshot: doctorSnapshot ?? undefined,
+        discountSnapshot: data.discountSnapshot ?? undefined,
+        roomId: data.roomId ?? null,
       },
     });
 
@@ -281,6 +447,17 @@ async function createAppointment(
         meta: { source: data.source, visitType: data.visitType, isAnyDoctor: data.isAnyDoctor },
       },
     });
+
+    if (data.surgeryPackageId != null) {
+      await tx.appointmentEvent.create({
+        data: {
+          appointmentId: appointment.id,
+          eventType: "PACKAGE_ASSIGNED",
+          byUserId: createdByUserId ?? null,
+          meta: { surgeryPackageId: data.surgeryPackageId },
+        },
+      });
+    }
 
     if (data.idempotencyKey && data.doctorId != null) {
       await tx.slotLock.updateMany({
@@ -311,6 +488,7 @@ async function createQuickAppointment(
     petId?: number | null;
     doctorId?: number | null;
     serviceId: number;
+    surgeryPackageId?: number | null;
     scheduledStartAt: Date;
     scheduledEndAt: Date;
     status: "DRAFT" | "PRE_BOOKED";
@@ -332,6 +510,20 @@ async function createQuickAppointment(
   const end = new Date(data.scheduledEndAt);
   if (start >= end) throw new Error(CLINIC_ERROR_CODES.VALIDATION_ERROR);
   await validateAppointmentDateTime(data.branchId, start);
+
+  let surgeryPackageId: number | null = null;
+  if (data.surgeryPackageId != null && data.surgeryPackageId > 0) {
+    const pkg = await prisma.surgeryPackage.findFirst({
+      where: {
+        id: data.surgeryPackageId,
+        branchId: data.branchId,
+        serviceId: data.serviceId,
+        status: "ACTIVE",
+      },
+    });
+    if (!pkg) throw new Error(CLINIC_ERROR_CODES.VALIDATION_ERROR + ": Selected package is not valid for this branch and service.");
+    surgeryPackageId = pkg.id;
+  }
 
   return await prisma.$transaction(async (tx: any) => {
     if (data.doctorId != null) {
@@ -355,6 +547,7 @@ async function createQuickAppointment(
         petId: data.petId ?? null,
         doctorId: data.doctorId ?? null,
         serviceId: data.serviceId,
+        surgeryPackageId,
         scheduledStartAt: start,
         scheduledEndAt: end,
         status: data.status,
@@ -523,6 +716,44 @@ async function cancelAppointment(
 }
 
 /**
+ * Confirm appointment: BOOKED -> CONFIRMED.
+ */
+async function confirmAppointment(
+  appointmentId: number,
+  userId: number,
+  context: { orgId: number; branchId: number }
+) {
+  const apt = await requireAppointmentInBranch({
+    appointmentId,
+    orgId: context.orgId,
+    branchId: context.branchId,
+    select: { id: true, status: true, roomId: true },
+  });
+  assertTransition(apt.status, "CONFIRM");
+  if (apt.roomId == null) {
+    const err = new Error(CLINIC_ERROR_CODES.ROOM_REQUIRED_FOR_CONFIRMATION);
+    (err as any).statusCode = 400;
+    throw err;
+  }
+
+  const updated = await prisma.appointment.update({
+    where: { id: appointmentId },
+    data: { status: "CONFIRMED" },
+  });
+
+  await prisma.appointmentEvent.create({
+    data: {
+      appointmentId,
+      eventType: "CONFIRMED",
+      byUserId: userId,
+      meta: {},
+    },
+  });
+
+  return updated;
+}
+
+/**
  * Reschedule: cancel old (reason RESCHEDULED), create new with rescheduleFromAppointmentId.
  */
 async function rescheduleAppointment(
@@ -544,6 +775,8 @@ async function rescheduleAppointment(
       petId: true,
       doctorId: true,
       serviceId: true,
+      surgeryPackageId: true,
+      roomId: true,
       source: true,
       priority: true,
       notes: true,
@@ -552,15 +785,25 @@ async function rescheduleAppointment(
       isAnyDoctor: true,
       paymentStatus: true,
       channel: true,
+      scheduledStartAt: true,
+      scheduledEndAt: true,
     },
   });
   assertTransition(old.status, "RESCHEDULE");
 
   const doctorId = newSlot.doctorId ?? old.doctorId ?? null;
+  const roomId = (newSlot as any).roomId ?? (old as any).roomId ?? null;
   const start = new Date(newSlot.scheduledStartAt);
   const end = new Date(newSlot.scheduledEndAt);
 
   await validateAppointmentDateTime(old.branchId, start);
+  if (roomId != null) {
+    await validateRoomAssignment(old.branchId, roomId, start, end, {
+      serviceId: old.serviceId,
+      surgeryPackageId: (old as any).surgeryPackageId ?? undefined,
+      excludeAppointmentId: appointmentId,
+    });
+  }
 
   return await prisma.$transaction(async (tx: any) => {
     await tx.appointment.update({
@@ -594,6 +837,8 @@ async function rescheduleAppointment(
         petId: old.petId,
         doctorId,
         serviceId: old.serviceId,
+        surgeryPackageId: (old as any).surgeryPackageId ?? null,
+        roomId: roomId ?? null,
         scheduledStartAt: start,
         scheduledEndAt: end,
         status: "BOOKED",
@@ -615,7 +860,13 @@ async function rescheduleAppointment(
         appointmentId: created.id,
         eventType: "RESCHEDULED",
         byUserId: userId,
-        meta: { fromAppointmentId: appointmentId },
+        meta: {
+          fromAppointmentId: appointmentId,
+          oldStart: (old as any).scheduledStartAt,
+          oldEnd: (old as any).scheduledEndAt,
+          newStart: start,
+          newEnd: end,
+        },
       },
     });
 
@@ -791,6 +1042,8 @@ async function listAppointments(
     status?: string;
     statuses?: string[];
     serviceId?: number;
+    surgeryPackageId?: number;
+    appointmentType?: string;
     source?: string;
     channel?: string;
     paymentStatus?: string;
@@ -831,6 +1084,8 @@ async function listAppointments(
     where.status = filters.status;
   }
   if (filters.serviceId) where.serviceId = filters.serviceId;
+  if (filters.surgeryPackageId) where.surgeryPackageId = filters.surgeryPackageId;
+  if (filters.appointmentType) where.appointmentType = filters.appointmentType;
   if (filters.channel) where.channel = filters.channel;
   if (filters.source) where.source = filters.source;
   if (filters.paymentStatus) where.paymentStatus = filters.paymentStatus;
@@ -1159,7 +1414,8 @@ async function assignDoctor(
     branchId: context.branchId,
     select: { id: true, doctorId: true, status: true },
   });
-  if (apt.doctorId != null) throw new Error(CLINIC_ERROR_CODES.APPOINTMENT_DOCTOR_ALREADY_ASSIGNED);
+  const oldDoctorId = apt.doctorId;
+  if (oldDoctorId != null && oldDoctorId === doctorId) return apt;
 
   const updated = await prisma.appointment.update({
     where: { id: appointmentId },
@@ -1169,9 +1425,9 @@ async function assignDoctor(
   await prisma.appointmentEvent.create({
     data: {
       appointmentId,
-      eventType: "DOCTOR_ASSIGNED",
+      eventType: oldDoctorId != null ? "DOCTOR_CHANGED" : "DOCTOR_ASSIGNED",
       byUserId: userId,
-      meta: { doctorId },
+      meta: oldDoctorId != null ? { oldDoctorId, newDoctorId: doctorId } : { doctorId },
     },
   });
 
@@ -1214,6 +1470,15 @@ async function collectAppointmentPayment(
       eventType: "PAYMENT_COLLECTED",
       byUserId: data.collectedByUserId,
       meta: { amount: data.amount, method: data.method },
+    },
+  });
+
+  await prisma.appointmentEvent.create({
+    data: {
+      appointmentId,
+      eventType: "PRICE_UPDATED",
+      byUserId: data.collectedByUserId,
+      meta: { paidAmount: data.amount, paymentMethod: data.method },
     },
   });
 
@@ -1420,6 +1685,7 @@ module.exports = {
   promoteQuickAppointment,
   checkDuplicateAppointment,
   cancelAppointment,
+  confirmAppointment,
   rescheduleAppointment,
   markNoShow,
   checkInAppointment,

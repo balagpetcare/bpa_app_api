@@ -3,7 +3,7 @@ let domainEvents: { emit: (name: string, payload: Record<string, unknown>) => vo
 function getDomainEvents() {
   if (!domainEvents) {
     try {
-      domainEvents = require("../services/domainEvents.service");
+      domainEvents = require("../../services/domainEvents.service");
     } catch {
       domainEvents = { emit: () => {}, DOMAIN_EVENTS: {} };
     }

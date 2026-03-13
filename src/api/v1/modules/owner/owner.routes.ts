@@ -161,7 +161,15 @@ router.get('/clinic/branches/:branchId/staff/:memberId/profile', requireOwnerPer
 router.put('/clinic/branches/:branchId/staff/:memberId/profile', requireOwnerPermission('clinic.staff.manage', 'branch'), clinicCtrl.upsertClinicStaffProfile);
 router.post('/clinic/branches/:branchId/staff/:memberId/assign-template', requireOwnerPermission('clinic.staff.manage', 'branch'), clinicCtrl.assignClinicRoleTemplate);
 router.patch('/clinic/branches/:branchId/staff/:memberId/permissions', requireOwnerPermission('clinic.staff.manage', 'branch'), clinicCtrl.updateClinicStaffPermissions);
+router.get('/clinic/branches/:branchId/schedule-board', requireOwnerPermission('clinic.rooms.view_schedule', 'branch'), clinicCtrl.getScheduleBoard);
 router.get('/clinic/branches/:branchId/rooms', requireOwnerPermission('clinic.rooms.manage', null), clinicCtrl.listClinicRooms);
+router.get('/clinic/branches/:branchId/rooms/live', requireOwnerPermission('clinic.rooms.view_live', 'branch'), clinicCtrl.getRoomsLiveState);
+router.delete('/clinic/branches/:branchId/rooms/blocks/:blockId', requireOwnerPermission('clinic.rooms.manage_blocks', 'branch'), clinicCtrl.releaseRoomBlock);
+router.get('/clinic/branches/:branchId/rooms/:roomId', requireOwnerPermission('clinic.rooms.manage', null), clinicCtrl.getClinicRoom);
+router.get('/clinic/branches/:branchId/rooms/:roomId/audit', requireOwnerPermission('clinic.rooms.manage', null), clinicCtrl.getClinicRoomAudit);
+router.get('/clinic/branches/:branchId/rooms/:roomId/schedule', requireOwnerPermission('clinic.rooms.view_schedule', 'branch'), clinicCtrl.getRoomSchedule);
+router.get('/clinic/branches/:branchId/rooms/:roomId/live', requireOwnerPermission('clinic.rooms.view_live', 'branch'), clinicCtrl.getRoomLiveState);
+router.post('/clinic/branches/:branchId/rooms/:roomId/blocks', requireOwnerPermission('clinic.rooms.manage_blocks', 'branch'), clinicCtrl.createRoomBlock);
 router.post('/clinic/branches/:branchId/rooms', requireOwnerPermission('clinic.rooms.manage', null), clinicCtrl.createClinicRoom);
 router.patch('/clinic/branches/:branchId/rooms/:roomId', requireOwnerPermission('clinic.rooms.manage', null), clinicCtrl.updateClinicRoom);
 router.delete('/clinic/branches/:branchId/rooms/:roomId', requireOwnerPermission('clinic.rooms.manage', null), clinicCtrl.deleteClinicRoom);
@@ -178,7 +186,12 @@ router.put('/clinic/branches/:branchId/fees', requireOwnerPermission('clinic.fee
 // Clinic Phase 2: Appointments + Schedule Exceptions
 router.get('/clinic/branches/:branchId/appointments', requireOwnerPermission('clinic.appointments.read', 'branch'), clinicCtrl.listClinicAppointments);
 router.get('/clinic/branches/:branchId/slots', requireOwnerPermission('clinic.appointments.read', 'branch'), clinicCtrl.getClinicSlots);
+router.get('/clinic/branches/:branchId/booking/available-slots', requireOwnerPermission('clinic.appointments.read', 'branch'), clinicCtrl.getClinicBookingAvailableSlots);
+router.get('/clinic/branches/:branchId/booking/eligible-doctors', requireOwnerPermission('clinic.appointments.read', 'branch'), clinicCtrl.getClinicBookingEligibleDoctors);
+router.get('/clinic/branches/:branchId/booking/price-preview', requireOwnerPermission('clinic.appointments.read', 'branch'), clinicCtrl.getClinicBookingPricePreview);
+router.get('/clinic/branches/:branchId/booking/constraints', requireOwnerPermission('clinic.appointments.read', 'branch'), clinicCtrl.getClinicBookingConstraints);
 router.post('/clinic/branches/:branchId/appointments', requireOwnerPermission('clinic.appointments.manage', 'branch'), clinicCtrl.createClinicAppointment);
+router.post('/clinic/branches/:branchId/appointments/:appointmentId/confirm', requireOwnerPermission('clinic.appointments.manage', 'branch'), clinicCtrl.confirmClinicAppointment);
 router.post('/clinic/branches/:branchId/appointments/:appointmentId/cancel', requireOwnerPermission('clinic.appointments.manage', 'branch'), clinicCtrl.cancelClinicAppointment);
 router.post('/clinic/branches/:branchId/appointments/:appointmentId/reschedule', requireOwnerPermission('clinic.appointments.manage', 'branch'), clinicCtrl.rescheduleClinicAppointment);
 router.get('/clinic/branches/:branchId/schedule/exceptions', requireOwnerPermission('clinic.schedule.manage', 'branch'), clinicCtrl.listClinicScheduleExceptions);
@@ -188,6 +201,9 @@ router.delete('/clinic/branches/:branchId/schedule/exceptions/:exceptionId', req
 router.get('/clinic/branches/:branchId/doctors', requireOwnerPermission('clinic.staff.manage', 'branch'), clinicCtrl.listClinicDoctors);
 router.post('/clinic/branches/:branchId/doctors/invite', requireOwnerPermission('clinic.staff.manage', 'branch'), clinicCtrl.inviteClinicDoctor);
 router.get('/clinic/branches/:branchId/doctors/:memberId', requireOwnerPermission('clinic.staff.manage', 'branch'), clinicCtrl.getClinicDoctorDetail);
+router.get('/clinic/branches/:branchId/doctor-requests', requireOwnerPermission('clinic.staff.manage', 'branch'), clinicCtrl.listDoctorRequests);
+router.post('/clinic/branches/:branchId/doctor-requests/:requestId/approve', requireOwnerPermission('clinic.staff.manage', 'branch'), clinicCtrl.approveDoctorRequest);
+router.post('/clinic/branches/:branchId/doctor-requests/:requestId/reject', requireOwnerPermission('clinic.staff.manage', 'branch'), clinicCtrl.rejectDoctorRequest);
 router.patch('/clinic/branches/:branchId/doctors/:memberId/terms', requireOwnerPermission('clinic.staff.manage', 'branch'), clinicCtrl.patchClinicDoctorTerms);
 router.put('/clinic/branches/:branchId/doctors/:memberId/services', requireOwnerPermission('clinic.staff.manage', 'branch'), clinicCtrl.putClinicDoctorServices);
 router.get('/clinic/branches/:branchId/doctors/:memberId/metrics', requireOwnerPermission('clinic.staff.manage', 'branch'), clinicCtrl.getClinicDoctorMetrics);
@@ -243,6 +259,9 @@ router.post('/clinic/branches/:branchId/item-stock/receive', requireOwnerPermiss
 router.get('/clinic/supply-requests', requireOwnerPermission('clinic.services.manage', null), clinicCtrl.listClinicSupplyRequests);
 router.get('/clinic/supply-requests/:requestId', requireOwnerPermission('clinic.services.manage', null), clinicCtrl.getClinicSupplyRequestById);
 router.put('/clinic/supply-requests/:requestId/review', requireOwnerPermission('clinic.services.manage', null), clinicCtrl.reviewClinicSupplyRequest);
+router.post('/clinic/supply-requests/:requestId/mark-ordered', requireOwnerPermission('clinic.services.manage', null), clinicCtrl.markClinicSupplyRequestOrdered);
+router.post('/clinic/supply-requests/:requestId/mark-received', requireOwnerPermission('clinic.services.manage', null), clinicCtrl.markClinicSupplyRequestReceived);
+router.post('/clinic/supply-requests/:requestId/cancel', requireOwnerPermission('clinic.services.manage', null), clinicCtrl.cancelClinicSupplyRequest);
 router.post('/clinic/supply-requests/:requestId/transfer', requireOwnerPermission('clinic.services.manage', null), clinicCtrl.createClinicTransferFromRequest);
 router.get('/clinic/transfers', requireOwnerPermission('clinic.services.manage', null), clinicCtrl.listClinicTransfers);
 router.get('/clinic/transfers/:transferId', requireOwnerPermission('clinic.services.manage', null), clinicCtrl.getClinicTransferById);
@@ -352,10 +371,12 @@ router.post('/branch-access/:id/remove', ctrl.removeBranchAccessOwner);
 router.post('/branch-access/:id/role', ctrl.updateBranchAccessRoleOwner);
 router.get('/branch-access/:id', ctrl.getBranchAccessRequestDetail);
 
-// Staff invitations (Owner list / approve / reject)
+// Staff invitations (Owner list / approve / reject / resend / cancel)
 router.get('/invitations', ctrl.listOwnerInvitations);
 router.post('/invitations/:id/approve', ctrl.approveOwnerInvitation);
 router.post('/invitations/:id/reject', ctrl.rejectOwnerInvitation);
+router.post('/invitations/:id/resend', ctrl.resendOwnerInvitation);
+router.post('/invitations/:id/cancel', ctrl.cancelOwnerInvitation);
 
 router.get('/staff-access/staff', ctrl.listOwnerStaffAccess);
 router.get('/staff-access/staff/:userId/branch-access', ctrl.getOwnerStaffBranchAccess);
@@ -462,6 +483,11 @@ router.put('/branch-policy/:branchId', requireOwnerPermission('branch.write', 'b
 router.get('/escalations', ownerPolicyCtrl.listEscalationsHandler);
 router.put('/escalations/:id/decide', ownerPolicyCtrl.decideEscalationHandler);
 router.get('/manager-activity/:branchId', requireOwnerPermission('branch.read', 'branch'), ownerPolicyCtrl.getManagerActivityHandler);
+
+// Clinic Approval Workflow: Owner Approval Center
+router.get('/approval-requests', ownerPolicyCtrl.listClinicApprovalRequestsHandler);
+router.get('/approval-requests/:id', ownerPolicyCtrl.getClinicApprovalRequestByIdHandler);
+router.put('/approval-requests/:id/decide', ownerPolicyCtrl.decideClinicApprovalRequestHandler);
 
 module.exports = router;
 

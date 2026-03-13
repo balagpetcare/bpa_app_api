@@ -16,6 +16,7 @@ export type MedicinePolicyInput = {
   dualApprovalRequired?: boolean;
   destructionRule?: MedicineDestructionRule;
   maxDosePerAdministration?: number | null;
+  minRemainingPercent?: number | null;
 };
 
 const DEFAULT_POLICY = {
@@ -28,6 +29,7 @@ const DEFAULT_POLICY = {
   photoRequiredOnReturn: false,
   dualApprovalRequired: false,
   destructionRule: "AFTER_RETENTION" as MedicineDestructionRule,
+  minRemainingPercent: null as number | null,
 };
 
 /**

@@ -11,6 +11,28 @@ const {
   decideRedirect,
 } = require("../../services/authUnified.service");
 
+/** Cookie options for access_token: host-only in dev (no Domain), so browser accepts on localhost:port. */
+function getAccessTokenCookieOptions() {
+  const isProd = process.env.NODE_ENV === "production";
+  const opts = {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: isProd,
+    maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+    path: "/",
+  };
+  if (isProd && process.env.COOKIE_DOMAIN) opts.domain = process.env.COOKIE_DOMAIN;
+  return opts;
+}
+
+/** Options for clearCookie (must match set cookie so browser clears the right one). */
+function getAccessTokenClearCookieOptions() {
+  const isProd = process.env.NODE_ENV === "production";
+  const opts = { httpOnly: true, sameSite: "lax", secure: isProd, path: "/" };
+  if (isProd && process.env.COOKIE_DOMAIN) opts.domain = process.env.COOKIE_DOMAIN;
+  return opts;
+}
+
 async function generateUniqueUsername({ emailNorm, phoneNorm, displayName }) {
   // base username
   let base =
@@ -211,9 +233,7 @@ exports.register = async (req, res) => {
       }
     }
 
-    const perms = await resolvePermissionsForUser(user.id);
-
-    const token = jwt.sign({ id: user.id, perms }, appConfig.jwt.secret, { expiresIn: "7d" });
+    const token = jwt.sign({ id: user.id }, appConfig.jwt.secret, { expiresIn: "7d" });
 
     return res.status(201).json({
       success: true,
@@ -245,6 +265,11 @@ exports.register = async (req, res) => {
 exports.login = async (req, res) => {
   try {
     const { email, phone, password } = req.body;
+    console.info("[AUTH_LOGIN_ACTIVE_MARKER_V3] start", {
+      file: __filename,
+      hasEmail: !!email,
+      hasPhone: !!phone,
+    });
 
     // Shared credential verification
     let authRow;
@@ -259,8 +284,6 @@ exports.login = async (req, res) => {
       const code = credErr.statusCode || 400;
       return res.status(code).json({ success: false, message: credErr.message || "Invalid credentials" });
     }
-
-    const perms = await resolvePermissionsForUser(authRow.user.id);
 
     const emailNorm = (email || "").trim().toLowerCase() || null;
     const phoneNorm = phone ? String(phone).replace(/\D/g, "") : null;
@@ -378,17 +401,19 @@ exports.login = async (req, res) => {
         ? countryRoles[0]?.role?.key || "COUNTRY_ADMIN"
         : "CUSTOMER";
 
-    const token = jwt.sign({ id: authRow.user.id, perms }, appConfig.jwt.secret, { expiresIn: "7d" });
-
-    // ✅ Also set HttpOnly cookie (keeps old Bearer flow intact)
-    res.cookie("access_token", token, {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
-      maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
-      path: "/",
-      domain: process.env.COOKIE_DOMAIN || "localhost",
+    const payload = { id: authRow.user.id };
+    console.info("[AUTH_LOGIN_ACTIVE_MARKER_V3] payload", {
+      file: __filename,
+      payloadKeys: Object.keys(payload),
+      hasPerms: Object.prototype.hasOwnProperty.call(payload, "perms"),
     });
+    const token = jwt.sign(payload, appConfig.jwt.secret, { expiresIn: "7d" });
+
+    const tokenBytes = Buffer.byteLength(token, "utf8");
+    console.info("[AUTH_LOGIN_ACTIVE_MARKER_V3] token", { file: __filename, tokenBytes, cookieLimitNote: "browsers ~4096" });
+
+    // ✅ Also set HttpOnly cookie (keeps old Bearer flow intact). No Domain in dev = host-only.
+    res.cookie("access_token", token, getAccessTokenCookieOptions());
 
     return res.status(200).json({
       success: true,
@@ -782,16 +807,8 @@ exports.getProfile = async (req, res) => {
  */
 exports.logout = async (req, res) => {
   try {
-    const isProd = String(process.env.NODE_ENV || "development") === "production";
-
-    // IMPORTANT: attributes must match the login cookie attributes
-    res.clearCookie("access_token", {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: isProd,
-      path: "/",
-      domain: process.env.COOKIE_DOMAIN || "localhost",
-    });
+    // IMPORTANT: attributes must match the login cookie attributes (no Domain in dev).
+    res.clearCookie("access_token", getAccessTokenClearCookieOptions());
 
     return res.status(200).json({ success: true, message: "Logged out" });
   } catch (e) {
@@ -1079,15 +1096,7 @@ exports.acceptInvite = async (req, res) => {
       });
 
       const tokenJwt = jwt.sign({ id: userId }, appConfig.jwt.secret, { expiresIn: "7d" });
-      const isProd = String(process.env.NODE_ENV || "development") === "production";
-      res.cookie("access_token", tokenJwt, {
-        httpOnly: true,
-        sameSite: "lax",
-        secure: isProd,
-        maxAge: 30 * 24 * 60 * 60 * 1000,
-        path: "/",
-        domain: process.env.COOKIE_DOMAIN || "localhost",
-      });
+      res.cookie("access_token", tokenJwt, getAccessTokenCookieOptions());
 
       const user = await prisma.user.findUnique({
         where: { id: userId },
@@ -1136,15 +1145,7 @@ exports.acceptInvite = async (req, res) => {
       const existingUserId = req.user?.id ? Number(req.user.id) : null;
       const { userId } = await teamInvitationService.acceptTeamInvitation(token, existingUserId, { password, displayName });
       const tokenJwt = jwt.sign({ id: userId }, appConfig.jwt.secret, { expiresIn: "7d" });
-      const isProd = String(process.env.NODE_ENV || "development") === "production";
-      res.cookie("access_token", tokenJwt, {
-        httpOnly: true,
-        sameSite: "lax",
-        secure: isProd,
-        maxAge: 30 * 24 * 60 * 60 * 1000,
-        path: "/",
-        domain: process.env.COOKIE_DOMAIN || "localhost",
-      });
+      res.cookie("access_token", tokenJwt, getAccessTokenCookieOptions());
       const user = await prisma.user.findUnique({
         where: { id: userId },
         include: { auth: true, profile: true },
@@ -1258,15 +1259,7 @@ exports.acceptInvite = async (req, res) => {
     });
 
     const tokenJwt = jwt.sign({ id: userId }, appConfig.jwt.secret, { expiresIn: "7d" });
-    const isProd = String(process.env.NODE_ENV || "development") === "production";
-    res.cookie("access_token", tokenJwt, {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: isProd,
-      maxAge: 30 * 24 * 60 * 60 * 1000,
-      path: "/",
-      domain: process.env.COOKIE_DOMAIN || "localhost",
-    });
+    res.cookie("access_token", tokenJwt, getAccessTokenCookieOptions());
 
     const user = await prisma.user.findUnique({
       where: { id: userId },
@@ -1307,6 +1300,11 @@ exports.acceptInvite = async (req, res) => {
 exports.staffLogin = async (req, res) => {
   try {
     const { email, phone, password } = req.body;
+    console.info("[AUTH_STAFF_LOGIN_ACTIVE_MARKER_V3] start", {
+      file: __filename,
+      hasEmail: !!email,
+      hasPhone: !!phone,
+    });
 
     // Shared credential verification + staff-only gate
     let authRow;
@@ -1430,24 +1428,20 @@ exports.staffLogin = async (req, res) => {
     const contexts = await resolveAuthContexts(authRow.user.id);
     const default_redirect = await decideRedirect(authRow.user.id, contexts, { forceStaffPanel: true });
 
-    const perms = await resolvePermissionsForUser(authRow.user.id);
-
-    // Include userType in JWT payload
-    const token = jwt.sign(
-      { id: authRow.user.id, perms, userType: isOwner ? "OWNER" : "STAFF" },
-      appConfig.jwt.secret,
-      { expiresIn: "7d" }
-    );
-
-    // Set HttpOnly cookie
-    res.cookie("access_token", token, {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
-      maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
-      path: "/",
-      domain: process.env.COOKIE_DOMAIN || "localhost",
+    const userType = isOwner ? "OWNER" : "STAFF";
+    const payload = { id: authRow.user.id, userType };
+    console.info("[AUTH_STAFF_LOGIN_ACTIVE_MARKER_V3] payload", {
+      file: __filename,
+      payloadKeys: Object.keys(payload),
+      hasPerms: Object.prototype.hasOwnProperty.call(payload, "perms"),
     });
+    const token = jwt.sign(payload, appConfig.jwt.secret, { expiresIn: "7d" });
+
+    const tokenBytes = Buffer.byteLength(token, "utf8");
+    console.info("[AUTH_STAFF_LOGIN_ACTIVE_MARKER_V3] token", { file: __filename, tokenBytes, cookieLimitNote: "browsers ~4096" });
+
+    // Set HttpOnly cookie (no Domain in dev = host-only).
+    res.cookie("access_token", token, getAccessTokenCookieOptions());
 
     return res.status(200).json({
       success: true,

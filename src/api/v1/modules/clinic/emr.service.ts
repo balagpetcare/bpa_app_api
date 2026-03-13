@@ -52,13 +52,38 @@ interface SOAPContent {
 
 async function listVisits(
   branchId: number,
-  opts: { petId?: number; patientId?: number; limit?: number; offset?: number } = {}
+  opts: {
+    petId?: number;
+    patientId?: number;
+    limit?: number;
+    offset?: number;
+    treatmentCode?: string;
+    fromDate?: Date;
+    toDate?: Date;
+    search?: string;
+  } = {}
 ): Promise<{ visits: any[]; total: number }> {
   const limit = Math.min(opts.limit ?? 50, 100);
   const offset = opts.offset ?? 0;
   const where: any = { branchId };
   if (opts.petId != null) where.petId = opts.petId;
   if (opts.patientId != null) where.patientId = opts.patientId;
+  if (opts.treatmentCode) {
+    where.treatmentCode = { contains: opts.treatmentCode, mode: "insensitive" };
+  }
+  if (opts.fromDate || opts.toDate) {
+    where.createdAt = {};
+    if (opts.fromDate) where.createdAt.gte = opts.fromDate;
+    if (opts.toDate) where.createdAt.lte = opts.toDate;
+  }
+  if (opts.search && opts.search.trim()) {
+    const term = opts.search.trim();
+    where.OR = [
+      { treatmentCode: { contains: term, mode: "insensitive" } },
+      { patient: { profile: { displayName: { contains: term, mode: "insensitive" } } } },
+      { pet: { name: { contains: term, mode: "insensitive" } } },
+    ];
+  }
 
   const [visits, total] = await Promise.all([
     prisma.visit.findMany({
@@ -148,7 +173,14 @@ async function updateVisit(
     data: updatePayload,
     include: { pet: true, doctor: true },
   });
+
+  if (data.status === "IN_PROGRESS") {
+    const { setRoomOccupiedForVisit } = require("../../services/roomOccupancy.service");
+    setRoomOccupiedForVisit(visitId, branchId).catch(() => {});
+  }
   if (data.status === "COMPLETED") {
+    const { setRoomCleaningForVisit } = require("../../services/roomOccupancy.service");
+    setRoomCleaningForVisit(visitId, branchId).catch(() => {});
     const { createSettlementLedgerForVisit } = require("./doctorSettlement.service");
     createSettlementLedgerForVisit(visitId).catch(() => {});
   }

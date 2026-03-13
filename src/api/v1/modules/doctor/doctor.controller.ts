@@ -4,6 +4,7 @@
  * or to have a DoctorVerification record (verified or pending — list endpoints return empty data when no branch assignment).
  */
 const doctorService = require("./doctor.service");
+const doctorRequestService = require("./doctorRequest.service");
 const appointmentService = require("../clinic/appointment.service");
 
 function emitDoctorQueueUpdateIfAvailable(userId, payload) {
@@ -82,14 +83,17 @@ exports.listAppointments = async (req, res) => {
       return res.status(200).json({ success: true, data: { appointments: [], total: 0 } });
     }
 
-    const { date, branchId, status, statuses, visitType, priority, search, limit, offset } = req.query;
+    const { date, fromDate, toDate, branchId, status, statuses, visitType, priority, appointmentType, search, limit, offset } = req.query;
     const result = await doctorService.listAppointments(doctorIds, {
       date: date ? String(date) : undefined,
+      fromDate: fromDate ? String(fromDate) : undefined,
+      toDate: toDate ? String(toDate) : undefined,
       branchId: branchId ? Number(branchId) : undefined,
       status: status ? String(status) : undefined,
       statuses: statuses ? String(statuses) : undefined,
       visitType: visitType ? String(visitType) : undefined,
       priority: priority ? String(priority) : undefined,
+      appointmentType: appointmentType ? String(appointmentType) : undefined,
       search: search ? String(search) : undefined,
       limit: limit ? Number(limit) : undefined,
       offset: offset ? Number(offset) : undefined,
@@ -112,9 +116,11 @@ exports.getAppointmentStats = async (req, res) => {
       if (!allowed) return res.status(403).json({ success: false, message: "Doctor access required" });
       return res.status(200).json({ success: true, data: { total: 0, statusCounts: {}, emergencyCount: 0, followUpCount: 0, paymentPendingCount: 0 } });
     }
-    const { date, branchId } = req.query;
+    const { date, fromDate, toDate, branchId } = req.query;
     const data = await doctorService.getAppointmentStats(doctorIds, {
       date: date ? String(date) : undefined,
+      fromDate: fromDate ? String(fromDate) : undefined,
+      toDate: toDate ? String(toDate) : undefined,
       branchId: branchId ? Number(branchId) : undefined,
     });
     return res.status(200).json({ success: true, data });
@@ -423,6 +429,28 @@ async function ensureOwnAppointment(req, res, appointmentId) {
   return { userId, doctorIds, appointment };
 }
 
+exports.confirmAppointment = async (req, res) => {
+  try {
+    const appointmentId = Number(req.params.id);
+    if (!Number.isFinite(appointmentId)) {
+      return res.status(400).json({ success: false, message: "Invalid appointment id" });
+    }
+    const { userId, appointment } = await ensureOwnAppointment(req, res, appointmentId);
+    if (!userId || !appointment) return;
+
+    const updated = await appointmentService.confirmAppointment(
+      appointmentId,
+      userId,
+      { orgId: appointment.orgId, branchId: appointment.branchId }
+    );
+    return res.status(200).json({ success: true, data: updated });
+  } catch (e) {
+    if (e?.statusCode === 409) return res.status(409).json({ success: false, message: e?.message || "Invalid status transition" });
+    console.error("[doctor.confirmAppointment]", e);
+    return res.status(500).json({ success: false, message: e?.message || "Failed to confirm" });
+  }
+};
+
 exports.cancelAppointment = async (req, res) => {
   try {
     const appointmentId = Number(req.params.id);
@@ -681,6 +709,50 @@ exports.completeOnboarding = async (req, res) => {
     if (e?.statusCode === 400) return res.status(400).json({ success: false, message: e?.message || "Validation failed" });
     console.error("[doctor.completeOnboarding]", e);
     return res.status(500).json({ success: false, message: e?.message || "Failed to complete onboarding" });
+  }
+};
+
+/** POST /doctor/onboarding/complete – set profile-level onboardingCompleted (no branch). */
+exports.completeProfileOnboarding = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const data = await doctorService.completeProfileOnboarding(userId);
+    if (!data) return res.status(404).json({ success: false, message: "Doctor verification not found" });
+    return res.status(200).json({ success: true, data });
+  } catch (e) {
+    console.error("[doctor.completeProfileOnboarding]", e);
+    return res.status(500).json({ success: false, message: e?.message || "Failed to complete profile onboarding" });
+  }
+};
+
+// --- Doctor requests (fee/schedule/cancel/leave – clinic approval) ---
+exports.listDoctorRequests = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const branchId = req.query?.branchId ? Number(req.query.branchId) : undefined;
+    const status = req.query?.status ? String(req.query.status) : undefined;
+    const result = await doctorRequestService.listForDoctor(userId, { branchId, status });
+    return res.status(200).json({ success: true, data: result });
+  } catch (e) {
+    console.error("[doctor.listDoctorRequests]", e);
+    return res.status(500).json({ success: false, message: e?.message || "Failed to list requests" });
+  }
+};
+
+exports.createDoctorRequest = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const { branchId, type, payload } = req.body || {};
+    if (!branchId || !type) return res.status(400).json({ success: false, message: "branchId and type required" });
+    const data = await doctorRequestService.create(userId, { branchId: Number(branchId), type: String(type), payload });
+    if (!data) return res.status(403).json({ success: false, message: "Cannot create request for this branch" });
+    return res.status(201).json({ success: true, data });
+  } catch (e) {
+    console.error("[doctor.createDoctorRequest]", e);
+    return res.status(500).json({ success: false, message: e?.message || "Failed to create request" });
   }
 };
 

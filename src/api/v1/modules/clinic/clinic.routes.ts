@@ -6,6 +6,7 @@ const router = require("express").Router();
 const authenticateToken = require("../../../../middleware/auth.middleware");
 const { requireClinicPermission, requireClinicKioskToken } = require("./clinic.middleware");
 const ctrl = require("./clinic.controller");
+const staffDoctorCtrl = require("./staffDoctorManagement.controller");
 
 router.use(authenticateToken);
 
@@ -15,20 +16,305 @@ router.get(
   requireClinicPermission("clinic.appointments.read", "clinic.appointments.manage"),
   ctrl.getSlots
 );
+// --- Booking (enterprise: service/package-aware slots, eligible doctors, price preview, constraints) ---
+router.get(
+  "/branches/:branchId/booking/available-slots",
+  requireClinicPermission("clinic.appointments.read", "clinic.appointments.manage"),
+  ctrl.getBookingAvailableSlots
+);
+router.get(
+  "/branches/:branchId/booking/eligible-doctors",
+  requireClinicPermission("clinic.appointments.read", "clinic.appointments.manage"),
+  ctrl.getBookingEligibleDoctors
+);
+router.get(
+  "/branches/:branchId/booking/price-preview",
+  requireClinicPermission("clinic.appointments.read", "clinic.appointments.manage"),
+  ctrl.getBookingPricePreview
+);
+router.get(
+  "/branches/:branchId/booking/constraints",
+  requireClinicPermission("clinic.appointments.read", "clinic.appointments.manage"),
+  ctrl.getBookingConstraints
+);
+router.get(
+  "/branches/:branchId/booking/compatible-rooms",
+  requireClinicPermission("clinic.appointments.read", "clinic.appointments.manage"),
+  ctrl.getBookingCompatibleRooms
+);
 router.get(
   "/branches/:branchId/doctors",
-  requireClinicPermission("clinic.appointments.read", "clinic.appointments.manage"),
+  requireClinicPermission("clinic.appointments.read", "clinic.appointments.manage", "clinic.doctors.view", "clinic.doctors.assign"),
   ctrl.getDoctors
 );
 router.get(
   "/branches/:branchId/doctors-with-fees",
-  requireClinicPermission("clinic.appointments.read", "clinic.appointments.manage"),
+  requireClinicPermission("clinic.appointments.read", "clinic.appointments.manage", "clinic.doctors.view", "clinic.doctors.assign"),
   ctrl.getDoctorsWithFees
 );
+
+// --- Staff Doctor Management (Enterprise) ---
+router.get(
+  "/branches/:branchId/doctors/summary",
+  requireClinicPermission("clinic.doctors.view"),
+  staffDoctorCtrl.getDoctorsSummary
+);
+router.get(
+  "/branches/:branchId/doctors/alerts",
+  requireClinicPermission("clinic.doctors.view"),
+  staffDoctorCtrl.getDoctorsAlerts
+);
+router.get(
+  "/branches/:branchId/doctors/enriched",
+  requireClinicPermission("clinic.doctors.view", "clinic.doctors.assign"),
+  staffDoctorCtrl.getDoctorsEnriched
+);
+router.post(
+  "/branches/:branchId/doctors/invite",
+  requireClinicPermission("clinic.doctors.invite"),
+  staffDoctorCtrl.postDoctorsInvite
+);
+router.post(
+  "/branches/:branchId/doctors/assign-existing",
+  requireClinicPermission("clinic.doctors.assign"),
+  staffDoctorCtrl.postDoctorsAssignExisting
+);
+router.get(
+  "/branches/:branchId/doctors/invite-search",
+  requireClinicPermission("clinic.doctors.assign"),
+  staffDoctorCtrl.getDoctorsInviteSearch
+);
+router.get(
+  "/branches/:branchId/doctors/invitations",
+  requireClinicPermission("clinic.doctors.view", "clinic.doctors.invite"),
+  staffDoctorCtrl.getBranchInvitations
+);
+router.post(
+  "/branches/:branchId/doctors/invitations/:inviteId/resend",
+  requireClinicPermission("clinic.doctors.invite"),
+  staffDoctorCtrl.resendDoctorInvitation
+);
+router.post(
+  "/branches/:branchId/doctors/invitations/:inviteId/cancel",
+  requireClinicPermission("clinic.doctors.invite"),
+  staffDoctorCtrl.cancelDoctorInvitation
+);
+router.get(
+  "/branches/:branchId/doctors/schedule-board",
+  requireClinicPermission("clinic.doctors.view", "clinic.schedule.manage"),
+  staffDoctorCtrl.getScheduleBoard
+);
+router.get(
+  "/branches/:branchId/doctors/service-matrix",
+  requireClinicPermission("clinic.doctors.view", "clinic.doctors.manage_services"),
+  staffDoctorCtrl.getServiceMatrix
+);
+router.put(
+  "/branches/:branchId/doctors/service-matrix",
+  requireClinicPermission("clinic.doctors.manage_services"),
+  staffDoctorCtrl.putServiceMatrix
+);
+router.get(
+  "/branches/:branchId/doctors/package-matrix",
+  requireClinicPermission("clinic.doctors.view", "clinic.doctors.manage_packages"),
+  staffDoctorCtrl.getPackageMatrix
+);
+router.get(
+  "/branches/:branchId/doctors/credentials-queue",
+  requireClinicPermission("clinic.doctors.view", "clinic.doctors.manage_credentials"),
+  staffDoctorCtrl.getCredentialsQueue
+);
+router.get(
+  "/branches/:branchId/doctors/certifications-board",
+  requireClinicPermission("clinic.doctors.view", "clinic.doctors.view_certifications"),
+  staffDoctorCtrl.getCertificationsBoard
+);
+router.get(
+  "/branches/:branchId/doctors/licenses-board",
+  requireClinicPermission("clinic.doctors.view", "clinic.doctors.view_licenses"),
+  staffDoctorCtrl.getLicensesBoard
+);
+router.get(
+  "/branches/:branchId/doctors/availability-board",
+  requireClinicPermission("clinic.doctors.view", "clinic.doctors.manage_leave"),
+  staffDoctorCtrl.getAvailabilityBoard
+);
+router.get(
+  "/branches/:branchId/doctors/pending-approvals",
+  requireClinicPermission("clinic.doctors.view", "approvals.view"),
+  staffDoctorCtrl.getPendingApprovals
+);
+router.get(
+  "/branches/:branchId/doctors/performance-summary",
+  requireClinicPermission("clinic.doctors.view"),
+  staffDoctorCtrl.getPerformanceSummary
+);
+router.get(
+  "/branches/:branchId/doctors/audit-logs",
+  requireClinicPermission("clinic.doctors.view"),
+  staffDoctorCtrl.getAuditLogs
+);
+router.post(
+  "/branches/:branchId/doctors/approvals/:requestId/action",
+  requireClinicPermission("approvals.view", "approvals.manage"),
+  staffDoctorCtrl.postApprovalAction
+);
+
+router.get(
+  "/branches/:branchId/doctors/:memberId/profile",
+  requireClinicPermission("clinic.doctors.view"),
+  staffDoctorCtrl.getDoctorProfile
+);
+router.get(
+  "/branches/:branchId/doctors/:memberId/360-summary",
+  requireClinicPermission("clinic.doctors.view"),
+  staffDoctorCtrl.getDoctor360Summary
+);
+router.patch(
+  "/branches/:branchId/doctors/:memberId/status",
+  requireClinicPermission("clinic.doctors.manage"),
+  staffDoctorCtrl.patchDoctorStatus
+);
+router.get(
+  "/branches/:branchId/doctors/:memberId/credentials",
+  requireClinicPermission("clinic.doctors.view"),
+  staffDoctorCtrl.getDoctorCredentials
+);
+router.post(
+  "/branches/:branchId/doctors/:memberId/credentials",
+  requireClinicPermission("clinic.doctors.manage_credentials", "clinic.doctors.view"),
+  staffDoctorCtrl.postDoctorCredential
+);
+router.patch(
+  "/branches/:branchId/doctors/:memberId/credentials/:credentialId",
+  requireClinicPermission("clinic.doctors.manage_credentials"),
+  staffDoctorCtrl.patchDoctorCredential
+);
+router.post(
+  "/branches/:branchId/doctors/:memberId/credentials/:credentialId/submit-approval",
+  requireClinicPermission("clinic.doctors.manage_credentials"),
+  staffDoctorCtrl.postDoctorCredentialSubmitApproval
+);
+router.get(
+  "/branches/:branchId/doctors/:memberId/services",
+  requireClinicPermission("clinic.doctors.view"),
+  staffDoctorCtrl.getDoctorServices
+);
+router.put(
+  "/branches/:branchId/doctors/:memberId/services",
+  requireClinicPermission("clinic.doctors.manage_services"),
+  staffDoctorCtrl.putDoctorServices
+);
+router.delete(
+  "/branches/:branchId/doctors/:memberId/services/:mappingId",
+  requireClinicPermission("clinic.doctors.manage_services"),
+  staffDoctorCtrl.deleteDoctorServiceMappingById
+);
+router.get(
+  "/branches/:branchId/doctors/:memberId/packages",
+  requireClinicPermission("clinic.doctors.view"),
+  staffDoctorCtrl.getDoctorPackages
+);
+router.put(
+  "/branches/:branchId/doctors/:memberId/packages",
+  requireClinicPermission("clinic.doctors.manage_packages"),
+  staffDoctorCtrl.putDoctorPackages
+);
+router.delete(
+  "/branches/:branchId/doctors/:memberId/packages/:mappingId",
+  requireClinicPermission("clinic.doctors.manage_packages"),
+  staffDoctorCtrl.deleteDoctorPackageMappingById
+);
+router.get(
+  "/branches/:branchId/doctors/:memberId/schedule",
+  requireClinicPermission("clinic.doctors.view"),
+  staffDoctorCtrl.getDoctorSchedule
+);
+router.post(
+  "/branches/:branchId/doctors/:memberId/schedule",
+  requireClinicPermission("clinic.schedule.manage"),
+  staffDoctorCtrl.postDoctorSchedule
+);
+router.put(
+  "/branches/:branchId/doctors/:memberId/schedule/:scheduleId",
+  requireClinicPermission("clinic.schedule.manage"),
+  staffDoctorCtrl.putDoctorScheduleById
+);
+router.delete(
+  "/branches/:branchId/doctors/:memberId/schedule/:scheduleId",
+  requireClinicPermission("clinic.schedule.manage"),
+  staffDoctorCtrl.deleteDoctorScheduleById
+);
+router.post(
+  "/branches/:branchId/doctors/:memberId/schedule/exceptions",
+  requireClinicPermission("clinic.schedule.manage"),
+  staffDoctorCtrl.postDoctorScheduleException
+);
+router.put(
+  "/branches/:branchId/doctors/:memberId/schedule/exceptions/:exceptionId",
+  requireClinicPermission("clinic.schedule.manage"),
+  staffDoctorCtrl.putDoctorScheduleExceptionById
+);
+router.delete(
+  "/branches/:branchId/doctors/:memberId/schedule/exceptions/:exceptionId",
+  requireClinicPermission("clinic.schedule.manage"),
+  staffDoctorCtrl.deleteDoctorScheduleExceptionById
+);
+router.get(
+  "/branches/:branchId/doctors/:memberId/fees",
+  requireClinicPermission("clinic.doctors.view"),
+  staffDoctorCtrl.getDoctorFees
+);
+router.post(
+  "/branches/:branchId/doctors/:memberId/fees/propose",
+  requireClinicPermission("clinic.doctors.propose_fee"),
+  staffDoctorCtrl.postDoctorFeesPropose
+);
+router.get(
+  "/branches/:branchId/doctors/:memberId/performance",
+  requireClinicPermission("clinic.doctors.view"),
+  staffDoctorCtrl.getDoctorPerformance
+);
+router.get(
+  "/branches/:branchId/doctors/:memberId/leave",
+  requireClinicPermission("clinic.doctors.view"),
+  staffDoctorCtrl.getDoctorLeave
+);
+router.post(
+  "/branches/:branchId/doctors/:memberId/leave",
+  requireClinicPermission("clinic.doctors.manage_leave"),
+  staffDoctorCtrl.postDoctorLeave
+);
+router.get(
+  "/branches/:branchId/doctors/:memberId/approvals",
+  requireClinicPermission("clinic.doctors.view", "approvals.view"),
+  staffDoctorCtrl.getDoctorApprovals
+);
+router.get(
+  "/branches/:branchId/doctors/:memberId/audit-log",
+  requireClinicPermission("clinic.doctors.view"),
+  staffDoctorCtrl.getDoctorAuditLog
+);
+
 router.get(
   "/branches/:branchId/services",
   requireClinicPermission("clinic.appointments.read", "clinic.appointments.manage"),
   ctrl.getClinicServices
+);
+router.post(
+  "/branches/:branchId/services",
+  requireClinicPermission("clinic.appointments.manage"),
+  ctrl.createClinicService
+);
+router.put(
+  "/branches/:branchId/services/:serviceId",
+  requireClinicPermission("clinic.appointments.manage"),
+  ctrl.updateClinicService
+);
+router.patch(
+  "/branches/:branchId/services/:serviceId/status",
+  requireClinicPermission("clinic.appointments.manage"),
+  ctrl.setClinicServiceStatus
 );
 router.get(
   "/branches/:branchId/appointments",
@@ -114,6 +400,11 @@ router.post(
   "/branches/:branchId/appointments/:appointmentId/check-in",
   requireClinicPermission("clinic.appointments.manage", "clinic.queue.manage"),
   ctrl.checkInAppointment
+);
+router.post(
+  "/branches/:branchId/appointments/:appointmentId/confirm",
+  requireClinicPermission("clinic.appointments.manage"),
+  ctrl.confirmAppointment
 );
 router.post(
   "/branches/:branchId/appointments/:appointmentId/cancel",
@@ -243,6 +534,57 @@ router.patch(
   ctrl.updatePatient
 );
 
+// --- Rooms ---
+router.get(
+  "/branches/:branchId/schedule-board",
+  requireClinicPermission("clinic.rooms.view_schedule", "clinic.rooms.view", "clinic.rooms.manage"),
+  ctrl.getScheduleBoard
+);
+router.get(
+  "/branches/:branchId/live-operations",
+  requireClinicPermission("clinic.rooms.view_schedule", "clinic.rooms.view", "clinic.rooms.manage", "clinic.appointments.read"),
+  ctrl.getLiveOperations
+);
+router.get(
+  "/branches/:branchId/rooms",
+  requireClinicPermission("clinic.rooms.view", "clinic.rooms.manage"),
+  ctrl.listClinicRooms
+);
+router.get(
+  "/branches/:branchId/rooms/:roomId",
+  requireClinicPermission("clinic.rooms.view", "clinic.rooms.manage"),
+  ctrl.getClinicRoomDetail
+);
+router.get(
+  "/branches/:branchId/rooms/:roomId/schedule",
+  requireClinicPermission("clinic.rooms.view_schedule", "clinic.rooms.view", "clinic.rooms.manage"),
+  ctrl.getRoomSchedule
+);
+router.patch(
+  "/branches/:branchId/rooms/:roomId",
+  requireClinicPermission("clinic.rooms.manage"),
+  ctrl.patchClinicRoom
+);
+router.get(
+  "/branches/:branchId/rooms/live",
+  requireClinicPermission("clinic.rooms.view_live", "clinic.rooms.view", "clinic.rooms.manage"),
+  ctrl.getRoomsLiveState
+);
+router.get(
+  "/branches/:branchId/rooms/:roomId/live",
+  requireClinicPermission("clinic.rooms.view_live", "clinic.rooms.view", "clinic.rooms.manage"),
+  ctrl.getRoomLiveState
+);
+router.post(
+  "/branches/:branchId/rooms/:roomId/blocks",
+  requireClinicPermission("clinic.rooms.manage_blocks", "clinic.rooms.manage"),
+  ctrl.createRoomBlock
+);
+router.delete(
+  "/branches/:branchId/rooms/blocks/:blockId",
+  requireClinicPermission("clinic.rooms.manage_blocks", "clinic.rooms.manage"),
+  ctrl.releaseRoomBlock
+);
 // --- EMR (Visits, Vitals, Clinical Notes) ---
 router.get(
   "/branches/:branchId/visits",
@@ -483,6 +825,16 @@ router.get(
   requireClinicPermission("medicine.dispense.request", "medicine.dispense.approve", "medicine.dispense.issue"),
   ctrl.getDispenseRequestById
 );
+router.post(
+  "/branches/:branchId/medicine-control/dispense-request/:id/receive",
+  requireClinicPermission("medicine.vial.open", "medicine.vial.use"),
+  ctrl.receiveDispenseRequest
+);
+router.post(
+  "/branches/:branchId/medicine-control/outside-medicine/receive",
+  requireClinicPermission("medicine.dispense.approve", "medicine.vial.open"),
+  ctrl.recordOutsideMedicineReceive
+);
 router.get(
   "/branches/:branchId/medicine-control/vial/active/:variantId",
   requireClinicPermission("medicine.vial.open", "medicine.vial.use"),
@@ -490,12 +842,12 @@ router.get(
 );
 router.post(
   "/branches/:branchId/medicine-control/vial/:instanceId/open",
-  requireClinicPermission("medicine.vial.open"),
+  requireClinicPermission("medicine.vial.activate", "medicine.vial.open"),
   ctrl.openVial
 );
 router.post(
   "/branches/:branchId/medicine-control/vial-session/open",
-  requireClinicPermission("medicine.vial.open"),
+  requireClinicPermission("medicine.vial.activate", "medicine.vial.open"),
   ctrl.openVialSession
 );
 router.post(
@@ -518,6 +870,26 @@ router.post(
   requireClinicPermission("medicine.dose.record"),
   ctrl.recordDose
 );
+router.post(
+  "/branches/:branchId/medicine-control/injection-token",
+  requireClinicPermission("injection.token.generate"),
+  ctrl.generateInjectionToken
+);
+router.get(
+  "/branches/:branchId/medicine-control/injection-token/validate",
+  requireClinicPermission("injection.token.validate", "injection.token.generate", "medicine.dose.record"),
+  ctrl.validateInjectionToken
+);
+router.get(
+  "/branches/:branchId/medicine-control/injection-tokens",
+  requireClinicPermission("injection.token.list", "injection.token.generate"),
+  ctrl.listInjectionTokens
+);
+router.patch(
+  "/branches/:branchId/medicine-control/injection-token/:id/cancel",
+  requireClinicPermission("injection.token.cancel"),
+  ctrl.cancelInjectionToken
+);
 router.get(
   "/branches/:branchId/medicine-control/dose/visit/:visitId",
   requireClinicPermission("medicine.dose.read", "medicine.dose.record"),
@@ -528,6 +900,16 @@ router.post(
   requireClinicPermission("medicine.dose.record"),
   ctrl.createTreatmentCourse
 );
+router.get(
+  "/branches/:branchId/medicine-control/treatment-courses",
+  requireClinicPermission("medicine.dose.read", "medicine.dose.record"),
+  ctrl.listTreatmentCourses
+);
+router.post(
+  "/branches/:branchId/medicine-control/treatment-course/full",
+  requireClinicPermission("medicine.dose.record"),
+  ctrl.createFullTreatmentCourse
+);
 router.post(
   "/branches/:branchId/medicine-control/treatment-course/:id/dose",
   requireClinicPermission("medicine.dose.record"),
@@ -537,6 +919,91 @@ router.get(
   "/branches/:branchId/medicine-control/treatment-course/:id",
   requireClinicPermission("medicine.dose.read", "medicine.dose.record"),
   ctrl.getTreatmentCourseProgress
+);
+router.get(
+  "/branches/:branchId/medicine-control/treatment-course/:id/schedule",
+  requireClinicPermission("medicine.dose.read", "medicine.dose.record"),
+  ctrl.getTreatmentCourseSchedule
+);
+router.get(
+  "/branches/:branchId/medicine-control/treatment-course/:id/today-due",
+  requireClinicPermission("medicine.dose.read", "medicine.dose.record"),
+  ctrl.getTreatmentCourseTodayDue
+);
+router.get(
+  "/branches/:branchId/medicine-control/treatment-course/:id/revisions",
+  requireClinicPermission("medicine.dose.read", "medicine.dose.record"),
+  ctrl.getTreatmentCourseRevisions
+);
+router.patch(
+  "/branches/:branchId/medicine-control/treatment-course/:id/hold",
+  requireClinicPermission("medicine.dose.record"),
+  ctrl.holdTreatmentCourse
+);
+router.patch(
+  "/branches/:branchId/medicine-control/treatment-course/:id/resume",
+  requireClinicPermission("medicine.dose.record"),
+  ctrl.resumeTreatmentCourse
+);
+router.patch(
+  "/branches/:branchId/medicine-control/treatment-course/:id/stop",
+  requireClinicPermission("medicine.dose.record"),
+  ctrl.stopTreatmentCourse
+);
+router.patch(
+  "/branches/:branchId/medicine-control/treatment-course/day-item/:itemId",
+  requireClinicPermission("medicine.dose.record"),
+  ctrl.updateTreatmentDayItem
+);
+router.get(
+  "/branches/:branchId/treatment-billing/:courseId/summary",
+  requireClinicPermission("clinic.billing.read", "medicine.dose.read"),
+  ctrl.getTreatmentBillingSummary
+);
+router.post(
+  "/branches/:branchId/treatment-billing/:courseId/create-bill",
+  requireClinicPermission("clinic.billing.write"),
+  ctrl.createTreatmentDayBill
+);
+router.get(
+  "/branches/:branchId/open-vial-availability/:variantId",
+  requireClinicPermission("medicine.vial.open", "medicine.vial.use"),
+  ctrl.getOpenVialAvailability
+);
+router.post(
+  "/branches/:branchId/medicine-control/internal-order",
+  requireClinicPermission("medicine.dispense.request"),
+  ctrl.createInternalOrder
+);
+router.get(
+  "/branches/:branchId/medicine-control/internal-orders/dashboard",
+  requireClinicPermission("medicine.dispense.request", "medicine.dispense.approve"),
+  ctrl.getInternalOrdersDashboard
+);
+router.get(
+  "/branches/:branchId/medicine-control/patient/:patientId/due-medicines",
+  requireClinicPermission("medicine.dose.read", "medicine.dose.record"),
+  ctrl.getPatientDueMedicines
+);
+router.patch(
+  "/branches/:branchId/medicine-control/treatment-day/:treatmentDayId/complete",
+  requireClinicPermission("medicine.dose.record"),
+  ctrl.markTreatmentDayCompleted
+);
+router.post(
+  "/branches/:branchId/medicine-control/exception/override-request",
+  requireClinicPermission("medicine.dispense.request"),
+  ctrl.requestSupervisorOverride
+);
+router.patch(
+  "/branches/:branchId/medicine-control/exception/override/:id/approve",
+  requireClinicPermission("medicine.override.approve"),
+  ctrl.approveOverride
+);
+router.get(
+  "/branches/:branchId/medicine-control/injection-token/:id/context",
+  requireClinicPermission("injection.token.validate", "medicine.dose.record"),
+  ctrl.getInjectionTokenWithContext
 );
 router.post(
   "/branches/:branchId/medicine-control/return",
@@ -597,6 +1064,93 @@ router.get(
   "/branches/:branchId/medicine-control/dashboard/auditor",
   requireClinicPermission("medicine.return.verify", "medicine.audit.bin.view"),
   ctrl.getMedicineControlAuditorDashboard
+);
+router.get(
+  "/branches/:branchId/medicine-control/dashboard/injection-monitor",
+  requireClinicPermission("medicine.reconciliation.read", "medicine.dose.read"),
+  ctrl.getInjectionMonitoringDashboard
+);
+router.get(
+  "/branches/:branchId/medicine-control/injection-room/board",
+  requireClinicPermission("medicine.dose.read", "injection.token.validate"),
+  ctrl.getInjectionRoomBoard
+);
+router.post(
+  "/branches/:branchId/medicine-control/reconciliation/run",
+  requireClinicPermission("medicine.reconciliation.run"),
+  ctrl.runDailyReconciliation
+);
+router.get(
+  "/branches/:branchId/medicine-control/reconciliation",
+  requireClinicPermission("medicine.reconciliation.read", "medicine.reconciliation.run"),
+  ctrl.listDailyReconciliations
+);
+router.patch(
+  "/branches/:branchId/medicine-control/reconciliation/:id/acknowledge",
+  requireClinicPermission("medicine.reconciliation.acknowledge"),
+  ctrl.acknowledgeDailyReconciliation
+);
+router.get(
+  "/branches/:branchId/medicine-control/eod-status",
+  requireClinicPermission("medicine.reconciliation.read"),
+  ctrl.getEodStatus
+);
+router.post(
+  "/branches/:branchId/medicine-control/eod-close",
+  requireClinicPermission("medicine.reconciliation.run", "medicine.reconciliation.acknowledge"),
+  ctrl.eodClose
+);
+router.get(
+  "/branches/:branchId/medicine-control/handover-summary",
+  requireClinicPermission("medicine.vial.use", "medicine.reconciliation.read"),
+  ctrl.getHandoverSummary
+);
+
+// --- Staff Branch Catalog (master browse, add-from-master, branch items, summary, audit) ---
+router.get(
+  "/branches/:branchId/catalog/master/categories",
+  requireClinicPermission("clinic.catalog.view", "clinic.catalog.search"),
+  ctrl.listStaffCatalogMasterCategories
+);
+router.get(
+  "/branches/:branchId/catalog/master/items",
+  requireClinicPermission("clinic.catalog.view", "clinic.catalog.search"),
+  ctrl.listStaffCatalogMasterItems
+);
+router.post(
+  "/branches/:branchId/catalog/add-from-master/preview",
+  requireClinicPermission("clinic.catalog.branch_add"),
+  ctrl.previewStaffAddFromMasterCatalog
+);
+router.post(
+  "/branches/:branchId/catalog/add-from-master/execute",
+  requireClinicPermission("clinic.catalog.branch_add"),
+  ctrl.executeStaffAddFromMasterCatalog
+);
+router.get(
+  "/branches/:branchId/catalog/items",
+  requireClinicPermission("clinic.catalog.view", "clinic.catalog.search"),
+  ctrl.listStaffCatalogItems
+);
+router.get(
+  "/branches/:branchId/catalog/items/:itemId",
+  requireClinicPermission("clinic.catalog.view", "clinic.catalog.search"),
+  ctrl.getStaffCatalogItemById
+);
+router.patch(
+  "/branches/:branchId/catalog/items/:itemId/status",
+  requireClinicPermission("clinic.catalog.branch_add"),
+  ctrl.setStaffCatalogItemStatus
+);
+router.get(
+  "/branches/:branchId/catalog/summary",
+  requireClinicPermission("clinic.catalog.view"),
+  ctrl.getStaffCatalogSummary
+);
+router.get(
+  "/branches/:branchId/audit-history",
+  requireClinicPermission("clinic.catalog.view", "approvals.view"),
+  ctrl.getStaffAuditHistory
 );
 
 // --- Enterprise: Surgery Package + Discount + Settlement ---
@@ -707,6 +1261,23 @@ router.post(
   ctrl.applyDiscount
 );
 
+// Clinic Approval Workflow: Manager creates request (staff panel)
+router.get(
+  "/branches/:branchId/approval-requests",
+  requireClinicPermission("approvals.view", "clinic.packages.read"),
+  ctrl.listClinicApprovalRequests
+);
+router.post(
+  "/branches/:branchId/approval-requests",
+  requireClinicPermission("approvals.manage", "clinic.packages.write"),
+  ctrl.createClinicApprovalRequest
+);
+router.put(
+  "/branches/:branchId/approval-requests/:requestId/decide",
+  requireClinicPermission("approvals.manage"),
+  ctrl.decideClinicApprovalRequest
+);
+
 router.get(
   "/branches/:branchId/doctors/:memberId/contract",
   requireClinicPermission("clinic.contracts.read", "clinic.contracts.write"),
@@ -779,6 +1350,11 @@ router.get(
   ctrl.listBranchSupplyRequests
 );
 router.get(
+  "/branches/:branchId/supply-requests/items/search",
+  requireClinicPermission("clinic.cases.read", "clinic.cases.write"),
+  ctrl.getBranchSupplyRequestItemSearch
+);
+router.get(
   "/branches/:branchId/supply-requests/low-stock-suggestions",
   requireClinicPermission("clinic.cases.read", "clinic.cases.write"),
   ctrl.getBranchSupplyRequestLowStockSuggestions
@@ -793,10 +1369,20 @@ router.post(
   requireClinicPermission("clinic.cases.write"),
   ctrl.postBranchSupplyRequest
 );
+router.patch(
+  "/branches/:branchId/supply-requests/:requestId",
+  requireClinicPermission("clinic.cases.write"),
+  ctrl.patchBranchSupplyRequest
+);
 router.post(
   "/branches/:branchId/supply-requests/:requestId/submit",
   requireClinicPermission("clinic.cases.write"),
   ctrl.postBranchSupplyRequestSubmit
+);
+router.post(
+  "/branches/:branchId/supply-requests/:requestId/cancel",
+  requireClinicPermission("clinic.cases.write"),
+  ctrl.postBranchSupplyRequestCancel
 );
 router.get(
   "/branches/:branchId/transfers",

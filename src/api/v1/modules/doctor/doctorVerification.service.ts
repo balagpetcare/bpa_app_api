@@ -353,6 +353,7 @@ async function approve(id: number, adminUserId: number | null) {
       reviewedAt: new Date(),
       reviewedByAdminId: adminUserId,
       reviewNote: null,
+      onboardingCompleted: true, // allow dashboard access without redirect to verification
     },
     include: { user: true, documents: true },
   });
