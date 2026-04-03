@@ -54,10 +54,13 @@ export async function getManagerDashboard(userId: number, branchId: number) {
         },
       }),
       listEscalationsByBranch(branchId, "PENDING").then((r) => r.length),
-      prisma.$queryRawUnsafe<[{ count: bigint }]>(
-        `SELECT COUNT(*)::bigint AS count FROM branch_item_stocks WHERE "branchId" = $1 AND "reorderLevel" IS NOT NULL AND "availableQty" < "reorderLevel"`,
-        branchId
-      ).then((r) => Number(r[0]?.count ?? 0)).catch(() => 0),
+      prisma
+        .$queryRawUnsafe(
+          `SELECT COUNT(*)::bigint AS count FROM branch_item_stocks WHERE "branchId" = $1 AND "reorderLevel" IS NOT NULL AND "availableQty" < "reorderLevel"`,
+          branchId
+        )
+        .then((r: any) => Number((r as [{ count: bigint }])[0]?.count ?? 0))
+        .catch(() => 0),
     ]);
 
   const doctorsOnDutyToday = await prisma.appointment

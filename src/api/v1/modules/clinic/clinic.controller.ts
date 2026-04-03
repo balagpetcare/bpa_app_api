@@ -7,6 +7,11 @@ const appointmentService = require("./appointment.service");
 const queueService = require("./queue.service");
 const patientService = require("./patient.service");
 const servicesService = require("../services/services.service");
+const servicePricingService = require("./servicePricing.service");
+const {
+  resolveServiceListPriceFromRows,
+  computeDoctorFeeAmountFromRow,
+} = require("./servicePricingResolution.service");
 const emrService = require("./emr.service");
 const consultationService = require("./consultation.service");
 const prescriptionService = require("./prescription.service");
@@ -21,6 +26,7 @@ const dispenseControlService = require("./dispenseControl.service");
 const openVialService = require("./openVial.service");
 const doseConsumptionService = require("./doseConsumption.service");
 const injectionTokenService = require("./injectionToken.service");
+const { normalizeMedicineSourceInput } = require("./medicineSource.util");
 const dailyReconciliationService = require("./dailyReconciliation.service");
 const treatmentCourseService = require("./treatmentCourse.service");
 const dailyDueMedicineService = require("./dailyDueMedicine.service");
@@ -35,6 +41,7 @@ const roomScheduling = require("../../services/roomScheduling.service");
 const roomPolicy = require("../../services/roomPolicy.service");
 const roomOccupancy = require("../../services/roomOccupancy.service");
 const { sendClinicError, sendClinicSuccess, CLINIC_ERROR_CODES } = require("./clinic.responses");
+const visitCompletionPolicy = require("../doctor/visitCompletionPolicy");
 const { writeClinicAudit, CLINIC_AUDIT_ACTIONS } = require("./clinic.audit");
 const { emitQueueUpdated, emitNowServingChanged, emitDoctorAppointmentUpdate } = require("../../../../realtime/socketio.gateway");
 
@@ -412,6 +419,8 @@ exports.createQuickAppointment = async (req: any, res: any) => {
         petTypeSnapshot: body.petTypeSnapshot ?? null,
         priority: body.priority || "NORMAL",
         notes: body.notes ?? null,
+        source: body.source ?? null,
+        channel: body.channel ?? null,
       },
       userId
     );
@@ -472,8 +481,9 @@ exports.promoteQuickAppointment = async (req: any, res: any) => {
     });
     return sendClinicSuccess(res, 200, updated, "Appointment promoted to booked");
   } catch (e: any) {
-    if (e?.statusCode === 404) return sendClinicError(res, 404, e?.message || "Appointment not found", CLINIC_ERROR_CODES.APPOINTMENT_NOT_FOUND);
+    if (e?.statusCode === 404) return sendClinicError(res, 404, e?.message || "Appointment or pet not found", CLINIC_ERROR_CODES.APPOINTMENT_NOT_FOUND);
     if (e?.statusCode === 409) return sendClinicError(res, 409, e?.message || "Invalid transition", CLINIC_ERROR_CODES.INVALID_STATUS_TRANSITION);
+    if (e?.code === CLINIC_ERROR_CODES.PET_OWNER_MISMATCH) return sendClinicError(res, 400, e?.message || "Pet does not belong to owner", e.code);
     return sendClinicError(res, 400, e?.message || "Promote failed", CLINIC_ERROR_CODES.VALIDATION_ERROR);
   }
 };
@@ -512,7 +522,30 @@ exports.checkInAppointment = async (req: any, res: any) => {
   } catch (e: any) {
     if (e?.statusCode === 404) return sendClinicError(res, 404, e?.message || "Appointment not found", CLINIC_ERROR_CODES.APPOINTMENT_NOT_FOUND);
     if (e?.statusCode === 409) return sendClinicError(res, 409, e?.message || "Invalid transition", CLINIC_ERROR_CODES.INVALID_STATUS_TRANSITION);
+    if (e?.code === CLINIC_ERROR_CODES.SNAPSHOT_ONLY_CANNOT_CHECK_IN) return sendClinicError(res, 400, e?.message || "Link owner and pet before check-in", e.code);
     return sendClinicError(res, 400, e?.message || "Check-in failed", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+exports.enqueueAppointment = async (req: any, res: any) => {
+  try {
+    const branchId = req.clinicBranchId;
+    const branch = req.clinicBranch;
+    const appointmentId = Number(req.params.appointmentId);
+    const userId = req.user?.id;
+    const updated = await appointmentService.enqueueAppointment(appointmentId, userId!, { orgId: branch.orgId, branchId: Number(branchId) });
+    await writeClinicAudit({
+      req,
+      action: "APPOINTMENT_ENQUEUED",
+      entityType: "APPOINTMENT",
+      entityId: appointmentId,
+      after: { appointmentId, status: updated.status },
+    });
+    return sendClinicSuccess(res, 200, updated, "Enqueued");
+  } catch (e: any) {
+    if (e?.statusCode === 404) return sendClinicError(res, 404, e?.message || "Appointment not found", CLINIC_ERROR_CODES.APPOINTMENT_NOT_FOUND);
+    if (e?.statusCode === 409) return sendClinicError(res, 409, e?.message || "Invalid transition — appointment must be CHECKED_IN to enqueue", CLINIC_ERROR_CODES.INVALID_STATUS_TRANSITION);
+    return sendClinicError(res, 400, e?.message || "Enqueue failed", CLINIC_ERROR_CODES.VALIDATION_ERROR);
   }
 };
 
@@ -844,6 +877,18 @@ exports.getAppointmentById = async (req: any, res: any) => {
   }
 };
 
+exports.getAppointmentEvents = async (req: any, res: any) => {
+  try {
+    const appointmentId = Number(req.params.appointmentId);
+    const branchId = req.clinicBranchId;
+    const events = await appointmentService.getAppointmentEvents(appointmentId, Number(branchId));
+    return sendClinicSuccess(res, 200, { events });
+  } catch (e: any) {
+    const status = e?.message === CLINIC_ERROR_CODES.NOT_FOUND ? 404 : 500;
+    return sendClinicError(res, status, e?.message || "Failed to get events", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
 exports.searchAppointments = async (req: any, res: any) => {
   try {
     const branchId = req.clinicBranchId;
@@ -876,6 +921,13 @@ exports.collectAppointmentPayment = async (req: any, res: any) => {
     );
     return sendClinicSuccess(res, 200, updated, "Payment collected");
   } catch (e: any) {
+    if (e?.statusCode === 404)
+      return sendClinicError(
+        res,
+        404,
+        e?.message || "Appointment not found or not available in this branch.",
+        CLINIC_ERROR_CODES.APPOINTMENT_NOT_FOUND
+      );
     const code =
       e?.message === CLINIC_ERROR_CODES.PAYMENT_ALREADY_COLLECTED
         ? CLINIC_ERROR_CODES.PAYMENT_ALREADY_COLLECTED
@@ -991,7 +1043,7 @@ exports.upsertIntake = async (req: any, res: any) => {
     await writeClinicAudit({
       req,
       action: isCreate ? CLINIC_AUDIT_ACTIONS.INTAKE_CREATED : CLINIC_AUDIT_ACTIONS.INTAKE_UPDATED,
-      entityType: "CLINIC_INTAKE",
+      entityType: "APPOINTMENT",
       entityId: intake.id,
       after: { appointmentId, status: intake.status },
     });
@@ -1063,6 +1115,14 @@ exports.createClinicService = async (req: any, res: any) => {
       serviceCode: body.serviceCode || undefined,
       status: body.status || "ACTIVE",
       createdByUserId: userId,
+      baseCost: body.baseCost != null ? Number(body.baseCost) : undefined,
+      minSafePrice: body.minSafePrice != null ? Number(body.minSafePrice) : undefined,
+      staffInstructions: body.staffInstructions,
+      pricingExplanation: body.pricingExplanation,
+      visibleToPublic: body.visibleToPublic !== undefined ? Boolean(body.visibleToPublic) : undefined,
+      preparationNotes: body.preparationNotes,
+      aftercareNotes: body.aftercareNotes,
+      faqJson: body.faqJson,
     });
     return sendClinicSuccess(res, 201, service);
   } catch (e: any) {
@@ -1085,6 +1145,14 @@ exports.updateClinicService = async (req: any, res: any) => {
     if (body.duration !== undefined) (updateData as any).duration = body.duration != null ? Number(body.duration) : null;
     if (body.serviceCode !== undefined) (updateData as any).serviceCode = body.serviceCode;
     if (body.status !== undefined) (updateData as any).status = body.status;
+    if (body.baseCost !== undefined) (updateData as any).baseCost = body.baseCost == null ? null : Number(body.baseCost);
+    if (body.minSafePrice !== undefined) (updateData as any).minSafePrice = body.minSafePrice == null ? null : Number(body.minSafePrice);
+    if (body.staffInstructions !== undefined) (updateData as any).staffInstructions = body.staffInstructions;
+    if (body.pricingExplanation !== undefined) (updateData as any).pricingExplanation = body.pricingExplanation;
+    if (body.visibleToPublic !== undefined) (updateData as any).visibleToPublic = Boolean(body.visibleToPublic);
+    if (body.preparationNotes !== undefined) (updateData as any).preparationNotes = body.preparationNotes;
+    if (body.aftercareNotes !== undefined) (updateData as any).aftercareNotes = body.aftercareNotes;
+    if (body.faqJson !== undefined) (updateData as any).faqJson = body.faqJson;
     const service = await servicesService.updateService(serviceId, updateData as any, branchId);
     return sendClinicSuccess(res, 200, service);
   } catch (e: any) {
@@ -1130,30 +1198,35 @@ exports.getDoctorsWithFees = async (req: any, res: any) => {
         user: { select: { profile: { select: { displayName: true } } } },
       },
     });
-    let defaultServicePrice = null;
+    let listPrice: number | null = null;
     if (serviceId != null) {
       const svc = await prisma.service.findFirst({
         where: { id: serviceId, branchId },
-        select: { price: true },
+        include: { pricingVariants: true },
       });
-      if (svc?.price != null) defaultServicePrice = Number(svc.price);
+      if (svc) listPrice = resolveServiceListPriceFromRows(svc);
     }
     const profiles = await prisma.clinicStaffProfile.findMany({
       where: { branchId, branchMemberId: { in: ids } },
       select: { id: true, branchMemberId: true },
     });
     const profileByMember = new Map(profiles.map((p: any) => [p.branchMemberId, p]));
-    let feesByProfile = new Map();
-    if (serviceId != null && profiles.length > 0) {
+    const feesByProfile = new Map<number, number>();
+    if (serviceId != null && profiles.length > 0 && listPrice != null) {
       const fees = await prisma.doctorServiceFee.findMany({
         where: {
           clinicStaffProfileId: { in: profiles.map((p: any) => p.id) },
           serviceId,
           isActive: true,
         },
-        select: { clinicStaffProfileId: true, fee: true },
       });
-      fees.forEach((f: any) => feesByProfile.set(f.clinicStaffProfileId, Number(f.fee)));
+      for (const f of fees) {
+        const amt = computeDoctorFeeAmountFromRow(f, listPrice);
+        if (amt <= 0) continue;
+        const pid = (f as any).clinicStaffProfileId;
+        const prev = feesByProfile.get(pid);
+        if (prev == null || amt > prev) feesByProfile.set(pid, amt);
+      }
     }
     const doctors = members.map((m: any) => {
       const displayName = m.user?.profile?.displayName ?? "Doctor #" + m.id;
@@ -1161,11 +1234,12 @@ exports.getDoctorsWithFees = async (req: any, res: any) => {
       let fee = null;
       let feeLabel = null;
       if (serviceId != null) {
-        if (profile && feesByProfile.has(profile.id)) {
-          fee = feesByProfile.get(profile.id);
+        const prof = profile as { id: number } | undefined;
+        if (prof && feesByProfile.has(prof.id)) {
+          fee = feesByProfile.get(prof.id);
           feeLabel = "BDT " + fee;
-        } else if (defaultServicePrice != null) {
-          fee = defaultServicePrice;
+        } else if (listPrice != null && listPrice > 0) {
+          fee = listPrice;
           feeLabel = "BDT " + fee;
         } else {
           feeLabel = "Fee varies";
@@ -1179,16 +1253,95 @@ exports.getDoctorsWithFees = async (req: any, res: any) => {
   }
 };
 
+exports.getServicePricingMatrix = async (req: any, res: any) => {
+  try {
+    const branchId = Number(req.clinicBranchId);
+    const limit = req.query.limit ? Number(req.query.limit) : undefined;
+    const data = await servicePricingService.getServicePricingMatrix(branchId, { limit });
+    return sendClinicSuccess(res, 200, data);
+  } catch (e: any) {
+    return sendClinicError(res, 500, e?.message || "Failed to load pricing matrix", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+exports.getServicePricingHistory = async (req: any, res: any) => {
+  try {
+    const branchId = Number(req.clinicBranchId);
+    const serviceId = Number(req.params.serviceId);
+    const limit = req.query.limit ? Number(req.query.limit) : undefined;
+    if (!serviceId) return sendClinicError(res, 400, "Invalid serviceId", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    const data = await servicePricingService.listServicePricingHistory(branchId, serviceId, { limit });
+    return sendClinicSuccess(res, 200, { items: data });
+  } catch (e: any) {
+    return sendClinicError(res, 500, e?.message || "Failed to load history", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+exports.getDoctorFeeHistory = async (req: any, res: any) => {
+  try {
+    const branchId = Number(req.clinicBranchId);
+    const memberId = Number(req.params.memberId);
+    const limit = req.query.limit ? Number(req.query.limit) : undefined;
+    if (!memberId) return sendClinicError(res, 400, "Invalid memberId", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    const data = await servicePricingService.listDoctorFeeHistory(branchId, memberId, { limit });
+    return sendClinicSuccess(res, 200, { items: data });
+  } catch (e: any) {
+    return sendClinicError(res, 500, e?.message || "Failed to load fee history", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+exports.patchClinicServicePricing = async (req: any, res: any) => {
+  try {
+    const branchId = Number(req.clinicBranchId);
+    const serviceId = Number(req.params.serviceId);
+    const userId = req.user?.id;
+    if (!serviceId || !userId) return sendClinicError(res, 400, "Invalid request", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    const body = req.body || {};
+    const reason = body.reason != null ? String(body.reason) : null;
+    const { reason: _r, ...rest } = body;
+    const data = await servicePricingService.patchBranchServicePricing(branchId, serviceId, userId, rest, reason);
+    return sendClinicSuccess(res, 200, data);
+  } catch (e: any) {
+    return sendClinicError(res, 500, e?.message || "Failed to update pricing", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+exports.getClinicServiceMedia = async (req: any, res: any) => {
+  try {
+    const branchId = Number(req.clinicBranchId);
+    const serviceId = Number(req.params.serviceId);
+    if (!serviceId) return sendClinicError(res, 400, "Invalid serviceId", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    const data = await servicePricingService.listServiceMedia(serviceId, branchId);
+    return sendClinicSuccess(res, 200, { items: data });
+  } catch (e: any) {
+    return sendClinicError(res, 500, e?.message || "Failed to list media", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+exports.putClinicServiceMedia = async (req: any, res: any) => {
+  try {
+    const branchId = Number(req.clinicBranchId);
+    const serviceId = Number(req.params.serviceId);
+    if (!serviceId) return sendClinicError(res, 400, "Invalid serviceId", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    const items = Array.isArray(req.body?.items) ? req.body.items : [];
+    const data = await servicePricingService.putServiceMediaOrder(serviceId, branchId, items);
+    return sendClinicSuccess(res, 200, { items: data });
+  } catch (e: any) {
+    return sendClinicError(res, 500, e?.message || "Failed to save media", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
 // --- Patients (pets) ---
 exports.listPatients = async (req: any, res: any) => {
   try {
     const branchId = req.clinicBranchId;
-    const { limit, offset, search, ownerId } = req.query;
+    const { limit, offset, search, ownerId, animalTypeId } = req.query;
     const result = await patientService.listPatients(Number(branchId), {
       limit: limit ? Number(limit) : undefined,
       offset: offset ? Number(offset) : undefined,
       search: search ? String(search) : undefined,
       ownerId: ownerId != null && ownerId !== "" ? Number(ownerId) : undefined,
+      animalTypeId: animalTypeId != null && animalTypeId !== "" ? Number(animalTypeId) : undefined,
     });
     return sendClinicSuccess(res, 200, result);
   } catch (e: any) {
@@ -1196,13 +1349,45 @@ exports.listPatients = async (req: any, res: any) => {
   }
 };
 
+exports.getPatientClinicalOverview = async (req: any, res: any) => {
+  try {
+    const branchId = req.clinicBranchId;
+    const petId = Number(req.params.petId);
+    const resolved = await patientService.resolvePatientClinicalOverview(Number(branchId), petId);
+    if (resolved.kind === "NOT_FOUND") {
+      return sendClinicError(res, 404, "Patient not found", CLINIC_ERROR_CODES.PATIENT_NOT_FOUND);
+    }
+    if (resolved.kind === "NOT_IN_BRANCH") {
+      return sendClinicError(
+        res,
+        404,
+        "Pet not linked to this branch",
+        CLINIC_ERROR_CODES.PATIENT_NOT_IN_BRANCH
+      );
+    }
+    return sendClinicSuccess(res, 200, resolved.data);
+  } catch (e: any) {
+    return sendClinicError(res, 500, e?.message || "Failed", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
 exports.getPatient = async (req: any, res: any) => {
   try {
     const branchId = req.clinicBranchId;
     const petId = Number(req.params.petId);
-    const patient = await patientService.getPatientByPetId(Number(branchId), petId);
-    if (!patient) return sendClinicError(res, 404, "Patient not found", CLINIC_ERROR_CODES.PATIENT_NOT_FOUND);
-    return sendClinicSuccess(res, 200, patient);
+    const resolved = await patientService.resolvePatientForBranch(Number(branchId), petId);
+    if (resolved.kind === "NOT_FOUND") {
+      return sendClinicError(res, 404, "Patient not found", CLINIC_ERROR_CODES.PATIENT_NOT_FOUND);
+    }
+    if (resolved.kind === "NOT_IN_BRANCH") {
+      return sendClinicError(
+        res,
+        404,
+        "Pet not linked to this branch",
+        CLINIC_ERROR_CODES.PATIENT_NOT_IN_BRANCH
+      );
+    }
+    return sendClinicSuccess(res, 200, resolved.data);
   } catch (e: any) {
     return sendClinicError(res, 500, e?.message || "Failed", CLINIC_ERROR_CODES.VALIDATION_ERROR);
   }
@@ -1231,6 +1416,12 @@ exports.registerPatient = async (req: any, res: any) => {
       name: body.name,
       animalTypeId: Number(body.animalTypeId),
       breedId: body.breedId != null ? Number(body.breedId) : undefined,
+      subBreedId: body.subBreedId != null ? Number(body.subBreedId) : undefined,
+      colorId: body.colorId != null ? Number(body.colorId) : undefined,
+      coatPatternId: body.coatPatternId != null ? Number(body.coatPatternId) : undefined,
+      sizeId: body.sizeId != null ? Number(body.sizeId) : undefined,
+      customBreedText: body.customBreedText,
+      customColorText: body.customColorText,
       sex: body.sex,
       dateOfBirth: body.dateOfBirth,
       microchipNumber: body.microchipNumber,
@@ -1252,7 +1443,23 @@ exports.registerPatient = async (req: any, res: any) => {
     });
     return sendClinicSuccess(res, 201, patient, "Patient registered");
   } catch (e: any) {
+    if (e?.code === CLINIC_ERROR_CODES.DUPLICATE_PET || e?.code === "DUPLICATE_PET") return sendClinicError(res, 409, e?.message || "Duplicate pet", CLINIC_ERROR_CODES.DUPLICATE_PET);
     return sendClinicError(res, 500, e?.message || "Failed to register patient", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+exports.linkOwner = async (req: any, res: any) => {
+  try {
+    const branchId = req.clinicBranchId;
+    const petId = Number(req.params.petId);
+    const userId = req.body?.userId != null ? Number(req.body.userId) : null;
+    if (!userId || !Number.isFinite(userId))
+      return sendClinicError(res, 400, "userId is required", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    const patient = await patientService.linkPetToOwner(Number(branchId), petId, userId);
+    if (!patient) return sendClinicError(res, 404, "Patient or owner not found", CLINIC_ERROR_CODES.PATIENT_NOT_FOUND);
+    return sendClinicSuccess(res, 200, patient, "Owner linked");
+  } catch (e: any) {
+    return sendClinicError(res, 500, e?.message || "Failed to link owner", CLINIC_ERROR_CODES.VALIDATION_ERROR);
   }
 };
 
@@ -1261,9 +1468,27 @@ exports.updatePatient = async (req: any, res: any) => {
     const branchId = req.clinicBranchId;
     const petId = Number(req.params.petId);
     const body = req.body;
+    const access = await patientService.resolvePatientForBranch(Number(branchId), petId);
+    if (access.kind === "NOT_FOUND") {
+      return sendClinicError(res, 404, "Patient not found", CLINIC_ERROR_CODES.PATIENT_NOT_FOUND);
+    }
+    if (access.kind === "NOT_IN_BRANCH") {
+      return sendClinicError(
+        res,
+        404,
+        "Pet not linked to this branch",
+        CLINIC_ERROR_CODES.PATIENT_NOT_IN_BRANCH
+      );
+    }
     const patient = await patientService.updatePatient(Number(branchId), petId, {
       name: body.name,
       breedId: body.breedId,
+      subBreedId: body.subBreedId,
+      colorId: body.colorId,
+      coatPatternId: body.coatPatternId,
+      sizeId: body.sizeId,
+      customBreedText: body.customBreedText,
+      customColorText: body.customColorText,
       sex: body.sex,
       dateOfBirth: body.dateOfBirth,
       microchipNumber: body.microchipNumber,
@@ -1303,24 +1528,214 @@ exports.findOwner = async (req: any, res: any) => {
   }
 };
 
+exports.ensureOwner = async (req: any, res: any) => {
+  try {
+    const body = req.body || {};
+    const phone = (body.phone ?? "").toString().trim() || undefined;
+    const email = (body.email ?? "").toString().trim() || undefined;
+    const displayName = (body.displayName ?? body.name ?? "").toString().trim() || undefined;
+
+    if (!phone && !email) {
+      return sendClinicError(res, 400, "Phone or email is required", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+
+    const owner = await patientService.ensureOwner({ phone, email, displayName });
+    if (!owner) return sendClinicError(res, 400, "Could not resolve or create owner", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    return sendClinicSuccess(res, 200, owner, owner.id ? "Owner found or created" : "Owner");
+  } catch (e: any) {
+    return sendClinicError(res, 500, e?.message || "Failed to ensure owner", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+const VISIT_STATUS_FILTER_WHITELIST = new Set(["CHECKED_IN", "IN_PROGRESS", "COMPLETED", "CANCELLED"]);
+
+/** YYYY-MM-DD from date inputs = inclusive UTC calendar day; other strings pass through Date parsing. */
+function visitQueryFromDate(raw: unknown): Date | undefined {
+  if (raw == null || raw === "") return undefined;
+  const s = String(raw).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return new Date(`${s}T00:00:00.000Z`);
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? undefined : d;
+}
+
+function visitQueryToDateInclusive(raw: unknown): Date | undefined {
+  if (raw == null || raw === "") return undefined;
+  const s = String(raw).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return new Date(`${s}T23:59:59.999Z`);
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? undefined : d;
+}
+
+function isRequestedVisitStatusCompleted(raw: unknown): boolean {
+  return raw != null && String(raw).trim().toUpperCase() === "COMPLETED";
+}
+
+function parseVisitStatusList(q: any): string[] | undefined {
+  const raw = q.status;
+  if (raw == null || raw === "") return undefined;
+  const parts = Array.isArray(raw) ? raw : String(raw).split(",");
+  const tokens = parts.map((s: any) => String(s).trim().toUpperCase()).filter(Boolean);
+  if (!tokens.length) return undefined;
+  const invalid = tokens.filter((s) => !VISIT_STATUS_FILTER_WHITELIST.has(s));
+  if (invalid.length) {
+    const err: any = new Error(`Invalid visit status in filter: ${invalid.join(", ")}`);
+    err.code = "INVALID_VISIT_STATUS_FILTER";
+    throw err;
+  }
+  return tokens;
+}
+
+function csvEscapeCell(val: any): string {
+  if (val == null) return "";
+  let s = String(val);
+  const formulaRisk = /^[=+\-@]/.test(s);
+  // Reduce CSV/formula-injection risk when opened in spreadsheets
+  if (formulaRisk) s = `'${s}`;
+  if (formulaRisk || /[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
 // --- EMR (Visits, Vitals, Notes) ---
 exports.listVisits = async (req: any, res: any) => {
   try {
     const branchId = req.clinicBranchId;
     const q = req.query || {};
+    let statusFilter: string[] | undefined;
+    try {
+      statusFilter = parseVisitStatusList(q);
+    } catch (e: any) {
+      if (e?.code === "INVALID_VISIT_STATUS_FILTER") {
+        return sendClinicError(res, 400, e.message || "Invalid status filter", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+      }
+      throw e;
+    }
+    const hasAppointment =
+      q.hasAppointment === "true" ? true : q.hasAppointment === "false" ? false : undefined;
+    const unpaidOnly = q.unpaidOnly === "true" || q.unpaidOnly === "1";
+    const sortDir = q.sortDir === "asc" ? "asc" : q.sortDir === "desc" ? "desc" : undefined;
     const result = await emrService.listVisits(Number(branchId), {
       petId: q.petId != null ? Number(q.petId) : undefined,
       patientId: q.patientId != null ? Number(q.patientId) : undefined,
       limit: q.limit != null ? Number(q.limit) : undefined,
       offset: q.offset != null ? Number(q.offset) : undefined,
       treatmentCode: q.treatmentCode ? String(q.treatmentCode) : undefined,
-      fromDate: q.fromDate ? new Date(String(q.fromDate)) : undefined,
-      toDate: q.toDate ? new Date(String(q.toDate)) : undefined,
+      fromDate: visitQueryFromDate(q.fromDate),
+      toDate: visitQueryToDateInclusive(q.toDate),
       search: q.search ? String(q.search) : undefined,
+      status: statusFilter,
+      doctorId: q.doctorId != null && q.doctorId !== "" ? Number(q.doctorId) : undefined,
+      appointmentId: q.appointmentId != null && q.appointmentId !== "" ? Number(q.appointmentId) : undefined,
+      hasAppointment,
+      sortField: q.sortField ? String(q.sortField) : undefined,
+      sortDir,
+      includeSignals: q.includeSignals === "false" ? false : undefined,
+      unpaidOnly,
     });
     return sendClinicSuccess(res, 200, result);
   } catch (e: any) {
     return sendClinicError(res, 500, e?.message || "Failed to list visits", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+exports.getVisitsSummary = async (req: any, res: any) => {
+  try {
+    const branchId = req.clinicBranchId;
+    const q = req.query || {};
+    const summary = await emrService.getVisitsSummaryForBranch(
+      Number(branchId),
+      visitQueryFromDate(q.fromDate),
+      visitQueryToDateInclusive(q.toDate)
+    );
+    return sendClinicSuccess(res, 200, summary);
+  } catch (e: any) {
+    return sendClinicError(res, 500, e?.message || "Failed to load visits summary", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+exports.exportVisitsCsv = async (req: any, res: any) => {
+  try {
+    const branchId = req.clinicBranchId;
+    const q = req.query || {};
+    let statusFilter: string[] | undefined;
+    try {
+      statusFilter = parseVisitStatusList(q);
+    } catch (e: any) {
+      if (e?.code === "INVALID_VISIT_STATUS_FILTER") {
+        return sendClinicError(res, 400, e.message || "Invalid status filter", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+      }
+      throw e;
+    }
+    const hasAppointment =
+      q.hasAppointment === "true" ? true : q.hasAppointment === "false" ? false : undefined;
+    const unpaidOnly = q.unpaidOnly === "true" || q.unpaidOnly === "1";
+    const sortDir = q.sortDir === "asc" ? "asc" : q.sortDir === "desc" ? "desc" : undefined;
+    const { visits } = await emrService.listVisits(Number(branchId), {
+      petId: q.petId != null ? Number(q.petId) : undefined,
+      patientId: q.patientId != null ? Number(q.patientId) : undefined,
+      limit: Math.min(Number(q.limit) || 2000, 5000),
+      offset: 0,
+      treatmentCode: q.treatmentCode ? String(q.treatmentCode) : undefined,
+      fromDate: visitQueryFromDate(q.fromDate),
+      toDate: visitQueryToDateInclusive(q.toDate),
+      search: q.search ? String(q.search) : undefined,
+      status: statusFilter,
+      doctorId: q.doctorId != null && q.doctorId !== "" ? Number(q.doctorId) : undefined,
+      appointmentId: q.appointmentId != null && q.appointmentId !== "" ? Number(q.appointmentId) : undefined,
+      hasAppointment,
+      sortField: q.sortField ? String(q.sortField) : undefined,
+      sortDir,
+      includeSignals: true,
+      unpaidOnly,
+    });
+    const header = [
+      "id",
+      "treatmentCode",
+      "status",
+      "createdAt",
+      "startedAt",
+      "completedAt",
+      "petName",
+      "ownerName",
+      "doctorName",
+      "appointmentId",
+      "appointmentStatus",
+      "queueToken",
+      "queueStatus",
+      "orders",
+      "unpaidOrders",
+      "settlementStatus",
+    ];
+    const lines = [header.join(",")];
+    for (const v of visits) {
+      const petName = v.pet?.name ?? "";
+      const ownerName = v.patient?.profile?.displayName ?? "";
+      const doctorName = v.doctor?.user?.profile?.displayName ?? "";
+      lines.push(
+        [
+          csvEscapeCell(v.id),
+          csvEscapeCell(v.treatmentCode),
+          csvEscapeCell(v.status),
+          csvEscapeCell(v.createdAt),
+          csvEscapeCell(v.startedAt),
+          csvEscapeCell(v.completedAt),
+          csvEscapeCell(petName),
+          csvEscapeCell(ownerName),
+          csvEscapeCell(doctorName),
+          csvEscapeCell(v.appointmentId),
+          csvEscapeCell(v.appointment?.status),
+          csvEscapeCell(v.queueTicket?.tokenNo),
+          csvEscapeCell(v.queueTicket?.status),
+          csvEscapeCell(v.billing?.orderCount),
+          csvEscapeCell(v.billing?.unpaidOrderCount),
+          csvEscapeCell(v.settlement?.settlementStatus),
+        ].join(",")
+      );
+    }
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", 'attachment; filename="clinic-visits-export.csv"');
+    return res.status(200).send(lines.join("\n"));
+  } catch (e: any) {
+    return sendClinicError(res, 500, e?.message || "Failed to export visits", CLINIC_ERROR_CODES.VALIDATION_ERROR);
   }
 };
 
@@ -1343,6 +1758,14 @@ exports.createVisit = async (req: any, res: any) => {
     const body = req.body;
     if (!body.petId || !body.patientId || !body.doctorId)
       return sendClinicError(res, 400, "petId, patientId, and doctorId are required", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    if (isRequestedVisitStatusCompleted(body.status)) {
+      return sendClinicError(
+        res,
+        400,
+        "Visits cannot be created as COMPLETED. Create the visit, then use POST /visits/:visitId/complete.",
+        CLINIC_ERROR_CODES.VALIDATION_ERROR
+      );
+    }
     const visit = await emrService.createVisit({
       orgId: branch.orgId,
       branchId: Number(branchId),
@@ -1363,10 +1786,25 @@ exports.updateVisit = async (req: any, res: any) => {
     const branchId = req.clinicBranchId;
     const visitId = Number(req.params.visitId);
     const body = req.body;
+    if (isRequestedVisitStatusCompleted(body.status)) {
+      return sendClinicError(
+        res,
+        400,
+        "Use POST /visits/:visitId/complete to complete a visit (branch completion policy applies).",
+        CLINIC_ERROR_CODES.VALIDATION_ERROR
+      );
+    }
+    if (Object.prototype.hasOwnProperty.call(body || {}, "completedAt")) {
+      return sendClinicError(
+        res,
+        400,
+        "completedAt cannot be changed via PATCH. Use POST /visits/:visitId/complete to finish a visit.",
+        CLINIC_ERROR_CODES.VALIDATION_ERROR
+      );
+    }
     const visit = await emrService.updateVisit(Number(branchId), visitId, {
       status: body.status,
       startedAt: body.startedAt != null ? new Date(body.startedAt) : undefined,
-      completedAt: body.completedAt != null ? new Date(body.completedAt) : undefined,
       followUpDate: body.followUpDate != null ? new Date(body.followUpDate) : undefined,
       followUpNotes: body.followUpNotes,
     });
@@ -1374,6 +1812,67 @@ exports.updateVisit = async (req: any, res: any) => {
     return sendClinicSuccess(res, 200, visit, "Visit updated");
   } catch (e: any) {
     return sendClinicError(res, 500, e?.message || "Failed to update visit", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+exports.getVisitCompletionEligibilityStaff = async (req: any, res: any) => {
+  try {
+    const branchId = req.clinicBranchId;
+    const visitId = Number(req.params.visitId);
+    const row = await prisma.visit.findFirst({
+      where: { id: visitId, branchId: Number(branchId) },
+      select: { status: true },
+    });
+    if (!row) return sendClinicError(res, 404, "Visit not found", CLINIC_ERROR_CODES.VISIT_NOT_FOUND);
+    if (row.status === "COMPLETED") {
+      return sendClinicSuccess(res, 200, { completed: true, eligible: true, unmet: [], canOverride: false });
+    }
+    const eligibility = await visitCompletionPolicy.checkVisitCompletionEligibilityInBranch(visitId, Number(branchId));
+    if (!eligibility) {
+      return sendClinicError(res, 404, "Visit not found", CLINIC_ERROR_CODES.VISIT_NOT_FOUND);
+    }
+    return sendClinicSuccess(res, 200, { completed: false, ...eligibility });
+  } catch (e: any) {
+    return sendClinicError(res, 500, e?.message || "Failed", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+exports.completeVisitStaff = async (req: any, res: any) => {
+  try {
+    const branchId = req.clinicBranchId;
+    const visitId = Number(req.params.visitId);
+    const userId = req.user?.id;
+    if (!userId) return sendClinicError(res, 401, "Unauthorized", CLINIC_ERROR_CODES.UNAUTHORIZED);
+    const body = req.body || {};
+    const result = await emrService.completeVisitWithPolicy(Number(branchId), visitId, Number(userId), {
+      overrideReason: body.overrideReason,
+    });
+    if (!result.ok) {
+      if (result.code === "NOT_FOUND") {
+        return sendClinicError(res, 404, "Visit not found", CLINIC_ERROR_CODES.VISIT_NOT_FOUND);
+      }
+      if (result.code === "COMPLETION_REQUIREMENTS_NOT_MET") {
+        return sendClinicError(res, 400, "Visit completion requirements not met", CLINIC_ERROR_CODES.COMPLETION_REQUIREMENTS_NOT_MET, {
+          unmet: result.unmet,
+        });
+      }
+      return sendClinicError(res, 400, result.code || "Failed", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+    return sendClinicSuccess(res, 200, result.visit, "Visit completed");
+  } catch (e: any) {
+    return sendClinicError(res, 500, e?.message || "Failed to complete visit", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+exports.getVisitQueueEvents = async (req: any, res: any) => {
+  try {
+    const branchId = req.clinicBranchId;
+    const visitId = Number(req.params.visitId);
+    const payload = await emrService.getVisitQueueEventsForBranch(Number(branchId), visitId);
+    if (!payload) return sendClinicError(res, 404, "Visit not found", CLINIC_ERROR_CODES.VISIT_NOT_FOUND);
+    return sendClinicSuccess(res, 200, payload);
+  } catch (e: any) {
+    return sendClinicError(res, 500, e?.message || "Failed to load queue events", CLINIC_ERROR_CODES.VALIDATION_ERROR);
   }
 };
 
@@ -1547,6 +2046,14 @@ exports.addDischargeNote = async (req: any, res: any) => {
 exports.listPrescriptionsByVisit = async (req: any, res: any) => {
   try {
     const visitId = Number(req.params.visitId);
+    const branchId = Number(req.params.branchId);
+    const visit = await prisma.visit.findFirst({
+      where: { id: visitId, branchId },
+      select: { id: true },
+    });
+    if (!visit) {
+      return sendClinicError(res, 404, "Visit not found", CLINIC_ERROR_CODES.VISIT_NOT_FOUND);
+    }
     const list = await prescriptionService.listByVisit(visitId);
     return sendClinicSuccess(res, 200, { prescriptions: list });
   } catch (e: any) {
@@ -1557,17 +2064,50 @@ exports.listPrescriptionsByVisit = async (req: any, res: any) => {
 exports.createPrescription = async (req: any, res: any) => {
   try {
     const visitId = Number(req.params.visitId);
+    const branchId = Number(req.params.branchId);
+    const doctorBranchMemberId = req.clinicDoctorBranchMemberId;
+    if (!Number.isFinite(doctorBranchMemberId)) {
+      return sendClinicError(res, 403, "Doctor context required", CLINIC_ERROR_CODES.PRESCRIPTION_FORBIDDEN);
+    }
     const body = req.body;
-    if (!body.petId || !body.doctorId || !Array.isArray(body.items))
-      return sendClinicError(res, 400, "petId, doctorId, and items are required", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    if (!Array.isArray(body.items) || body.items.length === 0) {
+      return sendClinicError(res, 400, "items are required", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+    const visit = await prisma.visit.findFirst({
+      where: { id: visitId, branchId },
+      select: { id: true, petId: true, doctorId: true },
+    });
+    if (!visit?.petId) {
+      return sendClinicError(res, 404, "Visit not found", CLINIC_ERROR_CODES.VISIT_NOT_FOUND);
+    }
+    if (visit.doctorId !== doctorBranchMemberId) {
+      return sendClinicError(
+        res,
+        403,
+        "You may only prescribe for visits where you are the assigned doctor",
+        CLINIC_ERROR_CODES.PRESCRIPTION_FORBIDDEN
+      );
+    }
+    console.info("[prescription] create", {
+      visitId,
+      doctorBranchMemberId,
+      userId: req.user?.id,
+      branchId,
+    });
     const prescription = await prescriptionService.createPrescription(visitId, {
-      petId: Number(body.petId),
-      doctorId: Number(body.doctorId),
+      petId: visit.petId,
+      doctorId: doctorBranchMemberId,
       notes: body.notes,
       items: body.items,
     });
     return sendClinicSuccess(res, 201, prescription, "Prescription created");
   } catch (e: any) {
+    if (e?.code === "RX_CATALOG_VALIDATION") {
+      return sendClinicError(res, 400, e.message || "Invalid catalog medicine", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+    if (e?.code === "VISIT_NOT_FOUND") {
+      return sendClinicError(res, 404, e.message || "Visit not found", CLINIC_ERROR_CODES.VISIT_NOT_FOUND);
+    }
     return sendClinicError(res, 500, e?.message || "Failed", CLINIC_ERROR_CODES.VALIDATION_ERROR);
   }
 };
@@ -1575,8 +2115,11 @@ exports.createPrescription = async (req: any, res: any) => {
 exports.getPrescription = async (req: any, res: any) => {
   try {
     const prescriptionId = Number(req.params.prescriptionId);
+    const branchId = Number(req.params.branchId);
     const prescription = await prescriptionService.getPrescriptionById(prescriptionId);
-    if (!prescription) return sendClinicError(res, 404, "Prescription not found", CLINIC_ERROR_CODES.NOT_FOUND);
+    if (!prescription || prescription.visit?.branchId !== branchId) {
+      return sendClinicError(res, 404, "Prescription not found", CLINIC_ERROR_CODES.NOT_FOUND);
+    }
     return sendClinicSuccess(res, 200, prescription);
   } catch (e: any) {
     return sendClinicError(res, 500, e?.message || "Failed", CLINIC_ERROR_CODES.VALIDATION_ERROR);
@@ -1586,11 +2129,65 @@ exports.getPrescription = async (req: any, res: any) => {
 exports.getPrescriptionByQr = async (req: any, res: any) => {
   try {
     const qrToken = req.params.qrToken;
+    const branchId = Number(req.params.branchId);
     if (!qrToken) return sendClinicError(res, 400, "qrToken required", CLINIC_ERROR_CODES.VALIDATION_ERROR);
     const prescription = await prescriptionService.getPrescriptionByQrToken(String(qrToken));
-    if (!prescription) return sendClinicError(res, 404, "Prescription not found", CLINIC_ERROR_CODES.NOT_FOUND);
+    if (!prescription || prescription.visit?.branchId !== branchId) {
+      return sendClinicError(res, 404, "Prescription not found", CLINIC_ERROR_CODES.NOT_FOUND);
+    }
     return sendClinicSuccess(res, 200, prescription);
   } catch (e: any) {
+    return sendClinicError(res, 500, e?.message || "Failed", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+exports.updatePrescription = async (req: any, res: any) => {
+  try {
+    const prescriptionId = Number(req.params.prescriptionId);
+    const branchId = Number(req.params.branchId);
+    const doctorBranchMemberId = req.clinicDoctorBranchMemberId;
+    if (!Number.isFinite(doctorBranchMemberId)) {
+      return sendClinicError(res, 403, "Doctor context required", CLINIC_ERROR_CODES.PRESCRIPTION_FORBIDDEN);
+    }
+    const existing = await prescriptionService.getPrescriptionById(prescriptionId);
+    if (!existing || existing.visit?.branchId !== branchId) {
+      return sendClinicError(res, 404, "Prescription not found", CLINIC_ERROR_CODES.NOT_FOUND);
+    }
+    if (existing.doctorId !== doctorBranchMemberId) {
+      return sendClinicError(res, 403, "Not allowed to edit this prescription", CLINIC_ERROR_CODES.PRESCRIPTION_FORBIDDEN);
+    }
+    if (existing.status !== "DRAFT") {
+      return sendClinicError(
+        res,
+        409,
+        "Prescription is finalized or dispensed and cannot be edited",
+        CLINIC_ERROR_CODES.PRESCRIPTION_NOT_EDITABLE
+      );
+    }
+    const body = req.body || {};
+    console.info("[prescription] update", {
+      prescriptionId,
+      doctorBranchMemberId,
+      userId: req.user?.id,
+      branchId,
+    });
+    const prescription = await prescriptionService.updatePrescription(prescriptionId, {
+      notes: body.notes,
+      items: Array.isArray(body.items) ? body.items : undefined,
+    });
+    if (!prescription) {
+      return sendClinicError(
+        res,
+        409,
+        "Prescription is finalized or dispensed and cannot be edited",
+        CLINIC_ERROR_CODES.PRESCRIPTION_NOT_EDITABLE
+      );
+    }
+    return sendClinicSuccess(res, 200, prescription, "Prescription updated");
+  } catch (e: any) {
+    if (e?.code === "RX_CATALOG_VALIDATION") {
+      return sendClinicError(res, 400, e.message || "Invalid catalog medicine", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
     return sendClinicError(res, 500, e?.message || "Failed", CLINIC_ERROR_CODES.VALIDATION_ERROR);
   }
 };
@@ -1598,8 +2195,41 @@ exports.getPrescriptionByQr = async (req: any, res: any) => {
 exports.finalizePrescription = async (req: any, res: any) => {
   try {
     const prescriptionId = Number(req.params.prescriptionId);
+    const branchId = Number(req.params.branchId);
+    const doctorBranchMemberId = req.clinicDoctorBranchMemberId;
+    if (!Number.isFinite(doctorBranchMemberId)) {
+      return sendClinicError(res, 403, "Doctor context required", CLINIC_ERROR_CODES.PRESCRIPTION_FORBIDDEN);
+    }
+    const existing = await prescriptionService.getPrescriptionById(prescriptionId);
+    if (!existing || existing.visit?.branchId !== branchId) {
+      return sendClinicError(res, 404, "Prescription not found", CLINIC_ERROR_CODES.NOT_FOUND);
+    }
+    if (existing.doctorId !== doctorBranchMemberId) {
+      return sendClinicError(res, 403, "Not allowed to finalize this prescription", CLINIC_ERROR_CODES.PRESCRIPTION_FORBIDDEN);
+    }
+    if (existing.status !== "DRAFT") {
+      return sendClinicError(
+        res,
+        409,
+        "Prescription is not in draft status",
+        CLINIC_ERROR_CODES.PRESCRIPTION_NOT_EDITABLE
+      );
+    }
+    console.info("[prescription] finalize", {
+      prescriptionId,
+      doctorBranchMemberId,
+      userId: req.user?.id,
+      branchId,
+    });
     const prescription = await prescriptionService.finalizePrescription(prescriptionId);
-    if (!prescription) return sendClinicError(res, 400, "Prescription not found or not in DRAFT", CLINIC_ERROR_CODES.NOT_FOUND);
+    if (!prescription) {
+      return sendClinicError(
+        res,
+        409,
+        "Prescription is not in draft status",
+        CLINIC_ERROR_CODES.PRESCRIPTION_NOT_EDITABLE
+      );
+    }
     return sendClinicSuccess(res, 200, prescription, "Prescription finalized");
   } catch (e: any) {
     return sendClinicError(res, 500, e?.message || "Failed", CLINIC_ERROR_CODES.VALIDATION_ERROR);
@@ -1609,8 +2239,13 @@ exports.finalizePrescription = async (req: any, res: any) => {
 exports.dispensePrescription = async (req: any, res: any) => {
   try {
     const prescriptionId = Number(req.params.prescriptionId);
+    const branchId = Number(req.params.branchId);
     const userId = req.user?.id;
     const createDispenseRequest = req.body?.createDispenseRequest === true;
+    const existing = await prescriptionService.getPrescriptionById(prescriptionId);
+    if (!existing || existing.visit?.branchId !== branchId) {
+      return sendClinicError(res, 404, "Prescription not found", CLINIC_ERROR_CODES.NOT_FOUND);
+    }
     const prescription = await prescriptionService.markDispensed(prescriptionId, {
       requestedByUserId: userId ?? undefined,
       createDispenseRequest: createDispenseRequest && !!userId,
@@ -1629,6 +2264,83 @@ exports.searchMedicine = async (req: any, res: any) => {
     const limit = req.query?.limit ? Number(req.query.limit) : 20;
     const results = await prescriptionService.searchMedicine(Number(branchId), String(q), limit);
     return sendClinicSuccess(res, 200, { items: results });
+  } catch (e: any) {
+    return sendClinicError(res, 500, e?.message || "Failed", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+const countryMedicineCatalogService = require("../../services/countryMedicineCatalog.service");
+
+exports.searchCountryMedicineCatalog = async (req: any, res: any) => {
+  try {
+    const branchId = req.clinicBranchId;
+    const ctx = await countryMedicineCatalogService.resolveMedicineCatalogContextForBranch(Number(branchId));
+    if (!ctx) return sendClinicError(res, 404, "Branch not found", CLINIC_ERROR_CODES.NOT_FOUND);
+    if (!ctx.catalogAvailable) {
+      return sendClinicSuccess(res, 200, {
+        items: [],
+        pagination: { page: 1, limit: 20, total: 0, totalPages: 0 },
+        notice: ctx.catalogBlockMessage,
+        catalogCountry: { code: null, name: null },
+      });
+    }
+    const q = String(req.query?.q ?? req.query?.query ?? "");
+    if (q.trim().length < countryMedicineCatalogService.MIN_QUERY_LEN) {
+      return sendClinicError(
+        res,
+        400,
+        `Enter at least ${countryMedicineCatalogService.MIN_QUERY_LEN} characters to search the national medicine catalog (brand, generic, manufacturer, strength, form, or pack marking).`,
+        CLINIC_ERROR_CODES.VALIDATION_ERROR
+      );
+    }
+    const page = req.query?.page ? Number(req.query.page) : 1;
+    const limit = req.query?.limit ? Number(req.query.limit) : 20;
+    const result = await countryMedicineCatalogService.searchCountryMedicineCatalog({
+      countryId: ctx.countryId!,
+      q,
+      genericId: req.query?.genericId ? Number(req.query.genericId) : undefined,
+      manufacturerId: req.query?.manufacturerId ? Number(req.query.manufacturerId) : undefined,
+      dosageFormId: req.query?.dosageFormId ? Number(req.query.dosageFormId) : undefined,
+      strength: req.query?.strength ? String(req.query.strength) : undefined,
+      page,
+      limit,
+    });
+    return sendClinicSuccess(res, 200, {
+      ...result,
+      catalogCountry: { code: ctx.countryCode, name: ctx.countryName },
+    });
+  } catch (e: any) {
+    return sendClinicError(res, 500, e?.message || "Failed", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+exports.getCountryMedicineBrandCatalog = async (req: any, res: any) => {
+  try {
+    const branchId = req.clinicBranchId;
+    const brandId = Number(req.params.brandId);
+    if (!Number.isFinite(brandId)) {
+      return sendClinicError(res, 400, "Invalid brand id", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+    const ctx = await countryMedicineCatalogService.resolveMedicineCatalogContextForBranch(Number(branchId));
+    if (!ctx) return sendClinicError(res, 404, "Branch not found", CLINIC_ERROR_CODES.NOT_FOUND);
+    if (!ctx.catalogAvailable || ctx.countryId == null) {
+      return sendClinicError(
+        res,
+        400,
+        ctx.catalogBlockMessage || "National medicine catalog is not available for this branch.",
+        CLINIC_ERROR_CODES.VALIDATION_ERROR
+      );
+    }
+    const row = await countryMedicineCatalogService.getCountryMedicineBrandDetail(ctx.countryId, brandId);
+    if (!row) {
+      return sendClinicError(
+        res,
+        404,
+        "No catalog medicine matches this id for your organization’s country, or the item is inactive.",
+        CLINIC_ERROR_CODES.NOT_FOUND
+      );
+    }
+    return sendClinicSuccess(res, 200, row);
   } catch (e: any) {
     return sendClinicError(res, 500, e?.message || "Failed", CLINIC_ERROR_CODES.VALIDATION_ERROR);
   }
@@ -1697,6 +2409,11 @@ exports.getVisitPaymentStatus = async (req: any, res: any) => {
 exports.getPrescriptionOrderLines = async (req: any, res: any) => {
   try {
     const prescriptionId = Number(req.params.prescriptionId);
+    const branchId = Number(req.params.branchId);
+    const rx = await prescriptionService.getPrescriptionById(prescriptionId);
+    if (!rx || rx.visit?.branchId !== branchId) {
+      return sendClinicError(res, 404, "Prescription not found", CLINIC_ERROR_CODES.NOT_FOUND);
+    }
     const lines = await billingService.getPrescriptionItemsForOrder(prescriptionId);
     return sendClinicSuccess(res, 200, { items: lines });
   } catch (e: any) {
@@ -1894,6 +2611,7 @@ exports.listMedicinePolicies = async (req: any, res: any) => {
       highRiskOnly: q.highRiskOnly === "true",
       skip: q.skip ? Number(q.skip) : undefined,
       take: q.take ? Number(q.take) : undefined,
+      branchId: Number(branchId),
     });
     return sendClinicSuccess(res, 200, result);
   } catch (e: any) {
@@ -1916,14 +2634,22 @@ exports.createDispenseRequest = async (req: any, res: any) => {
       requestedByUserId: userId,
       patientId: body.patientId ?? null,
       visitId: body.visitId ?? null,
+      prescriptionId: body.prescriptionId != null ? Number(body.prescriptionId) : null,
       surgeryCaseId: body.surgeryCaseId ?? null,
       treatmentCourseId: body.treatmentCourseId ?? null,
       requestType: body.requestType ?? null,
       requestReason: body.requestReason ?? null,
       tokenId: body.tokenId ?? null,
       treatmentDayItemId: body.treatmentDayItemId ?? null,
+      transactionType: body.transactionType ?? null,
       urgencyLevel: body.urgencyLevel ?? "NORMAL",
-      items: body.items.map((i: any) => ({ variantId: Number(i.variantId), requestedQty: Number(i.requestedQty), unit: i.unit ?? null, reason: i.reason ?? null })),
+      items: body.items.map((i: any) => ({
+        variantId: Number(i.variantId),
+        clinicalItemVariantId: i.clinicalItemVariantId != null ? Number(i.clinicalItemVariantId) : null,
+        requestedQty: Number(i.requestedQty),
+        unit: i.unit ?? null,
+        reason: i.reason ?? null,
+      })),
     });
     return sendClinicSuccess(res, 201, r, "Dispense request created");
   } catch (e: any) {
@@ -1972,6 +2698,7 @@ exports.listDispenseRequests = async (req: any, res: any) => {
       status: q.status ?? undefined,
       visitId: q.visitId ? Number(q.visitId) : undefined,
       requestType: q.requestType ?? undefined,
+      transactionType: q.transactionType ?? undefined,
       skip: q.skip ? Number(q.skip) : undefined,
       take: q.take ? Number(q.take) : undefined,
     });
@@ -2121,10 +2848,14 @@ exports.closeVialSession = async (req: any, res: any) => {
     const sessionId = Number(req.params.id);
     const body = req.body;
     if (!body.status || !["EXHAUSTED", "RETURNED"].includes(body.status)) return sendClinicError(res, 400, "status required: EXHAUSTED or RETURNED", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    const notes = (body.notes ?? body.returnReason ?? body.wastageReason ?? "").trim();
+    if (body.status === "RETURNED" && !notes) {
+      return sendClinicError(res, 400, "Return/wastage reason (notes, returnReason, or wastageReason) is required when closing as RETURNED", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
     const r = await openVialService.closeSession(sessionId, {
       status: body.status,
       returnPhotoUrl: body.returnPhotoUrl ?? null,
-      notes: body.notes ?? null,
+      notes: notes || null,
     });
     return sendClinicSuccess(res, 200, r, "Session closed");
   } catch (e: any) {
@@ -2156,6 +2887,10 @@ exports.recordDose = async (req: any, res: any) => {
     if (!body.patientId || !body.variantId || body.administeredDose == null) {
       return sendClinicError(res, 400, "patientId, variantId and administeredDose required", CLINIC_ERROR_CODES.VALIDATION_ERROR);
     }
+    const administeredDose = Number(body.administeredDose);
+    if (administeredDose <= 0 || !Number.isFinite(administeredDose)) {
+      return sendClinicError(res, 400, "administeredDose must be a positive number", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
     const emergencyBypassRequested = body.emergencyBypass === true;
     if (emergencyBypassRequested) {
       const perms: string[] = req.clinicProfile?.permissions ?? [];
@@ -2176,7 +2911,7 @@ exports.recordDose = async (req: any, res: any) => {
       emergencyBypassReason: body.emergencyBypassReason != null ? String(body.emergencyBypassReason).trim() || null : null,
       medicineApprovalRequestId: body.medicineApprovalRequestId != null ? Number(body.medicineApprovalRequestId) : null,
       prescribedDose: body.prescribedDose ?? null,
-      administeredDose: Number(body.administeredDose),
+      administeredDose,
       unit: body.unit ?? null,
       route: body.route ?? null,
       administeredByUserId: userId ?? body.administeredByUserId ?? null,
@@ -2219,23 +2954,80 @@ exports.generateInjectionToken = async (req: any, res: any) => {
     const userId = req.user?.id;
     if (!userId) return sendClinicError(res, 401, "Unauthorized", CLINIC_ERROR_CODES.UNAUTHORIZED);
     const body = req.body || {};
-    if (!body.visitId || !body.variantId || body.expectedDose == null) {
-      return sendClinicError(res, 400, "visitId, variantId and expectedDose are required", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    const walkIn = body.billingCheckout?.walkIn;
+    const hasMedLines = Array.isArray(body.medicationLines) && body.medicationLines.length > 0;
+    if (!hasMedLines && (body.expectedDose == null || body.expectedDose === "")) {
+      return sendClinicError(res, 400, "medicationLines or expectedDose is required", CLINIC_ERROR_CODES.VALIDATION_ERROR);
     }
+    if (!hasMedLines && body.variantId != null && body.variantId !== "" && Number(body.variantId) <= 0) {
+      return sendClinicError(res, 400, "variantId must be positive when using legacy single-medicine payload", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+    if (!walkIn && (body.visitId == null || body.visitId === "")) {
+      return sendClinicError(
+        res,
+        400,
+        "visitId is required unless billingCheckout.walkIn creates the visit",
+        CLINIC_ERROR_CODES.VALIDATION_ERROR
+      );
+    }
+    const bc = body.billingCheckout;
+    const billingCheckout =
+      bc && typeof bc === "object"
+        ? {
+            walkIn:
+              bc.walkIn && typeof bc.walkIn === "object"
+                ? {
+                    patientId: Number(bc.walkIn.patientId),
+                    petId: Number(bc.walkIn.petId),
+                    doctorBranchMemberId:
+                      bc.walkIn.doctorBranchMemberId != null && bc.walkIn.doctorBranchMemberId !== ""
+                        ? Number(bc.walkIn.doctorBranchMemberId)
+                        : undefined,
+                  }
+                : undefined,
+            injectionServiceId: bc.injectionServiceId != null ? Number(bc.injectionServiceId) : null,
+            servicePrice: bc.servicePrice != null ? Number(bc.servicePrice) : null,
+            medicineVariantId: bc.medicineVariantId != null ? Number(bc.medicineVariantId) : null,
+            medicineQuantity: bc.medicineQuantity != null ? Number(bc.medicineQuantity) : null,
+            medicineUnitPrice: bc.medicineUnitPrice != null ? Number(bc.medicineUnitPrice) : null,
+            medicineLineBillings: Array.isArray(bc.medicineLineBillings)
+              ? bc.medicineLineBillings.map((row: any) => ({
+                  variantId: Number(row.variantId),
+                  quantity: row.quantity != null ? Number(row.quantity) : 1,
+                  unitPrice: Number(row.unitPrice),
+                }))
+              : null,
+            consumablesServiceId: bc.consumablesServiceId != null ? Number(bc.consumablesServiceId) : null,
+            consumablesPrice: bc.consumablesPrice != null ? Number(bc.consumablesPrice) : null,
+            paymentMethod: bc.paymentMethod != null ? String(bc.paymentMethod) : null,
+            markPaid: bc.markPaid === true || bc.markPaid === "true" || bc.markPaid === 1,
+            notes: bc.notes != null ? String(bc.notes) : null,
+          }
+        : undefined;
     const token = await injectionTokenService.generateToken({
       branchId,
-      visitId: Number(body.visitId),
+      visitId: body.visitId != null && body.visitId !== "" ? Number(body.visitId) : undefined,
       prescriptionId: body.prescriptionId != null ? Number(body.prescriptionId) : null,
       orderId: body.orderId != null ? Number(body.orderId) : null,
       patientId: body.patientId != null ? Number(body.patientId) : null,
       petId: body.petId != null ? Number(body.petId) : null,
-      variantId: Number(body.variantId),
+      variantId: body.variantId != null && body.variantId !== "" ? Number(body.variantId) : undefined,
       treatmentCourseId: body.treatmentCourseId != null ? Number(body.treatmentCourseId) : null,
       treatmentDayId: body.treatmentDayId != null ? Number(body.treatmentDayId) : null,
       selectedVialSessionId: body.selectedVialSessionId != null ? Number(body.selectedVialSessionId) : null,
-      expectedDose: Number(body.expectedDose),
+      expectedDose: body.expectedDose != null && body.expectedDose !== "" ? Number(body.expectedDose) : undefined,
       unit: body.unit ?? null,
-      medicineSource: body.medicineSource ?? "INTERNAL",
+      medicineSource: normalizeMedicineSourceInput(body.medicineSource, "INTERNAL_CLINIC"),
+      encounterKind: body.encounterKind,
+      medicationLines: hasMedLines ? body.medicationLines : undefined,
+      externalPrescriberName: body.externalPrescriberName ?? null,
+      externalPrescriberClinic: body.externalPrescriberClinic ?? null,
+      externalRxNotes: body.externalRxNotes ?? null,
+      externalRxEvidenceUrl: body.externalRxEvidenceUrl ?? null,
+      serviceChargeAmount: body.serviceChargeAmount != null ? Number(body.serviceChargeAmount) : null,
+      medicineChargeAmount: body.medicineChargeAmount != null ? Number(body.medicineChargeAmount) : null,
+      consumablesChargeAmount: body.consumablesChargeAmount != null ? Number(body.consumablesChargeAmount) : null,
+      billingCheckout: billingCheckout ?? null,
       generatedByUserId: Number(userId),
       expiresInHours: body.expiresInHours != null ? Number(body.expiresInHours) : undefined,
     });
@@ -2319,6 +3111,16 @@ exports.listInjectionTokens = async (req: any, res: any) => {
         : q.generatedByUserId != null
           ? Number(q.generatedByUserId)
           : undefined;
+    const medicineSourceFilter =
+      q.medicineSource != null && String(q.medicineSource).trim() !== ""
+        ? normalizeMedicineSourceInput(q.medicineSource, "INTERNAL_CLINIC")
+        : undefined;
+    const encounterKindFilter =
+      q.encounterKind != null && String(q.encounterKind).trim() !== ""
+        ? String(q.encounterKind).trim().toUpperCase().replace(/-/g, "_") === "EXTERNAL_WALK_IN"
+          ? "EXTERNAL_WALK_IN"
+          : "INTERNAL_VISIT"
+        : undefined;
     const result = await injectionTokenService.listTokens(branchId, {
       status: q.status ?? undefined,
       visitId: q.visitId != null ? Number(q.visitId) : undefined,
@@ -2330,6 +3132,8 @@ exports.listInjectionTokens = async (req: any, res: any) => {
       take: q.take != null ? Number(q.take) : undefined,
       validatedByUserId,
       generatedByUserId,
+      medicineSource: medicineSourceFilter,
+      encounterKind: encounterKindFilter,
     });
     return sendClinicSuccess(res, 200, result);
   } catch (e: any) {
@@ -2930,12 +3734,32 @@ exports.getEodStatus = async (req: any, res: any) => {
 exports.eodClose = async (req: any, res: any) => {
   try {
     const branchId = Number(req.clinicBranchId);
+    const userId = req.user?.id;
+    if (!userId) return sendClinicError(res, 401, "Unauthorized", CLINIC_ERROR_CODES.VALIDATION_ERROR);
     const date = req.body?.date ? String(req.body.date) : undefined;
+    const notes = req.body?.notes;
     const status = await eodHandoverService.getEodStatus(branchId, date);
     if (!status.canClose) {
       return sendClinicError(res, 400, "Cannot close day: " + status.blockers.join("; "), CLINIC_ERROR_CODES.VALIDATION_ERROR);
     }
-    return sendClinicSuccess(res, 200, { closed: true, date: status.date }, "Day closed");
+    const record = await eodHandoverService.recordDayClose(branchId, status.date, Number(userId), notes);
+    return sendClinicSuccess(res, 200, {
+      closed: true,
+      date: status.date,
+      closedAt: record.closedAt,
+      closedByUserId: record.closedByUserId,
+    }, "Day closed");
+  } catch (e: any) {
+    return sendClinicError(res, 500, e?.message || "Failed", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+exports.getDayClose = async (req: any, res: any) => {
+  try {
+    const branchId = Number(req.clinicBranchId);
+    const date = req.query?.date ? String(req.query.date) : undefined;
+    const result = await eodHandoverService.getDayClose(branchId, date);
+    return sendClinicSuccess(res, 200, result ?? {});
   } catch (e: any) {
     return sendClinicError(res, 500, e?.message || "Failed", CLINIC_ERROR_CODES.VALIDATION_ERROR);
   }
@@ -3113,7 +3937,9 @@ exports.getStaffCatalogSummary = async (req: any, res: any) => {
     ] = await Promise.all([
       clinicalItemService.listClinicalItems({ orgId, limit: 1, page: 1 }),
       require("./package.service").listPackages({ branchId, limit: 1, page: 1 }),
-      require("../../services/clinicApprovalRequest.service").listByBranch(branchId, { status: "PENDING" }),
+      require("../../services/clinicApprovalRequest.service")
+        .listByBranch(branchId, { status: "PENDING" })
+        .then((r: { items: unknown[]; total: number }) => r.items),
       prisma.service.count({ where: { branchId, status: "ACTIVE" } }),
       prisma.surgeryPackage.count({ where: { branchId, status: "DRAFT" } }),
       prisma.discountPolicy.count({ where: { branchId, status: "ACTIVE" } }),
@@ -3417,7 +4243,7 @@ exports.getBranchSupplyRequestItemSearch = async (req: any, res: any) => {
       ...item,
       variants: (item.variants || []).map((v: any) => {
         const key = `${item.id}_${v.id}`;
-        const st = stockByKey.get(key);
+        const st = stockByKey.get(key) as { currentQty?: unknown; reorderLevel?: unknown } | undefined;
         return {
           ...v,
           currentStock: st ? Number(st.currentQty ?? 0) : null,
@@ -3533,6 +4359,9 @@ exports.postBranchItemStockReceive = async (req: any, res: any) => {
     const expiryDate = body.expiryDate ? new Date(body.expiryDate) : undefined;
     const purchaseCost = body.purchaseCost != null ? parseFloat(String(body.purchaseCost)) : undefined;
     const actorId = req.user?.id;
+    if (expiryDate && expiryDate < new Date()) {
+      return sendClinicError(res, 400, "Expired batch cannot be received", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
     if (batchNo) {
       const data = await clinicalItemStockService.createBranchItemBatch(branchId, itemId, variantId, {
         batchNo,
@@ -3554,7 +4383,7 @@ exports.listBranchInstrumentIssueLogs = async (req: any, res: any) => {
   try {
     const branchId = Number(req.clinicBranchId);
     const status = req.query?.status === "returned" ? "returned" : req.query?.status === "open" ? "open" : undefined;
-    const where = { branchId };
+    const where: { branchId: number; returnedAt?: null | { not: null } } = { branchId };
     if (status === "open") where.returnedAt = null;
     if (status === "returned") where.returnedAt = { not: null };
     const rows = await prisma.instrumentIssueLog.findMany({
@@ -3932,14 +4761,80 @@ exports.listClinicApprovalRequests = async (req: any, res: any) => {
     const status = typeof req.query.status === "string" && ["PENDING", "APPROVED", "REJECTED"].includes(req.query.status)
       ? (req.query.status as "PENDING" | "APPROVED" | "REJECTED")
       : undefined;
-    const requestType = typeof req.query.requestType === "string" ? req.query.requestType : undefined;
+    const requestType =
+      typeof req.query.requestType === "string" && req.query.requestType.length > 0 ? req.query.requestType : undefined;
+    const doctorQueue =
+      req.query.doctorQueue === "1" ||
+      req.query.doctorQueue === "true" ||
+      String(req.query.doctorQueue).toLowerCase() === "yes";
+    let requestTypes: string[] | undefined;
+    if (typeof req.query.requestTypes === "string" && req.query.requestTypes.trim()) {
+      requestTypes = req.query.requestTypes.split(",").map((s: string) => s.trim()).filter(Boolean);
+    }
+    const requestedByUserId =
+      req.query.requestedByUserId != null && String(req.query.requestedByUserId).trim() !== ""
+        ? Number(req.query.requestedByUserId)
+        : undefined;
+    const memberId =
+      req.query.memberId != null && String(req.query.memberId).trim() !== "" ? Number(req.query.memberId) : undefined;
+    const from = req.query.from ? new Date(String(req.query.from)) : undefined;
+    const to = req.query.to ? new Date(String(req.query.to)) : undefined;
+    const q = typeof req.query.q === "string" ? req.query.q : undefined;
+    const limit = req.query.limit != null ? Number(req.query.limit) : undefined;
+    const offset = req.query.offset != null ? Number(req.query.offset) : undefined;
+
     const data = await clinicApprovalRequestService.listByBranch(branchId, {
       status,
       requestType: requestType as any,
+      doctorQueueOnly: doctorQueue || undefined,
+      requestTypes: requestTypes as any,
+      requestedByUserId: requestedByUserId && Number.isFinite(requestedByUserId) ? requestedByUserId : undefined,
+      memberId: memberId && Number.isFinite(memberId) ? memberId : undefined,
+      createdFrom: from && !Number.isNaN(from.getTime()) ? from : undefined,
+      createdTo: to && !Number.isNaN(to.getTime()) ? to : undefined,
+      q,
+      limit,
+      offset,
     });
     return sendClinicSuccess(res, 200, data);
   } catch (e: any) {
     return sendClinicError(res, 500, e?.message || "Failed to list approval requests", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+exports.getClinicApprovalRequestsSummary = async (req: any, res: any) => {
+  try {
+    const branchId = Number(req.clinicBranchId);
+    const doctorQueue =
+      req.query.doctorQueue === "1" ||
+      req.query.doctorQueue === "true" ||
+      String(req.query.doctorQueue).toLowerCase() === "yes";
+    const data = await clinicApprovalRequestService.getBranchApprovalSummary(branchId, {
+      doctorQueueOnly: doctorQueue || undefined,
+    });
+    return sendClinicSuccess(res, 200, data);
+  } catch (e: any) {
+    return sendClinicError(res, 500, e?.message || "Failed to get approval summary", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+exports.getClinicApprovalRequestById = async (req: any, res: any) => {
+  try {
+    const branchId = Number(req.clinicBranchId);
+    const requestId = Number(req.params.requestId);
+    if (!requestId || !Number.isFinite(requestId)) {
+      return sendClinicError(res, 400, "Invalid request id", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+    const data = await clinicApprovalRequestService.getByIdForBranchWithLogs(branchId, requestId);
+    return sendClinicSuccess(res, 200, data);
+  } catch (e: any) {
+    if (e?.message === "REQUEST_BRANCH_MISMATCH") {
+      return sendClinicError(res, 403, "Request does not belong to this branch", CLINIC_ERROR_CODES.BRANCH_ACCESS_DENIED);
+    }
+    if (e?.message === "Clinic approval request not found") {
+      return sendClinicError(res, 404, "Approval request not found", CLINIC_ERROR_CODES.NOT_FOUND);
+    }
+    return sendClinicError(res, 500, e?.message || "Failed to get approval request", CLINIC_ERROR_CODES.VALIDATION_ERROR);
   }
 };
 
@@ -3990,6 +4885,12 @@ exports.decideClinicApprovalRequest = async (req: any, res: any) => {
     const body = req.body && typeof req.body === "object" ? req.body : {};
     const decision = body.decision === "APPROVED" || body.decision === "REJECTED" ? body.decision : null;
     if (!decision) return sendClinicError(res, 400, "decision required: APPROVED or REJECTED", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    if (decision === "REJECTED") {
+      const rr = body.rejectReason;
+      if (typeof rr !== "string" || !rr.trim()) {
+        return sendClinicError(res, 400, "rejectReason is required when rejecting", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+      }
+    }
 
     const result = await clinicApprovalRequestService.decide(requestId, decision, userId, body.rejectReason);
     return sendClinicSuccess(res, 200, result);

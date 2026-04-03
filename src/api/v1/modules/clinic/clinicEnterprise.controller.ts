@@ -705,7 +705,7 @@ exports.paySettlementBatch = async (req: any, res: any) => {
       paidByUserId: userId,
       paymentMethod: body.paymentMethod ?? "BANK_TRANSFER",
       amount: body.amount != null ? Number(body.amount) : undefined,
-      reference: body.reference ?? undefined,
+      receiptRef: body.reference ?? body.receiptRef ?? undefined,
     });
     return sendClinicSuccess(res, 200, result);
   } catch (e: any) {
@@ -719,9 +719,10 @@ exports.addSettlementBatchAdjustment = async (req: any, res: any) => {
     const branchId = req.clinicBranchId;
     const body = req.body || {};
     const result = await settlementBatchService.addBatchAdjustment(batchId, branchId, {
-      type: body.type ?? "DEDUCTION",
+      adjustmentType: body.adjustmentType ?? body.type ?? "DEDUCTION",
       amount: Number(body.amount),
       reason: body.reason ?? undefined,
+      createdByUserId: req.user?.id ?? undefined,
     });
     return sendClinicSuccess(res, 201, result);
   } catch (e: any) {
@@ -886,6 +887,19 @@ exports.getProfitabilityReport = async (req: any, res: any) => {
   }
 };
 
+exports.getSurgeryRevenueReport = async (req: any, res: any) => {
+  try {
+    const branchId = Number(req.params.branchId);
+    const from = req.query.from ? String(req.query.from) : undefined;
+    const to = req.query.to ? String(req.query.to) : undefined;
+    if (!from || !to) return sendClinicError(res, 400, "from and to (YYYY-MM-DD) required", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    const result = await clinicReportsService.getSurgeryRevenueReport(branchId, from, to);
+    return sendClinicSuccess(res, 200, result);
+  } catch (e: any) {
+    return sendClinicError(res, 500, e?.message || "Failed", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
 exports.getSettlementSummaryReport = async (req: any, res: any) => {
   try {
     const branchId = Number(req.params.branchId);
@@ -932,6 +946,42 @@ exports.getDoctorContributionReport = async (req: any, res: any) => {
     const to = req.query.to ? String(req.query.to) : undefined;
     if (!from || !to) return sendClinicError(res, 400, "from and to (YYYY-MM-DD) required", CLINIC_ERROR_CODES.VALIDATION_ERROR);
     const result = await clinicReportsService.getDoctorContributionReport(branchId, from, to);
+    return sendClinicSuccess(res, 200, result);
+  } catch (e: any) {
+    return sendClinicError(res, 500, e?.message || "Failed", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+const VISIT_COMPLETION_AUDIT_MAX_DAYS = 365;
+
+exports.getVisitCompletionAuditReport = async (req: any, res: any) => {
+  try {
+    const branchId = Number(req.params.branchId);
+    const today = new Date().toISOString().slice(0, 10);
+    const defaultFrom = new Date();
+    defaultFrom.setDate(defaultFrom.getDate() - 30);
+    let dateFrom = (req.query.from && String(req.query.from).trim()) || defaultFrom.toISOString().slice(0, 10);
+    let dateTo = (req.query.to && String(req.query.to).trim()) || today;
+    const fromD = new Date(dateFrom);
+    const toD = new Date(dateTo);
+    if (fromD > toD) {
+      return sendClinicError(res, 400, "from must be before or equal to to", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+    const spanDays = Math.ceil((toD.getTime() - fromD.getTime()) / (24 * 60 * 60 * 1000));
+    if (spanDays > VISIT_COMPLETION_AUDIT_MAX_DAYS) {
+      return sendClinicError(
+        res,
+        400,
+        `Date range must not exceed ${VISIT_COMPLETION_AUDIT_MAX_DAYS} days`,
+        CLINIC_ERROR_CODES.VALIDATION_ERROR
+      );
+    }
+    const maskOverrideReason = req.query.maskOverrideReason === "true" || req.query.maskOverrideReason === "1";
+    const recentLimit = req.query.recentLimit != null ? parseInt(String(req.query.recentLimit), 10) : undefined;
+    const result = await clinicReportsService.getVisitCompletionAuditSummary(branchId, dateFrom, dateTo, {
+      maskOverrideReason,
+      recentLimit,
+    });
     return sendClinicSuccess(res, 200, result);
   } catch (e: any) {
     return sendClinicError(res, 500, e?.message || "Failed", CLINIC_ERROR_CODES.VALIDATION_ERROR);

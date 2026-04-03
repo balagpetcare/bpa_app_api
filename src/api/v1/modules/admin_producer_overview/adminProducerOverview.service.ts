@@ -218,13 +218,13 @@ export async function getTrends(
     GROUP BY DATE(pa."reviewedAt")
     ORDER BY date
   `;
-  const submittedByDate = new Map(
+  const submittedByDate = new Map<string, number>(
     apprSubRows.map((r) => {
       const d = r.date instanceof Date ? r.date.toISOString().slice(0, 10) : String(r.date).slice(0, 10);
       return [d, Number(r.submitted)];
     })
   );
-  const reviewedByDate = new Map(
+  const reviewedByDate = new Map<string, { approved: number; rejected: number }>(
     apprRevRows.map((r) => {
       const d = r.date instanceof Date ? r.date.toISOString().slice(0, 10) : String(r.date).slice(0, 10);
       return [d, { approved: Number(r.approved), rejected: Number(r.rejected) }];
@@ -247,13 +247,13 @@ export async function getTrends(
     GROUP BY DATE(po."updatedAt")
     ORDER BY date
   `;
-  const incidentsByDate = new Map(
+  const incidentsByDate = new Map<string, number>(
     incRows.map((r) => {
       const d = r.date instanceof Date ? r.date.toISOString().slice(0, 10) : String(r.date).slice(0, 10);
       return [d, Number(r.incidents)];
     })
   );
-  const suspensionsByDate = new Map(
+  const suspensionsByDate = new Map<string, number>(
     susRows.map((r) => {
       const d = r.date instanceof Date ? r.date.toISOString().slice(0, 10) : String(r.date).slice(0, 10);
       return [d, Number(r.suspensions)];

@@ -4,6 +4,13 @@
  * Align with Prisma MemberRole enum.
  */
 
+/** Prisma select fragment: Branch has no scalar `type`; use `types` → BranchType. */
+export const prismaBranchSelectTypeCodes = {
+  id: true,
+  name: true,
+  types: { select: { type: { select: { code: true, nameEn: true } } } },
+} as const;
+
 /** Normalize role string to uppercase enum style; accept common UI aliases. */
 export function normalizeRole(role: string | null | undefined): string {
   if (role == null || role === "") return "";
@@ -23,10 +30,14 @@ export const BRANCH_TYPE_CODES = ["SHOP", "PET_SHOP", "CLINIC", "DELIVERY_HUB", 
 export const ALLOWED_INVITE_ROLES_BY_BRANCH_TYPE: Record<string, string[]> = {
   SHOP: ["BRANCH_MANAGER", "BRANCH_STAFF", "SELLER"],
   PET_SHOP: ["BRANCH_MANAGER", "BRANCH_STAFF", "SELLER"],
-  CLINIC: ["BRANCH_MANAGER", "BRANCH_STAFF", "SELLER"],
+  /** Align with unified staff orchestration (doctor onboarding via inviteAsDoctor). */
+  CLINIC: ["BRANCH_MANAGER", "BRANCH_STAFF", "SELLER", "DOCTOR"],
+  PHARMACY: ["BRANCH_MANAGER", "BRANCH_STAFF", "SELLER", "PHARMACIST"],
   DELIVERY_HUB: ["DELIVERY_MANAGER", "DELIVERY_STAFF"],
   DELIVERY: ["DELIVERY_MANAGER", "DELIVERY_STAFF"],
   HUB: ["DELIVERY_MANAGER", "DELIVERY_STAFF"],
+  WAREHOUSE: ["WAREHOUSE_MANAGER", "RECEIVING_STAFF", "DISPATCH_STAFF", "DELIVERY_STAFF"],
+  CENTRAL_WAREHOUSE: ["WAREHOUSE_MANAGER", "RECEIVING_STAFF", "DISPATCH_STAFF", "DELIVERY_STAFF"],
 };
 
 /** Default when branch type is unknown: allow same as SHOP. */
@@ -36,6 +47,7 @@ const DEFAULT_ALLOWED_ROLES = ["BRANCH_MANAGER", "BRANCH_STAFF", "SELLER"];
 export const ROLES_MANAGER_CANNOT_INVITE: string[] = [
   "BRANCH_MANAGER",
   "DELIVERY_MANAGER",
+  "WAREHOUSE_MANAGER",
   "OWNER",
   "ORG_ADMIN",
   "ORG_OWNER",
@@ -49,6 +61,8 @@ export const ROLES_MANAGER_CAN_INVITE: string[] = [
   "BRANCH_STAFF",
   "SELLER",
   "DELIVERY_STAFF",
+  "RECEIVING_STAFF",
+  "DISPATCH_STAFF",
 ];
 
 /** Resolve primary branch type code from branch.types[].type.code. */
@@ -91,7 +105,7 @@ export function getInviteableRolesForInviter(
   if (isOwnerLevel) return allowedForBranch;
 
   const isManager =
-    inviter === "BRANCH_MANAGER" || inviter === "DELIVERY_MANAGER";
+    inviter === "BRANCH_MANAGER" || inviter === "DELIVERY_MANAGER" || inviter === "WAREHOUSE_MANAGER";
 
   if (isManager) {
     return ROLES_MANAGER_CAN_INVITE.filter((r) => allowedForBranch.includes(r));
@@ -124,12 +138,12 @@ export function canInviteRole(
   if (isOwnerLevel) return { allowed: true };
 
   const isManager =
-    inviter === "BRANCH_MANAGER" || inviter === "DELIVERY_MANAGER";
+    inviter === "BRANCH_MANAGER" || inviter === "DELIVERY_MANAGER" || inviter === "WAREHOUSE_MANAGER";
   if (isManager) {
     if (ROLES_MANAGER_CANNOT_INVITE.includes(target)) {
       return {
         allowed: false,
-        message: "Branch manager cannot invite another branch manager or owner-level role",
+        message: "Manager cannot invite another manager or owner-level role",
       };
     }
     if (!ROLES_MANAGER_CAN_INVITE.includes(target)) {

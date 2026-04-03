@@ -28,7 +28,7 @@ export async function createApprovalRequest(data: CreateApprovalInput): Promise<
       requestedByUserId: data.requestedByUserId,
       status: "PENDING",
     },
-    include: { requestedBy: { select: { id: true }, profile: { select: { displayName: true } } } },
+    include: { requestedBy: { select: { id: true, profile: { select: { displayName: true } } } } },
   });
 }
 
@@ -58,14 +58,14 @@ export async function processApproval(
   ]);
   return prisma.medicineApprovalRequest.findUnique({
     where: { id: requestId },
-    include: { actions: true, requestedBy: { select: { id: true }, profile: { select: { displayName: true } } } },
+    include: { actions: true, requestedBy: { select: { id: true, profile: { select: { displayName: true } } } } },
   });
 }
 
 export async function getPendingApprovals(branchId: number): Promise<any[]> {
   return prisma.medicineApprovalRequest.findMany({
     where: { branchId, status: "PENDING" },
-    include: { requestedBy: { select: { id: true }, profile: { select: { displayName: true } } } },
+    include: { requestedBy: { select: { id: true, profile: { select: { displayName: true } } } } },
     orderBy: { createdAt: "desc" },
   });
 }

@@ -1,5 +1,17 @@
 import prisma from "../../../../infrastructure/db/prismaClient";
 import { INVENTORY_ERROR_CODES } from "../../constants/inventoryErrors";
+import {
+  getFrozenRecallLotIds,
+  getFrozenRecallLotIdsWithTx,
+  getPendingQcHoldByLot,
+  getPendingQcHoldByLotWithTx,
+  resolveOrgIdForLocation,
+  resolveOrgIdForLocationWithTx,
+} from "./stockAvailability.service";
+
+function isInboundBalanceCreateType(type: string): boolean {
+  return type === "OPENING" || type === "TRANSFER_IN" || type === "QUARANTINE_IN";
+}
 
 /**
  * Ledger Service - Handles immutable StockLedger writes and StockBalance/StockLotBalance updates
@@ -36,19 +48,27 @@ type LedgerEntryInput = {
   createdByUserId?: number;
 };
 
+function isReserveOnlineLike(type: string): boolean {
+  return type === "RESERVE_ONLINE" || type === "RESERVE_FULFILLMENT";
+}
+
+function isReleaseReserveLike(type: string): boolean {
+  return type === "RELEASE_RESERVE" || type === "RELEASE_FULFILLMENT_RESERVE";
+}
+
 function applyBalanceDelta(
   type: string,
   currentOnHand: number,
   currentReserved: number,
   quantityDelta: number
 ): { onHand: number; reserved: number } {
-  if (type === "RESERVE_ONLINE") {
+  if (isReserveOnlineLike(type)) {
     return {
       onHand: currentOnHand - quantityDelta,
       reserved: currentReserved + quantityDelta,
     };
   }
-  if (type === "RELEASE_RESERVE") {
+  if (isReleaseReserveLike(type)) {
     return {
       onHand: currentOnHand - quantityDelta, // quantityDelta is negative
       reserved: currentReserved + quantityDelta,
@@ -64,8 +84,15 @@ function applyBalanceDelta(
  * Internal: record ledger entry using given transaction client.
  * Rejects expired lots for outbound operations (quantityDelta < 0), except when
  * type is EXPIRED (expiry job writing off expired stock).
+ * Also rejects recalled lots for outbound operations (except ADJUSTMENT for quarantine).
  */
 async function recordLedgerEntryInTx(tx: any, data: LedgerEntryInput) {
+    let resolvedOrgId: number | null | undefined = data.orgId ?? undefined;
+    if (resolvedOrgId == null) {
+      resolvedOrgId = await resolveOrgIdForLocationWithTx(tx, data.locationId);
+    }
+
+    // Safety check 1: Reject expired lots for outbound
     if (data.lotId && data.quantityDelta < 0 && data.type !== "EXPIRED") {
       const lot = await tx.stockLot.findUnique({
         where: { id: data.lotId },
@@ -78,10 +105,40 @@ async function recordLedgerEntryInTx(tx: any, data: LedgerEntryInput) {
       }
     }
 
+    // Safety check 2: Reject recalled lots for outbound (except quarantine transfers), unless allocation explicitly released
+    const recallOutboundBypass =
+      data.refType === "RECALL_QUARANTINE" ||
+      data.refType === "QC_QUARANTINE_RELEASE" ||
+      data.refType === "QC_QUARANTINE_DISPOSE";
+    if (data.lotId && data.quantityDelta < 0 && data.type !== "EXPIRED" && !recallOutboundBypass) {
+      const recallWhere: Record<string, unknown> = {
+        lotId: data.lotId,
+        status: "ACTIVE",
+        allocationReleasedAt: null,
+      };
+      if (resolvedOrgId != null) {
+        recallWhere.orgId = resolvedOrgId;
+      }
+      const recallRows = await tx.batchRecall.findMany({
+        where: recallWhere as any,
+        take: 1,
+        select: { id: true, severity: true },
+      });
+      const activeRecall = recallRows[0];
+
+      if (activeRecall) {
+        const err = new Error(
+          `Lot is under active ${activeRecall.severity} recall (Recall ID: ${activeRecall.id}). Cannot process outbound movement.`
+        );
+        (err as any).code = INVENTORY_ERROR_CODES.LOT_RECALLED;
+        throw err;
+      }
+    }
+
     // 1. Create ledger entry (immutable)
     const ledger = await tx.stockLedger.create({
       data: {
-        orgId: data.orgId ?? null,
+        orgId: resolvedOrgId ?? null,
         locationId: data.locationId,
         variantId: data.variantId,
         lotId: data.lotId ?? null,
@@ -129,15 +186,15 @@ async function recordLedgerEntryInTx(tx: any, data: LedgerEntryInput) {
           data: { onHandQty: newOnHand, reservedQty: newReserved },
         });
       } else {
-        if (data.type !== "OPENING" && data.type !== "TRANSFER_IN" && data.quantityDelta < 0) {
+        if (!isInboundBalanceCreateType(data.type) && data.quantityDelta < 0) {
           throw new Error("Cannot create negative lot balance for non-inbound entry");
         }
         await tx.stockLotBalance.create({
           data: {
             locationId: data.locationId,
             lotId: data.lotId,
-            onHandQty: data.type === "RESERVE_ONLINE" ? -data.quantityDelta : newOnHand,
-            reservedQty: data.type === "RESERVE_ONLINE" ? data.quantityDelta : newReserved,
+            onHandQty: isReserveOnlineLike(data.type) ? -data.quantityDelta : newOnHand,
+            reservedQty: isReserveOnlineLike(data.type) ? data.quantityDelta : newReserved,
           },
         });
       }
@@ -180,15 +237,15 @@ async function recordLedgerEntryInTx(tx: any, data: LedgerEntryInput) {
         data: { onHandQty: newOnHand, reservedQty: newReserved },
       });
     } else {
-      if (data.type !== "OPENING" && data.type !== "TRANSFER_IN" && data.quantityDelta < 0) {
+      if (!isInboundBalanceCreateType(data.type) && data.quantityDelta < 0) {
         throw new Error("Cannot create negative balance for non-inbound entry");
       }
       await tx.stockBalance.create({
         data: {
           locationId: data.locationId,
           variantId: data.variantId,
-          onHandQty: data.type === "RESERVE_ONLINE" ? -data.quantityDelta : data.quantityDelta,
-          reservedQty: data.type === "RESERVE_ONLINE" ? data.quantityDelta : 0,
+          onHandQty: isReserveOnlineLike(data.type) ? -data.quantityDelta : data.quantityDelta,
+          reservedQty: isReserveOnlineLike(data.type) ? data.quantityDelta : 0,
         },
       });
     }
@@ -260,15 +317,15 @@ async function recordMultipleLedgerEntries(
             data: { onHandQty: newOnHand, reservedQty: newReserved },
           });
         } else {
-          if (entry.type !== "OPENING" && entry.type !== "TRANSFER_IN" && entry.quantityDelta < 0) {
+          if (!isInboundBalanceCreateType(entry.type) && entry.quantityDelta < 0) {
             throw new Error("Cannot create negative lot balance");
           }
           await tx.stockLotBalance.create({
             data: {
               locationId: entry.locationId,
               lotId: entry.lotId,
-              onHandQty: entry.type === "RESERVE_ONLINE" ? -entry.quantityDelta : newOnHand,
-              reservedQty: entry.type === "RESERVE_ONLINE" ? entry.quantityDelta : newReserved,
+              onHandQty: isReserveOnlineLike(entry.type) ? -entry.quantityDelta : newOnHand,
+              reservedQty: isReserveOnlineLike(entry.type) ? entry.quantityDelta : newReserved,
             },
           });
         }
@@ -306,15 +363,15 @@ async function recordMultipleLedgerEntries(
           data: { onHandQty: newOnHand, reservedQty: newReserved },
         });
       } else {
-        if (entry.type !== "OPENING" && entry.type !== "TRANSFER_IN" && entry.quantityDelta < 0) {
+        if (!isInboundBalanceCreateType(entry.type) && entry.quantityDelta < 0) {
           throw new Error("Cannot create negative balance");
         }
         await tx.stockBalance.create({
           data: {
             locationId: entry.locationId,
             variantId: entry.variantId,
-            onHandQty: entry.type === "RESERVE_ONLINE" ? -entry.quantityDelta : entry.quantityDelta,
-            reservedQty: entry.type === "RESERVE_ONLINE" ? entry.quantityDelta : 0,
+            onHandQty: isReserveOnlineLike(entry.type) ? -entry.quantityDelta : entry.quantityDelta,
+            reservedQty: isReserveOnlineLike(entry.type) ? entry.quantityDelta : 0,
           },
         });
       }
@@ -345,6 +402,7 @@ async function getAvailableLotsFEFOWithTx(tx: any, locationId: number, variantId
           mfgDate: true,
           expDate: true,
           variantId: true,
+          orgId: true,
         },
       },
     },
@@ -352,17 +410,36 @@ async function getAvailableLotsFEFOWithTx(tx: any, locationId: number, variantId
       lot: { expDate: "asc" },
     },
   });
-  return lotBalances.map((lb: any) => ({
-    lotId: lb.lotId,
-    lot: lb.lot,
-    onHandQty: lb.onHandQty,
-    reservedQty: lb.reservedQty,
-    availableQty: lb.onHandQty - lb.reservedQty,
-  }));
+  const orgId = await resolveOrgIdForLocationWithTx(tx, locationId);
+  let recallFrozen = new Set<number>();
+  let qcPending = new Map<number, number>();
+  if (orgId != null && lotBalances.length) {
+    const lotIds = lotBalances.map((lb: any) => lb.lotId);
+    [recallFrozen, qcPending] = await Promise.all([
+      getFrozenRecallLotIdsWithTx(tx, orgId, lotIds),
+      getPendingQcHoldByLotWithTx(tx, orgId, locationId),
+    ]);
+  }
+  return lotBalances
+    .filter((lb: any) => !recallFrozen.has(lb.lotId))
+    .map((lb: any) => {
+      const qcBlock = orgId != null ? qcPending.get(lb.lotId) ?? 0 : 0;
+      const effOnHand = Math.max(0, lb.onHandQty - qcBlock);
+      const availableQty = Math.max(0, effOnHand - lb.reservedQty);
+      return {
+        lotId: lb.lotId,
+        lot: lb.lot,
+        onHandQty: effOnHand,
+        reservedQty: lb.reservedQty,
+        availableQty,
+      };
+    })
+    .filter((row: any) => row.onHandQty > 0);
 }
 
 /**
  * Commit sale using FEFO inside an existing transaction (for POS atomicity).
+ * Captures COGS (unitCost) for each lot at sale time.
  */
 async function saleFEFOInTx(
   tx: any,
@@ -384,12 +461,17 @@ async function saleFEFOInTx(
     if (remaining <= 0) break;
     const take = Math.min(remaining, item.onHandQty);
     if (take <= 0) continue;
+
+    // Get unit cost for COGS tracking (using global prisma for read-only lookup)
+    const unitCost = await getLotUnitCost(item.lotId);
+
     entries.push({
       locationId: params.locationId,
       variantId: params.variantId,
       lotId: item.lotId,
       type: params.saleType,
       quantityDelta: -take,
+      unitCost,
       refType: params.refType || "ORDER",
       refId: params.refId || null,
       createdByUserId: params.createdByUserId,
@@ -484,6 +566,7 @@ async function getAvailableLotsFEFO(locationId: number, variantId: number) {
           mfgDate: true,
           expDate: true,
           variantId: true,
+          orgId: true,
         },
       },
     },
@@ -492,13 +575,32 @@ async function getAvailableLotsFEFO(locationId: number, variantId: number) {
     },
   });
 
-  return lotBalances.map((lb) => ({
-    lotId: lb.lotId,
-    lot: lb.lot,
-    onHandQty: lb.onHandQty,
-    reservedQty: lb.reservedQty,
-    availableQty: lb.onHandQty - lb.reservedQty,
-  }));
+  const orgId = await resolveOrgIdForLocation(locationId);
+  let recallFrozen = new Set<number>();
+  let qcPending = new Map<number, number>();
+  if (orgId != null && lotBalances.length) {
+    const lotIds = lotBalances.map((lb) => lb.lotId);
+    [recallFrozen, qcPending] = await Promise.all([
+      getFrozenRecallLotIds(orgId, lotIds),
+      getPendingQcHoldByLot(orgId, locationId),
+    ]);
+  }
+
+  return lotBalances
+    .filter((lb) => !recallFrozen.has(lb.lotId))
+    .map((lb) => {
+      const qcBlock = orgId != null ? qcPending.get(lb.lotId) ?? 0 : 0;
+      const effOnHand = Math.max(0, lb.onHandQty - qcBlock);
+      const availableQty = Math.max(0, effOnHand - lb.reservedQty);
+      return {
+        lotId: lb.lotId,
+        lot: lb.lot,
+        onHandQty: effOnHand,
+        reservedQty: lb.reservedQty,
+        availableQty,
+      };
+    })
+    .filter((row) => row.onHandQty > 0);
 }
 
 /**
@@ -545,8 +647,44 @@ async function reserveFEFO(params: {
 }
 
 /**
+ * Get weighted average cost for a lot based on ledger history.
+ * Used for COGS calculation at sale time.
+ */
+async function getLotUnitCost(lotId: number): Promise<number | null> {
+  const inboundEntries = await prisma.stockLedger.findMany({
+    where: {
+      lotId,
+      type: { in: ["GRN_IN", "PURCHASE_IN", "TRANSFER_IN", "OPENING", "RETURN_IN"] },
+      quantityDelta: { gt: 0 },
+      unitCost: { not: null },
+    },
+    orderBy: { createdAt: "desc" },
+    take: 10,
+    select: {
+      quantityDelta: true,
+      unitCost: true,
+    },
+  });
+
+  if (inboundEntries.length === 0) return null;
+
+  let totalQty = 0;
+  let totalCost = 0;
+  for (const entry of inboundEntries) {
+    const qty = entry.quantityDelta;
+    const cost = Number(entry.unitCost);
+    totalQty += qty;
+    totalCost += qty * cost;
+  }
+
+  if (totalQty === 0) return null;
+  return totalCost / totalQty;
+}
+
+/**
  * Commit sale using FEFO (deduct from earliest expiring lots).
  * Creates SALE_POS, SALE_ONLINE, or SALE_CLINIC + optional RELEASE_RESERVE entries.
+ * Captures COGS (unitCost) for each lot at sale time.
  */
 async function saleFEFO(params: {
   locationId: number;
@@ -567,12 +705,16 @@ async function saleFEFO(params: {
     const take = Math.min(remaining, item.onHandQty);
     if (take <= 0) continue;
 
+    // Get unit cost for COGS tracking
+    const unitCost = await getLotUnitCost(item.lotId);
+
     entries.push({
       locationId: params.locationId,
       variantId: params.variantId,
       lotId: item.lotId,
       type: params.saleType,
       quantityDelta: -take,
+      unitCost,
       refType: params.refType || "ORDER",
       refId: params.refId || null,
       createdByUserId: params.createdByUserId,

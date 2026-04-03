@@ -101,8 +101,9 @@ export async function recordAuditCount(
     const key = `${line.clinicalItemId}-${line.variantId ?? 0}-${line.batchNo ?? ""}`;
     const existing = lineMap.get(key);
     if (existing) {
+      const ex = existing as { id: number };
       await prisma.clinicalStockAuditLine.update({
-        where: { id: existing.id },
+        where: { id: ex.id },
         data: {
           systemQty: line.systemQty,
           physicalQty: line.physicalQty,

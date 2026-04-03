@@ -4,7 +4,11 @@
  */
 const router = require("express").Router();
 const authenticateToken = require("../../../../middleware/auth.middleware");
-const { requireClinicPermission, requireClinicKioskToken } = require("./clinic.middleware");
+const {
+  requireClinicPermission,
+  requireClinicDoctorStaffForPrescriptionAuthoring,
+  requireClinicKioskToken,
+} = require("./clinic.middleware");
 const ctrl = require("./clinic.controller");
 const staffDoctorCtrl = require("./staffDoctorManagement.controller");
 
@@ -114,6 +118,48 @@ router.put(
   requireClinicPermission("clinic.doctors.manage_services"),
   staffDoctorCtrl.putServiceMatrix
 );
+// Doctor service-assignment APIs are also mounted early in api/v1/routes.ts (before router.use("/clinic"))
+// so `npm start` with stale dist still resolves them; keep definitions here in sync.
+router.get(
+  "/branches/:branchId/doctors/service-assignment/summary",
+  requireClinicPermission("clinic.doctors.view", "clinic.doctors.manage_services"),
+  staffDoctorCtrl.getServiceAssignmentSummary
+);
+router.get(
+  "/branches/:branchId/doctors/service-assignment/templates",
+  requireClinicPermission("clinic.doctors.view", "clinic.doctors.manage_services"),
+  staffDoctorCtrl.getServiceAssignmentTemplates
+);
+router.post(
+  "/branches/:branchId/doctors/service-assignment/templates",
+  requireClinicPermission("clinic.doctors.manage_services"),
+  staffDoctorCtrl.postServiceAssignmentTemplate
+);
+router.patch(
+  "/branches/:branchId/doctors/service-assignment/templates/:templateId",
+  requireClinicPermission("clinic.doctors.manage_services"),
+  staffDoctorCtrl.patchServiceAssignmentTemplate
+);
+router.delete(
+  "/branches/:branchId/doctors/service-assignment/templates/:templateId",
+  requireClinicPermission("clinic.doctors.manage_services"),
+  staffDoctorCtrl.deleteServiceAssignmentTemplate
+);
+router.post(
+  "/branches/:branchId/doctors/service-assignment/templates/:templateId/apply",
+  requireClinicPermission("clinic.doctors.manage_services"),
+  staffDoctorCtrl.postApplyServiceAssignmentTemplate
+);
+router.get(
+  "/branches/:branchId/doctors/:memberId/service-assignment",
+  requireClinicPermission("clinic.doctors.view", "clinic.doctors.manage_services"),
+  staffDoctorCtrl.getServiceAssignmentDetail
+);
+router.patch(
+  "/branches/:branchId/doctors/:memberId/service-assignment/bulk",
+  requireClinicPermission("clinic.doctors.manage_services"),
+  staffDoctorCtrl.patchServiceAssignmentBulk
+);
 router.get(
   "/branches/:branchId/doctors/package-matrix",
   requireClinicPermission("clinic.doctors.view", "clinic.doctors.manage_packages"),
@@ -156,7 +202,7 @@ router.get(
 );
 router.post(
   "/branches/:branchId/doctors/approvals/:requestId/action",
-  requireClinicPermission("approvals.view", "approvals.manage"),
+  requireClinicPermission("approvals.manage"),
   staffDoctorCtrl.postApprovalAction
 );
 
@@ -295,25 +341,164 @@ router.get(
   requireClinicPermission("clinic.doctors.view"),
   staffDoctorCtrl.getDoctorAuditLog
 );
+router.get(
+  "/branches/:branchId/doctors/:memberId/fee-history",
+  requireClinicPermission("clinic.doctors.view", "clinic.services.manage", "manager.pricing.view"),
+  ctrl.getDoctorFeeHistory
+);
+
+router.get(
+  "/branches/:branchId/service-pricing/matrix",
+  requireClinicPermission(
+    "manager.pricing.view",
+    "clinic.services.manage",
+    "clinic.appointments.read",
+    "clinic.appointments.manage"
+  ),
+  ctrl.getServicePricingMatrix
+);
 
 router.get(
   "/branches/:branchId/services",
-  requireClinicPermission("clinic.appointments.read", "clinic.appointments.manage"),
+  requireClinicPermission(
+    "clinic.appointments.read",
+    "clinic.appointments.manage",
+    "clinic.services.manage",
+    "manager.pricing.view"
+  ),
   ctrl.getClinicServices
 );
 router.post(
   "/branches/:branchId/services",
-  requireClinicPermission("clinic.appointments.manage"),
+  requireClinicPermission("clinic.appointments.manage", "clinic.services.manage"),
   ctrl.createClinicService
+);
+
+// --- Enterprise Surgery Module ---
+const surgeryCtrl = require("./surgery.controller");
+router.get(
+  "/branches/:branchId/surgeries",
+  requireClinicPermission("clinic.surgery.read"),
+  surgeryCtrl.listSurgeries
+);
+// OT room conflict (must be before /:id)
+router.get(
+  "/branches/:branchId/surgeries/room-conflict",
+  requireClinicPermission("clinic.surgery.read"),
+  surgeryCtrl.checkRoomConflict
+);
+router.get(
+  "/branches/:branchId/surgeries/:id",
+  requireClinicPermission("clinic.surgery.read"),
+  surgeryCtrl.getSurgeryById
+);
+router.post(
+  "/branches/:branchId/surgeries",
+  requireClinicPermission("clinic.surgery.create"),
+  surgeryCtrl.createSurgery
+);
+router.patch(
+  "/branches/:branchId/surgeries/:id",
+  requireClinicPermission("clinic.surgery.manage"),
+  surgeryCtrl.updateSurgery
+);
+router.post(
+  "/branches/:branchId/surgeries/:id/status",
+  requireClinicPermission("clinic.surgery.manage"),
+  surgeryCtrl.surgeryStatus
+);
+router.post(
+  "/branches/:branchId/surgeries/:id/staff",
+  requireClinicPermission("clinic.surgery.manage"),
+  surgeryCtrl.addSurgeryStaff
+);
+router.patch(
+  "/branches/:branchId/surgeries/:id/staff/:staffId",
+  requireClinicPermission("clinic.surgery.manage"),
+  surgeryCtrl.updateSurgeryStaff
+);
+router.delete(
+  "/branches/:branchId/surgeries/:id/staff/:staffId",
+  requireClinicPermission("clinic.surgery.manage"),
+  surgeryCtrl.removeSurgeryStaff
+);
+// Checklist (Phase 2)
+router.get(
+  "/branches/:branchId/surgeries/:id/checklist",
+  requireClinicPermission("clinic.surgery.read"),
+  surgeryCtrl.getChecklist
+);
+router.post(
+  "/branches/:branchId/surgeries/:id/checklist",
+  requireClinicPermission("clinic.surgery.manage"),
+  surgeryCtrl.addChecklistItem
+);
+router.patch(
+  "/branches/:branchId/surgeries/:id/checklist/:itemId",
+  requireClinicPermission("clinic.surgery.manage"),
+  surgeryCtrl.updateChecklistItem
+);
+// Consumables (Phase 2)
+router.get(
+  "/branches/:branchId/surgeries/:id/consumables",
+  requireClinicPermission("clinic.surgery.read"),
+  surgeryCtrl.listConsumables
+);
+router.post(
+  "/branches/:branchId/surgeries/:id/consumables",
+  requireClinicPermission("clinic.surgery.manage"),
+  surgeryCtrl.planConsumables
+);
+// Billing (Phase 3)
+router.get(
+  "/branches/:branchId/surgeries/:id/billing",
+  requireClinicPermission("clinic.surgery.read"),
+  surgeryCtrl.getBilling
+);
+router.post(
+  "/branches/:branchId/surgeries/:id/estimate",
+  requireClinicPermission("clinic.surgery.billing"),
+  surgeryCtrl.createEstimate
+);
+router.post(
+  "/branches/:branchId/surgeries/:id/finalize-bill",
+  requireClinicPermission("clinic.surgery.billing"),
+  surgeryCtrl.finalizeBill
+);
+// Payouts (Phase 3)
+router.get(
+  "/branches/:branchId/surgeries/:id/payouts",
+  requireClinicPermission("clinic.surgery.payout"),
+  surgeryCtrl.listPayouts
+);
+router.get(
+  "/branches/:branchId/services/:serviceId/pricing-history",
+  requireClinicPermission("clinic.services.manage", "manager.pricing.view", "clinic.appointments.manage"),
+  ctrl.getServicePricingHistory
+);
+router.patch(
+  "/branches/:branchId/services/:serviceId/pricing",
+  requireClinicPermission("clinic.services.manage", "clinic.appointments.manage"),
+  ctrl.patchClinicServicePricing
+);
+router.get(
+  "/branches/:branchId/services/:serviceId/media",
+  requireClinicPermission("clinic.services.manage", "clinic.appointments.manage", "manager.pricing.view"),
+  ctrl.getClinicServiceMedia
+);
+router.put(
+  "/branches/:branchId/services/:serviceId/media",
+  requireClinicPermission("clinic.services.manage", "clinic.appointments.manage"),
+  ctrl.putClinicServiceMedia
 );
 router.put(
   "/branches/:branchId/services/:serviceId",
-  requireClinicPermission("clinic.appointments.manage"),
+  requireClinicPermission("clinic.appointments.manage", "clinic.services.manage"),
   ctrl.updateClinicService
 );
 router.patch(
   "/branches/:branchId/services/:serviceId/status",
-  requireClinicPermission("clinic.appointments.manage"),
+  requireClinicPermission("clinic.appointments.manage", "clinic.services.manage"),
   ctrl.setClinicServiceStatus
 );
 router.get(
@@ -367,6 +552,11 @@ router.get(
   ctrl.getAppointmentById
 );
 router.get(
+  "/branches/:branchId/appointments/:appointmentId/events",
+  requireClinicPermission("clinic.appointments.read", "clinic.appointments.manage"),
+  ctrl.getAppointmentEvents
+);
+router.get(
   "/branches/:branchId/appointments/:appointmentId/slip",
   requireClinicPermission("clinic.appointments.read", "clinic.appointments.manage"),
   ctrl.getAppointmentSlip
@@ -400,6 +590,11 @@ router.post(
   "/branches/:branchId/appointments/:appointmentId/check-in",
   requireClinicPermission("clinic.appointments.manage", "clinic.queue.manage"),
   ctrl.checkInAppointment
+);
+router.post(
+  "/branches/:branchId/appointments/:appointmentId/enqueue",
+  requireClinicPermission("clinic.appointments.manage", "clinic.queue.manage"),
+  ctrl.enqueueAppointment
 );
 router.post(
   "/branches/:branchId/appointments/:appointmentId/confirm",
@@ -513,11 +708,17 @@ router.get(
   requireClinicPermission("clinic.patients.read", "clinic.patients.manage"),
   ctrl.findOwner
 );
+router.post(
+  "/branches/:branchId/patients/ensure-owner",
+  requireClinicPermission("clinic.patients.manage"),
+  ctrl.ensureOwner
+);
 router.get(
   "/branches/:branchId/patients/unique/:uniquePetId",
   requireClinicPermission("clinic.patients.read", "clinic.patients.manage"),
   ctrl.getPatientByUniqueId
 );
+// GET .../patients/:petId/clinical-overview — registered only on main v1 router (src/api/v1/routes.ts) to avoid stale-dist drift; do not re-add here.
 router.get(
   "/branches/:branchId/patients/:petId",
   requireClinicPermission("clinic.patients.read", "clinic.patients.manage"),
@@ -527,6 +728,11 @@ router.post(
   "/branches/:branchId/patients",
   requireClinicPermission("clinic.patients.manage"),
   ctrl.registerPatient
+);
+router.patch(
+  "/branches/:branchId/patients/:petId/link-owner",
+  requireClinicPermission("clinic.patients.manage"),
+  ctrl.linkOwner
 );
 router.patch(
   "/branches/:branchId/patients/:petId",
@@ -586,14 +792,45 @@ router.delete(
   ctrl.releaseRoomBlock
 );
 // --- EMR (Visits, Vitals, Clinical Notes) ---
+const clinicVisitReadPerms = [
+  "clinic.emr.read",
+  "clinic.emr.write",
+  "clinic.visits.read",
+  "clinic.visits.manage",
+];
+router.get(
+  "/branches/:branchId/visits/summary",
+  requireClinicPermission(...clinicVisitReadPerms),
+  ctrl.getVisitsSummary
+);
+router.get(
+  "/branches/:branchId/visits/export",
+  requireClinicPermission(...clinicVisitReadPerms),
+  ctrl.exportVisitsCsv
+);
 router.get(
   "/branches/:branchId/visits",
-  requireClinicPermission("clinic.emr.read", "clinic.emr.write"),
+  requireClinicPermission(...clinicVisitReadPerms),
   ctrl.listVisits
 );
 router.get(
+  "/branches/:branchId/visits/:visitId/completion-eligibility",
+  requireClinicPermission(...clinicVisitReadPerms),
+  ctrl.getVisitCompletionEligibilityStaff
+);
+router.get(
+  "/branches/:branchId/visits/:visitId/queue-events",
+  requireClinicPermission(...clinicVisitReadPerms),
+  ctrl.getVisitQueueEvents
+);
+router.post(
+  "/branches/:branchId/visits/:visitId/complete",
+  requireClinicPermission("clinic.emr.write", "clinic.visits.manage"),
+  ctrl.completeVisitStaff
+);
+router.get(
   "/branches/:branchId/visits/:visitId",
-  requireClinicPermission("clinic.emr.read", "clinic.emr.write"),
+  requireClinicPermission(...clinicVisitReadPerms),
   ctrl.getVisit
 );
 router.post(
@@ -655,14 +892,18 @@ router.patch(
 );
 
 // --- Prescriptions ---
+// Read paths: clinic.prescription.read only.
+// Authoring: requireClinicPermission(create | edit | finalize) + requireClinicDoctorStaffForPrescriptionAuthoring (DOCTOR staffType).
+// Legacy clinic.prescription.write is not accepted on these routes — migrate overrides via scripts/migrate-prescription-write-overrides.ts (see docs/CLINIC_PRESCRIPTION_WRITE_MIGRATION.md).
 router.get(
   "/branches/:branchId/visits/:visitId/prescriptions",
-  requireClinicPermission("clinic.prescription.read", "clinic.prescription.write"),
+  requireClinicPermission("clinic.prescription.read"),
   ctrl.listPrescriptionsByVisit
 );
 router.post(
   "/branches/:branchId/visits/:visitId/prescriptions",
-  requireClinicPermission("clinic.prescription.write"),
+  requireClinicPermission("clinic.prescription.create"),
+  requireClinicDoctorStaffForPrescriptionAuthoring(),
   ctrl.createPrescription
 );
 router.get(
@@ -672,39 +913,56 @@ router.get(
 );
 router.get(
   "/branches/:branchId/prescriptions/:prescriptionId",
-  requireClinicPermission("clinic.prescription.read", "clinic.prescription.write"),
+  requireClinicPermission("clinic.prescription.read"),
   ctrl.getPrescription
+);
+router.patch(
+  "/branches/:branchId/prescriptions/:prescriptionId",
+  requireClinicPermission("clinic.prescription.edit"),
+  requireClinicDoctorStaffForPrescriptionAuthoring(),
+  ctrl.updatePrescription
 );
 router.post(
   "/branches/:branchId/prescriptions/:prescriptionId/finalize",
-  requireClinicPermission("clinic.prescription.write"),
+  requireClinicPermission("clinic.prescription.finalize"),
+  requireClinicDoctorStaffForPrescriptionAuthoring(),
   ctrl.finalizePrescription
 );
 router.post(
   "/branches/:branchId/prescriptions/:prescriptionId/dispense",
-  requireClinicPermission("clinic.prescription.write"),
+  requireClinicPermission("medicine.dispense.issue"),
   ctrl.dispensePrescription
 );
 router.get(
   "/branches/:branchId/medicine-search",
-  requireClinicPermission("clinic.prescription.read", "clinic.prescription.write"),
+  requireClinicPermission("clinic.prescription.read"),
   ctrl.searchMedicine
+);
+router.get(
+  "/branches/:branchId/medicine-catalog/search",
+  requireClinicPermission("clinic.prescription.read"),
+  ctrl.searchCountryMedicineCatalog
+);
+router.get(
+  "/branches/:branchId/medicine-catalog/brands/:brandId",
+  requireClinicPermission("clinic.prescription.read"),
+  ctrl.getCountryMedicineBrandCatalog
 );
 
 // --- Clinic Billing (Visit -> Invoice/Order) ---
 router.get(
   "/branches/:branchId/visits/:visitId/billing-summary",
-  requireClinicPermission("clinic.emr.read", "clinic.emr.write"),
+  requireClinicPermission(...clinicVisitReadPerms),
   ctrl.getVisitBillingSummary
 );
 router.get(
   "/branches/:branchId/visits/:visitId/orders",
-  requireClinicPermission("clinic.emr.read", "clinic.emr.write"),
+  requireClinicPermission(...clinicVisitReadPerms),
   ctrl.getVisitOrders
 );
 router.get(
   "/branches/:branchId/visits/:visitId/payment-status",
-  requireClinicPermission("clinic.emr.read", "clinic.emr.write"),
+  requireClinicPermission(...clinicVisitReadPerms),
   ctrl.getVisitPaymentStatus
 );
 router.post(
@@ -712,6 +970,8 @@ router.post(
   requireClinicPermission("clinic.emr.write"),
   ctrl.createVisitInvoice
 );
+// Billing helpers: prefer clinic.prescription.read. clinic.emr.write remains OR’d so staff who invoice from EMR
+// without an explicit Rx read grant can still resolve line items (branch-scoped; see clinic.controller getPrescriptionOrderLines).
 router.get(
   "/branches/:branchId/prescriptions/:prescriptionId/order-lines",
   requireClinicPermission("clinic.prescription.read", "clinic.emr.write"),
@@ -1101,6 +1361,11 @@ router.post(
   ctrl.eodClose
 );
 router.get(
+  "/branches/:branchId/medicine-control/day-close",
+  requireClinicPermission("medicine.reconciliation.read"),
+  ctrl.getDayClose
+);
+router.get(
   "/branches/:branchId/medicine-control/handover-summary",
   requireClinicPermission("medicine.vial.use", "medicine.reconciliation.read"),
   ctrl.getHandoverSummary
@@ -1262,6 +1527,16 @@ router.post(
 );
 
 // Clinic Approval Workflow: Manager creates request (staff panel)
+router.get(
+  "/branches/:branchId/approval-requests/summary",
+  requireClinicPermission("approvals.view", "clinic.packages.read"),
+  ctrl.getClinicApprovalRequestsSummary
+);
+router.get(
+  "/branches/:branchId/approval-requests/:requestId",
+  requireClinicPermission("approvals.view", "clinic.packages.read"),
+  ctrl.getClinicApprovalRequestById
+);
 router.get(
   "/branches/:branchId/approval-requests",
   requireClinicPermission("approvals.view", "clinic.packages.read"),
@@ -1667,6 +1942,16 @@ router.get(
   "/branches/:branchId/reports/doctor-contribution",
   requireClinicPermission("clinic.reports.doctor_contribution"),
   ctrl.getDoctorContributionReport
+);
+router.get(
+  "/branches/:branchId/reports/visit-completion-audit",
+  requireClinicPermission("clinic.emr.read", "clinic.overview.read"),
+  ctrl.getVisitCompletionAuditReport
+);
+router.get(
+  "/branches/:branchId/reports/surgery-revenue",
+  requireClinicPermission("clinic.surgery.reports"),
+  ctrl.getSurgeryRevenueReport
 );
 
 module.exports = router;

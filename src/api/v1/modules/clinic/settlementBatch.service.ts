@@ -293,11 +293,17 @@ export async function payBatch(
   if (batch.status !== "APPROVED")
     throw new Error("Batch must be APPROVED before payment");
 
+  const paymentAmount =
+    data.amount != null ? Number(data.amount) : Number(batch.netPayable ?? 0);
+  if (!Number.isFinite(paymentAmount) || paymentAmount <= 0) {
+    throw new Error("Payment amount must be greater than 0");
+  }
+
   await prisma.settlementPayment.create({
     data: {
       settlementBatchId: batchId,
       paymentMethod: data.paymentMethod,
-      amount: data.amount,
+      amount: paymentAmount,
       paidByUserId: data.paidByUserId ?? undefined,
       receiptRef: data.receiptRef ?? undefined,
     },
@@ -318,14 +324,16 @@ export async function payBatch(
     },
   });
 
-  await prisma.doctorSettlementLedger.updateMany({
-    where: { batchId },
-    data: {
-      settlementStatus: "PAID",
-      settledAt: new Date(),
-      settledByUserId: data.paidByUserId ?? undefined,
-    },
-  });
+  if (newStatus === "PAID") {
+    await prisma.doctorSettlementLedger.updateMany({
+      where: { batchId },
+      data: {
+        settlementStatus: "PAID",
+        settledAt: new Date(),
+        settledByUserId: data.paidByUserId ?? undefined,
+      },
+    });
+  }
 
   await prisma.settlementAuditLog.create({
     data: {
@@ -334,7 +342,7 @@ export async function payBatch(
       action: "PAID",
       settlementBatchId: batchId,
       byUserId: data.paidByUserId ?? undefined,
-      meta: { amount: data.amount, receiptRef: data.receiptRef },
+      meta: { amount: paymentAmount, receiptRef: data.receiptRef },
     },
   });
 
@@ -342,7 +350,7 @@ export async function payBatch(
     batchId,
     branchId: batch.branchId,
     clinicStaffProfileId: batch.clinicStaffProfileId,
-    amount: data.amount,
+    amount: paymentAmount,
     paidByUserId: data.paidByUserId ?? null,
     receiptRef: data.receiptRef ?? null,
     batchStatus: newStatus,

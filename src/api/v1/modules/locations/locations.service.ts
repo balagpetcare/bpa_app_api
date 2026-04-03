@@ -1,5 +1,4 @@
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const prisma = require('../../../../infrastructure/db/prismaClient');
 
 // simple in-memory cache
 let cache = { ts: 0, key: '', value: null };

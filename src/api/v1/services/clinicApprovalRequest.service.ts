@@ -7,9 +7,11 @@ const prisma =
   require("../../../infrastructure/db/prismaClient");
 
 import {
+  DOCTOR_APPROVAL_QUEUE_TYPES,
   REQUEST_TYPE_ENTITY,
   type ClinicApprovalRequestType,
 } from "../constants/clinicApprovalTypes";
+import type { Prisma } from "@prisma/client";
 import { createPackage, updatePackage } from "../modules/clinic/package.service";
 
 export type CreateRequestInput = {
@@ -52,6 +54,51 @@ export type ListFilters = {
   requestType?: ClinicApprovalRequestType;
 };
 
+export type ListBranchExtendedFilters = ListFilters & {
+  /** Narrow to doctor-queue request types (same as staff Doctor Operations pending list). */
+  doctorQueueOnly?: boolean;
+  requestTypes?: ClinicApprovalRequestType[];
+  requestedByUserId?: number;
+  createdFrom?: Date;
+  createdTo?: Date;
+  /** Search by request id (exact) or payload text (PostgreSQL ILIKE). */
+  q?: string;
+  /** Filter rows whose payload references this branch member (doctor) id. */
+  memberId?: number;
+  limit?: number;
+  offset?: number;
+};
+
+const PRIORITY_BY_TYPE: Record<string, "High" | "Medium" | "Low"> = {
+  DOCTOR_LEAVE: "High",
+  DOCTOR_CREDENTIAL: "High",
+  DOCTOR_INVITE: "Medium",
+  DOCTOR_ACTIVATION: "Medium",
+  DOCTOR_DEACTIVATION: "Medium",
+  DOCTOR_SERVICE_PRIVILEGE: "Medium",
+  DOCTOR_PACKAGE_PRIVILEGE: "Medium",
+  DOCTOR_SCHEDULE: "Low",
+  DOCTOR_FEE_CHANGE: "Low",
+};
+
+function extractMemberIdFromPayload(payload: unknown): number | null {
+  if (!payload || typeof payload !== "object") return null;
+  const p = payload as Record<string, unknown>;
+  const keys = ["memberId", "doctorId", "branchMemberId", "clinicStaffProfileId"];
+  for (const k of keys) {
+    const v = p[k];
+    if (v != null && v !== "") {
+      const n = Number(v);
+      if (Number.isFinite(n) && n > 0) return n;
+    }
+  }
+  return null;
+}
+
+function escapeIlike(s: string): string {
+  return s.replace(/[%_\\]/g, "\\$&");
+}
+
 /**
  * List approval requests for owner's orgs (owner panel).
  */
@@ -82,36 +129,289 @@ export async function listByOrg(orgIds: number[], filters?: ListFilters) {
 
 /**
  * List approval requests for a branch (staff panel: my/branch requests).
+ * Returns `{ items, total }` for pagination. Applies optional doctor-queue filter, search, and SLA hints.
  */
-export async function listByBranch(branchId: number, filters?: ListFilters) {
-  const where: Record<string, unknown> = { branchId };
-  if (filters?.status) where.status = filters.status;
-  if (filters?.requestType) where.requestType = filters.requestType;
+export async function listByBranch(
+  branchId: number,
+  filters?: ListBranchExtendedFilters
+): Promise<{ items: any[]; total: number }> {
+  const limit = Math.min(Math.max(Number(filters?.limit ?? 100) || 100, 1), 500);
+  const offset = Math.max(Number(filters?.offset ?? 0) || 0, 0);
 
-  const items = await prisma.clinicApprovalRequest.findMany({
-    where,
-    include: {
-      branch: { select: { id: true, name: true } },
-      requestedBy: {
-        select: {
-          id: true,
-          profile: { select: { displayName: true } },
-          auth: { select: { email: true } },
-        },
-      },
-      approvedBy: {
-        select: {
-          id: true,
-          profile: { select: { displayName: true } },
-          auth: { select: { email: true } },
-        },
+  const where: Prisma.ClinicApprovalRequestWhereInput = { branchId };
+  if (filters?.status) where.status = filters.status;
+
+  let typeIn: ClinicApprovalRequestType[] | undefined;
+  if (filters?.doctorQueueOnly) {
+    typeIn = [...DOCTOR_APPROVAL_QUEUE_TYPES];
+  }
+  if (filters?.requestTypes?.length) {
+    typeIn = typeIn ? typeIn.filter((t) => filters.requestTypes!.includes(t)) : [...filters.requestTypes];
+  }
+  if (typeIn?.length) {
+    where.requestType = { in: typeIn };
+  } else if (filters?.requestType) {
+    where.requestType = filters.requestType;
+  }
+
+  if (filters?.requestedByUserId) {
+    where.requestedByUserId = filters.requestedByUserId;
+  }
+  if (filters?.createdFrom || filters?.createdTo) {
+    where.createdAt = {};
+    if (filters.createdFrom) where.createdAt.gte = filters.createdFrom;
+    if (filters.createdTo) where.createdAt.lte = filters.createdTo;
+  }
+
+  const qRaw = filters?.q?.trim();
+  const memberIdFilter = filters?.memberId != null && Number.isFinite(Number(filters.memberId)) ? Number(filters.memberId) : null;
+
+  let idConstraints: number[] | null = null;
+
+  if (memberIdFilter != null) {
+    const mid = memberIdFilter;
+    try {
+      const mRows = await prisma.$queryRaw<{ id: number }[]>`
+        SELECT id FROM "clinic_approval_requests"
+        WHERE "branchId" = ${branchId}
+        AND (
+          (nullif(trim("payload"->>'memberId'), '') IS NOT NULL AND ("payload"->>'memberId')::numeric = ${mid})
+          OR (nullif(trim("payload"->>'doctorId'), '') IS NOT NULL AND ("payload"->>'doctorId')::numeric = ${mid})
+          OR (nullif(trim("payload"->>'branchMemberId'), '') IS NOT NULL AND ("payload"->>'branchMemberId')::numeric = ${mid})
+        )
+      `;
+      idConstraints = mRows.map((r) => r.id);
+    } catch {
+      idConstraints = [];
+    }
+    if (!idConstraints?.length) {
+      return { items: [], total: 0 };
+    }
+  }
+
+  if (qRaw) {
+    try {
+      const asNum = parseInt(qRaw, 10);
+      const idOnly = String(asNum) === qRaw && asNum > 0;
+      let qIds: number[];
+      if (idOnly) {
+        qIds = (await prisma.$queryRaw<{ id: number }[]>`
+          SELECT id FROM "clinic_approval_requests"
+          WHERE "branchId" = ${branchId} AND id = ${asNum}
+        `).map((r) => r.id);
+      } else {
+        const like = `%${escapeIlike(qRaw)}%`;
+        qIds = (await prisma.$queryRaw<{ id: number }[]>`
+          SELECT id FROM "clinic_approval_requests"
+          WHERE "branchId" = ${branchId}
+          AND (
+            id::text ILIKE ${like}
+            OR "payload"::text ILIKE ${like}
+          )
+        `).map((r) => r.id);
+      }
+      if (qIds.length === 0) {
+        return { items: [], total: 0 };
+      }
+      idConstraints = idConstraints ? idConstraints.filter((id) => qIds.includes(id)) : qIds;
+      if (idConstraints.length === 0) {
+        return { items: [], total: 0 };
+      }
+    } catch {
+      return { items: [], total: 0 };
+    }
+  }
+
+  if (idConstraints?.length) {
+    where.id = { in: idConstraints };
+  }
+
+  const include = {
+    branch: { select: { id: true, name: true } },
+    requestedBy: {
+      select: {
+        id: true,
+        profile: { select: { displayName: true } },
+        auth: { select: { email: true } },
       },
     },
-    orderBy: { createdAt: "desc" },
-    take: 100,
+    approvedBy: {
+      select: {
+        id: true,
+        profile: { select: { displayName: true } },
+        auth: { select: { email: true } },
+      },
+    },
+  };
+
+  const [total, rows] = await prisma.$transaction([
+    prisma.clinicApprovalRequest.count({ where }),
+    prisma.clinicApprovalRequest.findMany({
+      where,
+      include,
+      orderBy: { createdAt: "desc" },
+      skip: offset,
+      take: limit,
+    }),
+  ]);
+
+  const memberIds = [
+    ...new Set(
+      rows
+        .map((r) => extractMemberIdFromPayload(r.payload))
+        .filter((id): id is number => id != null)
+    ),
+  ];
+  const doctorNames: Record<number, string> = {};
+  if (memberIds.length > 0) {
+    const bms = await prisma.branchMember.findMany({
+      where: { id: { in: memberIds } },
+      select: { id: true, user: { select: { profile: { select: { displayName: true } } } } },
+    });
+    bms.forEach((b: { id: number; user?: { profile?: { displayName?: string | null } | null } }) => {
+      doctorNames[b.id] = b.user?.profile?.displayName ?? `Doctor #${b.id}`;
+    });
+  }
+
+  const now = Date.now();
+  const items = rows.map((r) => {
+    const doctorMemberId = extractMemberIdFromPayload(r.payload);
+    const priorityLabel = PRIORITY_BY_TYPE[r.requestType] ?? "Low";
+    const createdMs = new Date(r.createdAt).getTime();
+    const slaHours = Math.max(0, (now - createdMs) / (1000 * 60 * 60));
+    const isHighType = r.requestType === "DOCTOR_LEAVE" || r.requestType === "DOCTOR_CREDENTIAL";
+    const breachHours = isHighType ? 24 : 72;
+    const warnHours = isHighType ? 12 : 48;
+    const slaBreached = r.status === "PENDING" && slaHours >= breachHours;
+    const slaWarning = r.status === "PENDING" && !slaBreached && slaHours >= warnHours;
+    let slaState: "ok" | "warning" | "breached" = "ok";
+    if (r.status === "PENDING") {
+      if (slaBreached) slaState = "breached";
+      else if (slaWarning) slaState = "warning";
+    }
+    return {
+      ...r,
+      doctorMemberId: doctorMemberId ?? undefined,
+      doctorDisplayName: doctorMemberId != null ? doctorNames[doctorMemberId] ?? undefined : undefined,
+      priorityLabel,
+      slaHours: Math.round(slaHours * 10) / 10,
+      slaBreached,
+      slaWarning,
+      slaState,
+    };
   });
 
-  return items;
+  return { items, total };
+}
+
+/**
+ * KPI summary for staff approvals UI (optional doctor-queue scope).
+ */
+export async function getBranchApprovalSummary(
+  branchId: number,
+  options?: { doctorQueueOnly?: boolean }
+): Promise<{
+  totalPending: number;
+  highPriority: number;
+  slaBreached: number;
+  approvedToday: number;
+  rejectedToday: number;
+}> {
+  const startOfDay = new Date();
+  startOfDay.setHours(0, 0, 0, 0);
+
+  const typeFilter = options?.doctorQueueOnly
+    ? ({ requestType: { in: [...DOCTOR_APPROVAL_QUEUE_TYPES] } } as const)
+    : {};
+
+  const base = { branchId, ...typeFilter };
+
+  const old72h = new Date(Date.now() - 72 * 60 * 60 * 1000);
+  const old24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+  const [totalPending, highPriority, slaBreached, approvedToday, rejectedToday] = await Promise.all([
+    prisma.clinicApprovalRequest.count({ where: { ...base, status: "PENDING" } }),
+    prisma.clinicApprovalRequest.count({
+      where: {
+        ...base,
+        status: "PENDING",
+        requestType: { in: ["DOCTOR_LEAVE", "DOCTOR_CREDENTIAL"] },
+      },
+    }),
+    prisma.clinicApprovalRequest.count({
+      where: {
+        ...base,
+        status: "PENDING",
+        OR: [
+          {
+            requestType: { in: ["DOCTOR_LEAVE", "DOCTOR_CREDENTIAL"] },
+            createdAt: { lt: old24h },
+          },
+          {
+            requestType: { notIn: ["DOCTOR_LEAVE", "DOCTOR_CREDENTIAL"] },
+            createdAt: { lt: old72h },
+          },
+        ],
+      },
+    }),
+    prisma.clinicApprovalRequest.count({
+      where: {
+        ...base,
+        status: "APPROVED",
+        approvedAt: { gte: startOfDay },
+      },
+    }),
+    prisma.clinicApprovalRequest.count({
+      where: {
+        ...base,
+        status: "REJECTED",
+        approvedAt: { gte: startOfDay },
+      },
+    }),
+  ]);
+
+  return {
+    totalPending,
+    highPriority,
+    slaBreached,
+    approvedToday,
+    rejectedToday,
+  };
+}
+
+/**
+ * Single request for staff branch with action log timeline.
+ */
+export async function getByIdForBranchWithLogs(branchId: number, requestId: number) {
+  const row = await getById(requestId);
+  if (row.branchId !== branchId) {
+    throw new Error("REQUEST_BRANCH_MISMATCH");
+  }
+  const actionLogs = await prisma.approvalActionLog.findMany({
+    where: {
+      branchId,
+      entityType: "CLINIC_APPROVAL_REQUEST",
+      entityId: requestId,
+    },
+    orderBy: { createdAt: "asc" },
+  });
+  const doctorMemberId = extractMemberIdFromPayload(row.payload);
+  let doctorDisplayName: string | undefined;
+  if (doctorMemberId != null) {
+    const bm = await prisma.branchMember.findUnique({
+      where: { id: doctorMemberId },
+      select: { id: true, user: { select: { profile: { select: { displayName: true } } } } },
+    });
+    doctorDisplayName = bm?.user?.profile?.displayName ?? `Doctor #${doctorMemberId}`;
+  }
+  const priorityLabel = PRIORITY_BY_TYPE[row.requestType] ?? "Low";
+  return {
+    ...row,
+    doctorMemberId: doctorMemberId ?? undefined,
+    doctorDisplayName,
+    priorityLabel,
+    actionLogs,
+  };
 }
 
 /**

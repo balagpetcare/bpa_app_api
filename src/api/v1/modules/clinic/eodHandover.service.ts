@@ -162,12 +162,77 @@ export async function getHandoverSummary(
       id: t.id,
       tokenCode: t.tokenCode,
       variantTitle: (t.variant as any)?.title ?? "",
-      expectedDose: t.expectedDose,
+      expectedDose: Number((t.expectedDose as { toNumber?: () => number })?.toNumber?.() ?? t.expectedDose),
     })),
     expiredVialsInWindow: expiredInWindow.map((v) => ({
       id: v.id,
       variantTitle: (v.variant as any)?.title ?? "",
       validUntil: v.validUntil!.toISOString(),
     })),
+  };
+}
+
+/**
+ * Persist a day-close record when EOD close is performed (audit and re-open prevention).
+ */
+export async function recordDayClose(
+  branchId: number,
+  date: Date | string,
+  closedByUserId: number,
+  notes?: string | null
+): Promise<{ id: number; closeDate: string; closedAt: string; closedByUserId: number }> {
+  const { dayDate } = dayRange(date);
+  const record = await prisma.medicineControlDayClose.upsert({
+    where: {
+      branchId_closeDate: { branchId, closeDate: dayDate },
+    },
+    create: {
+      branchId,
+      closeDate: dayDate,
+      closedByUserId,
+      notes: notes ?? null,
+    },
+    update: {
+      closedByUserId,
+      closedAt: new Date(),
+      notes: notes ?? undefined,
+    },
+    select: {
+      id: true,
+      closeDate: true,
+      closedAt: true,
+      closedByUserId: true,
+    },
+  });
+  return {
+    id: record.id,
+    closeDate: record.closeDate.toISOString().slice(0, 10),
+    closedAt: record.closedAt.toISOString(),
+    closedByUserId: record.closedByUserId,
+  };
+}
+
+/**
+ * Get day-close record for a branch/date (for EOD page "Closed by X at Y").
+ */
+export async function getDayClose(
+  branchId: number,
+  date?: Date | string | null
+): Promise<{ closeDate: string; closedAt: string; closedByUserId: number; closedBy?: { profile?: { displayName?: string } } } | null> {
+  const { dayDate } = dayRange(date);
+  const record = await prisma.medicineControlDayClose.findUnique({
+    where: {
+      branchId_closeDate: { branchId, closeDate: dayDate },
+    },
+    include: {
+      closedBy: { select: { id: true, profile: { select: { displayName: true } } } },
+    },
+  });
+  if (!record) return null;
+  return {
+    closeDate: record.closeDate.toISOString().slice(0, 10),
+    closedAt: record.closedAt.toISOString(),
+    closedByUserId: record.closedByUserId,
+    closedBy: record.closedBy,
   };
 }

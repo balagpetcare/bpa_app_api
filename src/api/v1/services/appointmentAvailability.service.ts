@@ -6,6 +6,13 @@
 const prisma =
   require("../../../infrastructure/db/prismaClient").default ??
   require("../../../infrastructure/db/prismaClient");
+const {
+  getBranchTimezone,
+  getTimezoneOffsetMinutes,
+  parseTimeHHmm,
+  localTimeToUTC,
+  getDayOfWeekInTimezone,
+} = require("./clinicScheduleTime.service");
 
 const ACTIVE_APPOINTMENT_STATUSES = [
   "DRAFT",
@@ -20,19 +27,6 @@ const ACTIVE_APPOINTMENT_STATUSES = [
 
 const DEFAULT_SLOT_MINUTES = 15;
 const DEFAULT_MAX_ADVANCE_BOOKING_DAYS = 30;
-
-function parseTimeHHmm(s: string): { h: number; m: number } | null {
-  if (!s || typeof s !== "string") return null;
-  const [h, m] = s.trim().split(":").map(Number);
-  if (Number.isNaN(h) || Number.isNaN(m)) return null;
-  return { h, m };
-}
-
-function toDateAtTime(dateStr: string, time: { h: number; m: number }): Date {
-  const d = new Date(dateStr + "T00:00:00.000Z");
-  d.setUTCHours(time.h, time.m, 0, 0);
-  return d;
-}
 
 function toISODate(d: Date): string {
   return d.toISOString().slice(0, 10);
@@ -102,13 +96,16 @@ async function getDoctorProfileIdsOnLeave(branchId: number, date: Date): Promise
 /**
  * Get available slots for a branch for a given date, optionally filtered by service, package, or doctor.
  * Returns slots grouped by doctor with doctorName. Respects schedule templates, exceptions, leave, holidays, occupied and locked slots.
+ * Template start/end times are interpreted in branch local timezone so 09:00–17:00 displays correctly.
  */
 export async function getAvailableSlots(
   branchId: number,
   date: string,
   opts: { serviceId?: number; packageId?: number; doctorId?: number; durationMinutes?: number }
 ): Promise<{ doctorId: number; doctorName: string; slots: { start: string; end: string }[] }[]> {
-  const dayOfWeek = new Date(date + "T12:00:00.000Z").getUTCDay();
+  const tz = await getBranchTimezone(branchId);
+  const offsetMinutes = getTimezoneOffsetMinutes(tz);
+  const dayOfWeek = getDayOfWeekInTimezone(date, offsetMinutes);
 
   const holiday = await prisma.branchHoliday.findFirst({
     where: { branchId, date: new Date(date) },
@@ -155,8 +152,10 @@ export async function getAvailableSlots(
   }
   const doctorIdsOnLeave = new Set(Array.from(leaveProfileIds).map((pid) => profileToMember.get(pid)).filter(Boolean) as number[]);
 
-  const dateStart = new Date(date + "T00:00:00.000Z");
-  const dateEnd = new Date(date + "T23:59:59.999Z");
+  const dateStart = localTimeToUTC(date, { h: 0, m: 0 }, offsetMinutes);
+  const dateEnd = new Date(
+    localTimeToUTC(date, { h: 23, m: 59 }, offsetMinutes).getTime() + 59 * 1000 + 999
+  );
 
   const slotsByDoctor: Map<number, { start: Date; end: Date }[]> = new Map();
 
@@ -187,8 +186,8 @@ export async function getAvailableSlots(
       5,
       opts.durationMinutes ?? t.slotMinutes ?? DEFAULT_SLOT_MINUTES
     );
-    let current = toDateAtTime(date, start);
-    const endDt = toDateAtTime(date, end);
+    let current = localTimeToUTC(date, start, offsetMinutes);
+    const endDt = localTimeToUTC(date, end, offsetMinutes);
     while (current < endDt) {
       const slotEnd = new Date(current.getTime() + slotMinutes * 60 * 1000);
       if (slotEnd <= endDt) {
@@ -384,7 +383,50 @@ export interface PricePreviewResult {
 }
 
 /**
+ * Get doctor's consultation fee for a service: DoctorServiceFee if set, else defaultConsultationFee.
+ * Used for consultation pricing and price snapshot.
+ */
+export async function getDoctorConsultationFeeForService(
+  branchId: number,
+  serviceId: number,
+  doctorId: number
+): Promise<number | null> {
+  const profile = await prisma.clinicStaffProfile.findFirst({
+    where: { branchId, branchMemberId: doctorId, staffType: "DOCTOR" },
+    select: { id: true },
+  });
+  if (!profile) return null;
+  const feeRow = await prisma.doctorServiceFee.findFirst({
+    where: { clinicStaffProfileId: (profile as any).id, serviceId, isActive: true },
+    select: { fee: true },
+  });
+  if (feeRow && (feeRow as any).fee != null) return Number((feeRow as any).fee);
+  const def = await prisma.clinicStaffProfile.findFirst({
+    where: { id: (profile as any).id },
+    select: { defaultConsultationFee: true },
+  });
+  return (def as any)?.defaultConsultationFee != null ? Number((def as any).defaultConsultationFee) : null;
+}
+
+/**
+ * Get first eligible doctor's consultation fee for a service (for "Any doctor" consultation preview).
+ */
+async function getFirstEligibleDoctorConsultationFee(
+  branchId: number,
+  serviceId: number
+): Promise<number | null> {
+  const eligibleIds = await getEligibleDoctorIdsForService(branchId, serviceId);
+  if (eligibleIds.length === 0) return null;
+  for (const doctorId of eligibleIds) {
+    const fee = await getDoctorConsultationFeeForService(branchId, serviceId, doctorId);
+    if (fee != null && fee >= 0) return fee;
+  }
+  return null;
+}
+
+/**
  * Get price preview for a service or package, optionally with a specific doctor.
+ * For consultation services (service.category === CONSULTATION): total = doctor fee only; no service price.
  */
 export async function getPricePreview(
   branchId: number,
@@ -425,33 +467,35 @@ export async function getPricePreview(
   } else if (opts.serviceId) {
     const svc = await prisma.service.findFirst({
       where: { id: opts.serviceId, branchId, status: "ACTIVE" },
-      select: { price: true },
+      select: { price: true, category: true },
     });
     if (!svc) return { basePrice: 0, doctorFee: 0, discountAmount: 0, totalPrice: 0, breakdown: [] };
-    basePrice = Number((svc as any).price);
-    breakdown.push({ label: "Service price", amount: basePrice });
-    if (opts.doctorId) {
-      const profile = await prisma.clinicStaffProfile.findFirst({
-        where: { branchId, branchMemberId: opts.doctorId, staffType: "DOCTOR" },
-        select: { id: true },
-      });
-      if (profile) {
-        const feeRow = await prisma.doctorServiceFee.findFirst({
-          where: { clinicStaffProfileId: (profile as any).id, serviceId: opts.serviceId, isActive: true },
-          select: { fee: true },
-        });
-        if (feeRow && (feeRow as any).fee != null) {
-          doctorFee = Number((feeRow as any).fee);
+    const category = (svc as any).category;
+    const isConsultation = String(category).toUpperCase() === "CONSULTATION";
+
+    if (isConsultation) {
+      basePrice = 0;
+      if (opts.doctorId) {
+        const fee = await getDoctorConsultationFeeForService(branchId, opts.serviceId, opts.doctorId);
+        if (fee != null && fee >= 0) {
+          doctorFee = fee;
+          breakdown.push({ label: "Consultation fee", amount: doctorFee });
+        }
+      } else {
+        const anyDoctorFee = await getFirstEligibleDoctorConsultationFee(branchId, opts.serviceId);
+        if (anyDoctorFee != null && anyDoctorFee >= 0) {
+          doctorFee = anyDoctorFee;
+          breakdown.push({ label: "Consultation fee", amount: doctorFee });
+        }
+      }
+    } else {
+      basePrice = Number((svc as any).price);
+      breakdown.push({ label: "Service price", amount: basePrice });
+      if (opts.doctorId) {
+        const fee = await getDoctorConsultationFeeForService(branchId, opts.serviceId, opts.doctorId);
+        if (fee != null && fee >= 0) {
+          doctorFee = fee;
           breakdown.push({ label: "Doctor fee", amount: doctorFee });
-        } else {
-          const defFee = await prisma.clinicStaffProfile.findFirst({
-            where: { id: (profile as any).id },
-            select: { defaultConsultationFee: true },
-          });
-          if ((defFee as any)?.defaultConsultationFee != null) {
-            doctorFee = Number((defFee as any).defaultConsultationFee);
-            breakdown.push({ label: "Doctor fee", amount: doctorFee });
-          }
         }
       }
     }

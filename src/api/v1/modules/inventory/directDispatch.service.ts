@@ -31,8 +31,30 @@ export type CreateDirectDispatchResult = {
   dispatch: Awaited<ReturnType<typeof dispatchService.getDispatchById>>;
 };
 
+/** Thrown when FEFO allocation cannot cover requested qty; controller maps to HTTP 400 + structured body. */
+export type DirectDispatchAllocationErrorDetails = {
+  orgId: number;
+  sourceLocationId: number;
+  variantId: number;
+  requestedQty: number;
+  availableQty: number;
+  shortfallQty: number;
+};
+
+export class DirectDispatchAllocationError extends Error {
+  readonly code = "INSUFFICIENT_STOCK_AT_SOURCE" as const;
+
+  constructor(public readonly details: DirectDispatchAllocationErrorDetails) {
+    super(
+      `Insufficient dispatchable stock at the selected source for variant ${details.variantId}. Requested ${details.requestedQty}; available (FEFO-eligible, non-expired) ${details.availableQty}.`
+    );
+    this.name = "DirectDispatchAllocationError";
+  }
+}
+
 async function allocateLotsFromLocation(
   locationId: number,
+  orgId: number,
   lines: DirectDispatchLineInput[],
   getAvailableLotsFEFO: (locationId: number, variantId: number) => Promise<Array<{ lotId: number; availableQty: number }>>
 ): Promise<Array<{ variantId: number; lotId: number; quantity: number }>> {
@@ -44,6 +66,7 @@ async function allocateLotsFromLocation(
   const result: Array<{ variantId: number; lotId: number; quantity: number }> = [];
   for (const [variantId, qty] of byVariant) {
     const lots = await getAvailableLotsFEFO(locationId, variantId);
+    const availableQty = lots.reduce((s, lot) => s + Math.max(0, lot.availableQty ?? 0), 0);
     let remaining = qty;
     for (const lot of lots) {
       if (remaining <= 0) break;
@@ -54,9 +77,14 @@ async function allocateLotsFromLocation(
       }
     }
     if (remaining > 0) {
-      throw new Error(
-        `Insufficient stock at source for variant ${variantId}. Requested: ${qty}, Shortfall: ${remaining}`
-      );
+      throw new DirectDispatchAllocationError({
+        orgId,
+        sourceLocationId: locationId,
+        variantId,
+        requestedQty: qty,
+        availableQty,
+        shortfallQty: remaining,
+      });
     }
   }
   return result;
@@ -107,6 +135,7 @@ export async function createDirectDispatch(data: CreateDirectDispatchInput): Pro
 
   const dispatchItems = await allocateLotsFromLocation(
     data.fromLocationId,
+    data.orgId,
     data.lines,
     getAvailableLotsFEFO
   );

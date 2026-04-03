@@ -34,7 +34,11 @@ export type DiscountAbsorptionMode =
   | "CLINIC_ABSORBS"
   | "PROPORTIONAL"
   | "DOCTOR_PROTECTED"
-  | "APPROVAL_BASED_SPLIT";
+  | "APPROVAL_BASED_SPLIT"
+  | "DOCTOR_ONLY"
+  | "EQUAL_SPLIT"
+  | "MANUAL_SPLIT"
+  | "CLINIC_ONLY";
 
 /** List discount policies for a branch */
 export async function listDiscountPolicies(options: {
@@ -318,43 +322,71 @@ export function computeAbsorption(options: {
   discountAmount: number;
   doctorShareBeforeDiscount: number;
   clinicShareBeforeDiscount: number;
-  supportShareBeforeDiscount: number;
-}): { doctorAbsorb: number; clinicAbsorb: number; supportAbsorb: number } {
-  const total = options.doctorShareBeforeDiscount + options.clinicShareBeforeDiscount + options.supportShareBeforeDiscount;
-  if (total <= 0) {
-    return { doctorAbsorb: 0, clinicAbsorb: options.discountAmount, supportAbsorb: 0 };
-  }
+}): {
+  clinicAbsorbAmount: number;
+  doctorAbsorbAmount: number;
+  absorptionBreakdown: any;
+} {
+  const { absorptionMode, discountAmount, doctorShareBeforeDiscount, clinicShareBeforeDiscount } = options;
+  const total = doctorShareBeforeDiscount + clinicShareBeforeDiscount;
+  const breakdown: any = { mode: absorptionMode };
 
-  switch (options.absorptionMode) {
+  switch (absorptionMode) {
     case "CLINIC_ABSORBS":
-      return {
-        doctorAbsorb: 0,
-        clinicAbsorb: options.discountAmount,
-        supportAbsorb: 0,
-      };
     case "DOCTOR_PROTECTED":
+    case "CLINIC_ONLY":
+      breakdown.clinicAbsorb = discountAmount;
+      breakdown.doctorAbsorb = 0;
       return {
-        doctorAbsorb: 0,
-        clinicAbsorb: options.discountAmount,
-        supportAbsorb: 0,
+        clinicAbsorbAmount: discountAmount,
+        doctorAbsorbAmount: 0,
+        absorptionBreakdown: breakdown,
       };
-    case "PROPORTIONAL": {
-      const d = options.doctorShareBeforeDiscount / total;
-      const c = options.clinicShareBeforeDiscount / total;
-      const s = options.supportShareBeforeDiscount / total;
+
+    case "DOCTOR_ONLY":
+      breakdown.clinicAbsorb = 0;
+      breakdown.doctorAbsorb = discountAmount;
       return {
-        doctorAbsorb: Math.round(options.discountAmount * d * 100) / 100,
-        clinicAbsorb: Math.round(options.discountAmount * c * 100) / 100,
-        supportAbsorb: Math.round(options.discountAmount * s * 100) / 100,
+        clinicAbsorbAmount: 0,
+        doctorAbsorbAmount: discountAmount,
+        absorptionBreakdown: breakdown,
       };
-    }
+
+    case "PROPORTIONAL":
+      const doctorProportion = doctorShareBeforeDiscount / total;
+      const clinicProportion = clinicShareBeforeDiscount / total;
+      breakdown.clinicAbsorb = Math.round(discountAmount * clinicProportion * 100) / 100;
+      breakdown.doctorAbsorb = Math.round(discountAmount * doctorProportion * 100) / 100;
+      return {
+        clinicAbsorbAmount: breakdown.clinicAbsorb,
+        doctorAbsorbAmount: breakdown.doctorAbsorb,
+        absorptionBreakdown: breakdown,
+      };
+
+    case "EQUAL_SPLIT":
+      const half = Math.round(discountAmount * 0.5 * 100) / 100;
+      breakdown.clinicAbsorb = half;
+      breakdown.doctorAbsorb = half;
+      return {
+        clinicAbsorbAmount: half,
+        doctorAbsorbAmount: half,
+        absorptionBreakdown: breakdown,
+      };
+
+    case "MANUAL_SPLIT":
     case "APPROVAL_BASED_SPLIT":
-    default:
+      // For MANUAL_SPLIT / APPROVAL_BASED_SPLIT, we expect explicit amounts in the payload
+      // Default to clinic absorbs if not provided (legacy fallback)
+      breakdown.clinicAbsorb = discountAmount;
+      breakdown.doctorAbsorb = 0;
       return {
-        doctorAbsorb: 0,
-        clinicAbsorb: options.discountAmount,
-        supportAbsorb: 0,
+        clinicAbsorbAmount: discountAmount,
+        doctorAbsorbAmount: 0,
+        absorptionBreakdown: breakdown,
       };
+
+    default:
+      throw new Error(`Unsupported absorption mode: ${absorptionMode}`);
   }
 }
 

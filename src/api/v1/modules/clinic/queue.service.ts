@@ -88,9 +88,38 @@ function computePriorityScore(ticket: {
 }
 
 /**
+ * Retry wrapper for handling P2002 unique constraint violations during concurrent ticket creation.
+ * Implements exponential backoff: 50ms, 100ms, 200ms.
+ */
+async function withRetryOnP2002<T>(fn: () => Promise<T>, maxAttempts = 3): Promise<T> {
+  const delays = [50, 100, 200];
+  let lastError: any;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      lastError = err;
+      const isP2002 = err?.code === "P2002" || err?.meta?.code === "P2002";
+      const isTokenConflict = isP2002 && (err?.meta?.target?.includes?.("tokenNo") || err?.meta?.target?.includes?.("branchId_queueSessionId_tokenNo"));
+
+      if (!isTokenConflict || attempt === maxAttempts - 1) {
+        throw err;
+      }
+
+      console.warn(`[Queue] Token collision detected (attempt ${attempt + 1}/${maxAttempts}), retrying after ${delays[attempt]}ms...`);
+      await new Promise(resolve => setTimeout(resolve, delays[attempt]));
+    }
+  }
+
+  throw lastError;
+}
+
+/**
  * Issue walk-in ticket. Creates QueueTicket with status WAITING; optional appointmentId link.
  * When no appointmentId is provided but patientId and doctorId are present, auto-creates a WALKIN
  * appointment (status CHECKED_IN) so all paths have an appointment for intake.
+ * Includes retry logic to handle concurrent token generation collisions.
  */
 async function issueTicket(
   orgId: number,
@@ -109,7 +138,8 @@ async function issueTicket(
   dateOnly.setUTCHours(0, 0, 0, 0);
   const type = "GENERAL";
 
-  return await prisma.$transaction(async (tx: any) => {
+  return await withRetryOnP2002(async () => {
+    return await prisma.$transaction(async (tx: any) => {
     let appointmentId = data.appointmentId ?? null;
 
     if (!appointmentId && data.patientId && data.doctorId) {
@@ -147,6 +177,14 @@ async function issueTicket(
             eventType: "CREATED",
             byUserId: createdByUserId,
             meta: { source: "WALKIN", walkIn: true },
+          },
+        });
+        await tx.appointmentEvent.create({
+          data: {
+            appointmentId: walkInAppointment.id,
+            eventType: "CHECKED_IN",
+            byUserId: createdByUserId,
+            meta: { source: "WALKIN", autoCheckedIn: true },
           },
         });
         appointmentId = walkInAppointment.id;
@@ -210,6 +248,7 @@ async function issueTicket(
     });
 
     return ticket;
+    });
   });
 }
 
@@ -339,6 +378,43 @@ async function callNext(
     },
   });
 
+  // Sync appointment status using state-machine-compliant transitions
+  // CHECKED_IN → ENQUEUE → IN_QUEUE, then IN_QUEUE → CALL → CALLED
+  if (next.appointmentId) {
+    const apt = await prisma.appointment.findUnique({
+      where: { id: next.appointmentId },
+      select: { id: true, status: true, orgId: true, branchId: true },
+    });
+
+    if (apt) {
+      const context = { orgId: apt.orgId, branchId: apt.branchId };
+
+      // First transition: CHECKED_IN → IN_QUEUE (using ENQUEUE action)
+      if (apt.status === "CHECKED_IN") {
+        try {
+          await appointmentService.enqueueAppointment(next.appointmentId, userId, context);
+        } catch (e) {
+          // If ENQUEUE fails (e.g., already IN_QUEUE), continue to CALL
+          console.warn(`[queue.callNext] ENQUEUE failed for appointment ${next.appointmentId}:`, e?.message);
+        }
+      }
+
+      // Second transition: IN_QUEUE → CALLED via appointmentService (no doctor ownership required)
+      const updatedApt = await prisma.appointment.findUnique({
+        where: { id: next.appointmentId },
+        select: { status: true },
+      });
+
+      if (updatedApt?.status === "IN_QUEUE") {
+        try {
+          await appointmentService.callAppointment(next.appointmentId, userId, context);
+        } catch (e) {
+          console.warn(`[queue.callNext] CALL failed for appointment ${next.appointmentId}:`, e?.message);
+        }
+      }
+    }
+  }
+
   return updated;
 }
 
@@ -351,7 +427,7 @@ async function skipTicket(ticketId: number, userId: number) {
     select: { id: true, status: true, priorityScore: true },
   });
   if (!ticket) throw new Error(CLINIC_ERROR_CODES.TICKET_NOT_FOUND);
-  if (ticket.status !== "CALLED") throw new Error(CLINIC_ERROR_CODES.INVALID_STATUS_TRANSITION);
+  if (!(["CALLED", "WAITING"] as string[]).includes(ticket.status)) throw new Error(CLINIC_ERROR_CODES.INVALID_STATUS_TRANSITION);
 
   const updated = await prisma.queueTicket.update({
     where: { id: ticketId },
@@ -387,17 +463,29 @@ async function startService(ticketId: number, userId: number) {
 
   let visitId = null;
   if (ticket.petId != null && ticket.patientId != null && ticket.doctorId != null) {
-    const visit = await emrService.createVisit({
-      orgId: ticket.orgId,
-      branchId: ticket.branchId,
-      petId: ticket.petId,
-      patientId: ticket.patientId,
-      doctorId: ticket.doctorId,
-      appointmentId: ticket.appointmentId ?? null,
-      status: "IN_PROGRESS",
-      startedAt: new Date(),
-    });
-    visitId = visit.id;
+    // Guard against duplicate visits: check if appointment already has a linked visit
+    if (ticket.appointmentId) {
+      const existingVisit = await prisma.visit.findFirst({
+        where: { appointmentId: ticket.appointmentId },
+        select: { id: true },
+      });
+      if (existingVisit) {
+        visitId = existingVisit.id;
+      }
+    }
+    if (!visitId) {
+      const visit = await emrService.createVisit({
+        orgId: ticket.orgId,
+        branchId: ticket.branchId,
+        petId: ticket.petId,
+        patientId: ticket.patientId,
+        doctorId: ticket.doctorId,
+        appointmentId: ticket.appointmentId ?? null,
+        status: "IN_PROGRESS",
+        startedAt: new Date(),
+      });
+      visitId = visit.id;
+    }
   }
 
   const updated = await prisma.queueTicket.update({
@@ -414,6 +502,19 @@ async function startService(ticketId: number, userId: number) {
     },
   });
 
+  // Sync appointment status: CALLED → IN_CONSULT via state-machine-compliant appointmentService
+  if (ticket.appointmentId) {
+    try {
+      await appointmentService.startConsultAppointment(
+        ticket.appointmentId,
+        userId,
+        { orgId: ticket.orgId, branchId: ticket.branchId }
+      );
+    } catch (e: any) {
+      console.warn(`[queue.startService] START_CONSULT failed for appointment ${ticket.appointmentId}:`, e?.message);
+    }
+  }
+
   return updated;
 }
 
@@ -423,10 +524,36 @@ async function startService(ticketId: number, userId: number) {
 async function completeService(ticketId: number, userId: number) {
   const ticket = await prisma.queueTicket.findUnique({
     where: { id: ticketId },
-    select: { id: true, status: true, appointmentId: true, visitId: true },
+    select: { id: true, status: true, appointmentId: true, visitId: true, orgId: true, branchId: true },
   });
   if (!ticket) throw new Error(CLINIC_ERROR_CODES.TICKET_NOT_FOUND);
   if (ticket.status !== "IN_SERVICE") throw new Error(CLINIC_ERROR_CODES.INVALID_STATUS_TRANSITION);
+
+  // Complete visit before marking the ticket DONE so a policy failure cannot strand DONE + IN_PROGRESS visit.
+  // Canonical path: policy, audit, room cleaning, settlement (via emr.updateVisit).
+  if (ticket.visitId) {
+    const auditQueue = { changedByRole: "STAFF" as const, completionSource: "QUEUE_TICKET_DONE" };
+    let result = await emrService.completeVisitWithPolicy(ticket.branchId, ticket.visitId, userId, {}, auditQueue);
+    if (!result.ok && result.code === "COMPLETION_REQUIREMENTS_NOT_MET") {
+      result = await emrService.completeVisitWithPolicy(
+        ticket.branchId,
+        ticket.visitId,
+        userId,
+        {
+          overrideReason:
+            "Queue: service marked complete; clinical completion requirements were not all met (operational sync).",
+        },
+        auditQueue
+      );
+    }
+    if (!result.ok) {
+      const detail =
+        result.code === "COMPLETION_REQUIREMENTS_NOT_MET" && result.unmet?.length
+          ? result.unmet.join("; ")
+          : result.code || "Visit completion failed";
+      throw new Error(detail);
+    }
+  }
 
   const updated = await prisma.queueTicket.update({
     where: { id: ticketId },
@@ -442,20 +569,17 @@ async function completeService(ticketId: number, userId: number) {
     },
   });
 
-  if (ticket.visitId) {
-    await prisma.visit.update({
-      where: { id: ticket.visitId },
-      data: { status: "COMPLETED", completedAt: new Date() },
-    });
-    const { createSettlementLedgerForVisit } = require("./doctorSettlement.service");
-    createSettlementLedgerForVisit(ticket.visitId).catch(() => {});
-  }
-
+  // Sync appointment status: IN_CONSULT → COMPLETED via state-machine-compliant appointmentService
   if (ticket.appointmentId) {
-    await prisma.appointment.update({
-      where: { id: ticket.appointmentId },
-      data: { status: "COMPLETED" },
-    });
+    try {
+      await appointmentService.completeAppointment(
+        ticket.appointmentId,
+        userId,
+        { orgId: ticket.orgId, branchId: ticket.branchId }
+      );
+    } catch (e: any) {
+      console.warn(`[queue.completeService] COMPLETE failed for appointment ${ticket.appointmentId}:`, e?.message);
+    }
   }
 
   return updated;

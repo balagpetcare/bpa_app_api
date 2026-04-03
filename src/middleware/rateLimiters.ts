@@ -70,6 +70,14 @@ const governanceMutationLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+/** Warehouse / inventory stock mutations (manual in/out, draft transfer, dispatch). Per-IP. */
+const inventoryWarehouseMutationLimiter = rateLimit({
+  windowMs: numEnv('RL_INVENTORY_WAREHOUSE_MUTATION_WINDOW_MS', 60 * 1000),
+  limit: numEnv('RL_INVENTORY_WAREHOUSE_MUTATION_MAX', 120),
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 module.exports = {
   generalLimiter,
   authLimiter,
@@ -79,6 +87,7 @@ module.exports = {
   geocodeLimiter,
   productImportUploadLimiter,
   governanceMutationLimiter,
+  inventoryWarehouseMutationLimiter,
 };
 
 export {};

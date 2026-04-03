@@ -1,6 +1,4 @@
-
-const { PrismaClient } = require("@prisma/client");
-const prisma = new PrismaClient();
+const prisma = require("../../infrastructure/db/prismaClient");
 
 function searchFilter(q) {
   if (!q) return {};

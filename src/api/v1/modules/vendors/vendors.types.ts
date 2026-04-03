@@ -33,6 +33,12 @@ export interface CreateVendorInput {
   openingBalance?: number;
   notes?: string;
   contactJson?: Record<string, unknown>;
+  defaultLeadTimeDays?: number;
+  minOrderValue?: number;
+  currencyPreference?: string;
+  asnSupported?: boolean;
+  deliveryWindowsJson?: Record<string, unknown>;
+  preferredWarehouseId?: number | null;
 }
 
 export interface UpdateVendorInput {
@@ -51,6 +57,12 @@ export interface UpdateVendorInput {
   openingBalance?: number;
   notes?: string;
   contactJson?: Record<string, unknown>;
+  defaultLeadTimeDays?: number | null;
+  minOrderValue?: number | null;
+  currencyPreference?: string | null;
+  asnSupported?: boolean;
+  deliveryWindowsJson?: Record<string, unknown> | null;
+  preferredWarehouseId?: number | null;
 }
 
 export interface ListVendorsFilter {

@@ -29,6 +29,7 @@ export async function getTodayDueMedicines(
     where: { id: courseId },
     include: {
       patient: { select: { id: true, profile: { select: { displayName: true } } } },
+      visit: { select: { id: true, petId: true } },
       prescriptionBranch: { select: { id: true, name: true } },
       treatmentBranch: { select: { id: true, name: true } },
       days: {

@@ -1,8 +1,15 @@
 const router = require("express").Router();
 const common = require("./common.controller");
 
+// Animal taxonomy (enterprise)
+router.get("/animal-categories", common.getAnimalCategories);
 router.get("/animal-types", common.getAnimalTypes);
+router.get("/animal-types/:id/breeds", common.getBreedsByType);
+router.get("/breeds/:breedId/sub-breeds", common.getSubBreedsByBreed);
 router.get("/breeds/:typeId", common.getBreedsByType);
+router.get("/animal-colors", common.getAnimalColors);
+router.get("/coat-patterns", common.getCoatPatterns);
+router.get("/animal-sizes", common.getAnimalSizes);
 // Bangladesh location dropdowns
 router.get("/bd/divisions", common.getBdDivisions);
 router.get("/bd/districts", common.getBdDistricts);

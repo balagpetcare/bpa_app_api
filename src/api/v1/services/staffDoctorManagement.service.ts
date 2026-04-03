@@ -7,6 +7,7 @@ const prisma =
   require("../../../infrastructure/db/prismaClient");
 
 const { createRequest } = require("./clinicApprovalRequest.service");
+const doctorAssignmentRoles = require("../constants/doctorServiceAssignmentRoles");
 
 const DOCTOR_STAFF_TYPE = "DOCTOR";
 
@@ -1470,6 +1471,8 @@ export async function getBranchDoctorPerformanceSummary(
 export type BranchDoctorAuditLogsFilters = {
   memberId?: number;
   action?: string;
+  /** When set, matches DoctorAuditLog.action starting with this prefix (e.g. SERVICE_MAPPING). */
+  actionPrefix?: string;
   from?: string;
   to?: string;
   limit?: number;
@@ -1493,7 +1496,11 @@ export async function getBranchDoctorAuditLogs(
     if (!prof) return { items: [], total: 0 };
     where.clinicStaffProfileId = (prof as any).id;
   }
-  if (filters.action) where.action = filters.action;
+  if (filters.actionPrefix) {
+    where.action = { startsWith: filters.actionPrefix };
+  } else if (filters.action) {
+    where.action = filters.action;
+  }
   if (filters.from || filters.to) {
     where.createdAt = {};
     if (filters.from) where.createdAt.gte = new Date(filters.from);
@@ -1690,7 +1697,7 @@ export async function getServiceAssignmentMatrix(branchId: number): Promise<any>
     prisma.service.findMany({
       where: { branchId, status: "ACTIVE" },
       select: { id: true, name: true, category: true },
-      take: 100,
+      take: 500,
     }),
   ]);
 
@@ -2063,7 +2070,10 @@ export async function getDoctor360Summary(branchId: number, memberId: number): P
       include: { service: { select: { name: true } } },
       take: 20,
     }).then((rows: any[]) => rows.map((r) => ({ id: r.serviceId, name: r.service?.name }))),
-    getDoctorSchedule(branchId, memberId).then((s: any) => (Array.isArray(s?.templates) ? s.templates : [])),
+    getDoctorSchedule(branchId, memberId, {
+      from: from.toISOString().slice(0, 10),
+      to: to.toISOString().slice(0, 10),
+    }).then((s: any) => (Array.isArray(s?.templates) ? s.templates : [])),
     getDoctorCredentials(branchId, memberId),
     getDoctorPerformance(branchId, memberId, { from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10) }),
     getBranchDoctorAuditLogs(branchId, { memberId, limit: 5, offset: 0 }).then((d: any) => (d?.items ?? [])),
@@ -2153,23 +2163,13 @@ export async function getAvailabilityBoard(branchId: number): Promise<any> {
 
 export async function getPendingApprovalsQueue(branchId: number): Promise<any[]> {
   const { listByBranch } = require("./clinicApprovalRequest.service");
-  const items = await listByBranch(branchId, {
+  const { items } = await listByBranch(branchId, {
     status: "PENDING",
-    requestType: undefined,
+    doctorQueueOnly: true,
+    limit: 500,
+    offset: 0,
   });
-  return items.filter((r: any) =>
-    [
-      "DOCTOR_INVITE",
-      "DOCTOR_SCHEDULE",
-      "DOCTOR_FEE_CHANGE",
-      "DOCTOR_ACTIVATION",
-      "DOCTOR_DEACTIVATION",
-      "DOCTOR_SERVICE_PRIVILEGE",
-      "DOCTOR_PACKAGE_PRIVILEGE",
-      "DOCTOR_LEAVE",
-      "DOCTOR_CREDENTIAL",
-    ].includes(r.requestType)
-  );
+  return items;
 }
 
 export type ListBranchInvitationsFilters = {
@@ -2258,4 +2258,479 @@ export async function inviteSearchDoctors(branchId: number, query: string): Prom
       email: u.auth?.email,
       phone: u.auth?.phone,
     }));
+}
+
+// --- Enterprise doctor–service assignment (doctor-centric API; legacy service-matrix unchanged) ---
+
+async function auditDoctorServiceMappingTx(
+  tx: any,
+  branchId: number,
+  profileId: number,
+  action: string,
+  changedByUserId: number,
+  payload: { field?: string; oldValue?: object | null; newValue?: object | null }
+): Promise<void> {
+  const branch = await tx.branch.findUnique({ where: { id: branchId }, select: { orgId: true } });
+  if (!branch) return;
+  await tx.doctorAuditLog.create({
+    data: {
+      orgId: branch.orgId,
+      branchId,
+      clinicStaffProfileId: profileId,
+      action,
+      field: payload.field ?? "serviceMapping",
+      oldValue: payload.oldValue ?? null,
+      newValue: payload.newValue ?? null,
+      changedByUserId,
+      changedByRole: "BRANCH_MANAGER",
+    },
+  });
+}
+
+function toServiceAssignmentMappingDto(m: any) {
+  const active = m.status === "ACTIVE";
+  const effective = !!m.isAllowed && active;
+  return {
+    id: m.id,
+    role: m.role,
+    isAllowed: m.isAllowed,
+    status: m.status,
+    requiresApproval: m.requiresApproval,
+    customDuration: m.customDuration ?? null,
+    bookingType: m.bookingType ?? null,
+    notes: m.notes ?? null,
+    effectiveAssigned: effective,
+  };
+}
+
+export async function getDoctorServiceAssignmentSummary(branchId: number) {
+  const doctors = await prisma.clinicStaffProfile.findMany({
+    where: { branchId, staffType: DOCTOR_STAFF_TYPE },
+    include: {
+      branchMember: {
+        select: { id: true, user: { select: { profile: { select: { displayName: true } } } } },
+      },
+      doctorServiceMappings: {
+        where: { branchId, isAllowed: true, status: "ACTIVE" },
+        select: { id: true },
+      },
+    },
+    orderBy: { id: "asc" },
+  });
+  const totalActiveServices = await prisma.service.count({ where: { branchId, status: "ACTIVE" } });
+  return {
+    doctors: (doctors as any[]).map((d: any) => ({
+      memberId: d.branchMemberId,
+      displayName: d.branchMember?.user?.profile?.displayName ?? `Doctor #${d.branchMemberId}`,
+      profileStatus: d.status,
+      assignedServiceCount: d.doctorServiceMappings.length,
+    })),
+    totalDoctors: doctors.length,
+    totalActiveServices,
+  };
+}
+
+export async function getDoctorServiceAssignmentDetail(branchId: number, memberId: number) {
+  const profile = await prisma.clinicStaffProfile.findFirst({
+    where: { branchId, branchMemberId: memberId, staffType: DOCTOR_STAFF_TYPE },
+    include: {
+      branchMember: {
+        select: { id: true, user: { select: { profile: { select: { displayName: true } } } } },
+      },
+    },
+  });
+  if (!profile) {
+    throw new Error("Doctor not found in this branch");
+  }
+
+  const [services, mappings, feeRows] = await Promise.all([
+    prisma.service.findMany({
+      where: { branchId, status: "ACTIVE" },
+      select: {
+        id: true,
+        name: true,
+        category: true,
+        status: true,
+        price: true,
+        duration: true,
+      },
+      take: 500,
+      orderBy: [{ category: "asc" }, { name: "asc" }],
+    }),
+    prisma.doctorServiceMapping.findMany({
+      where: { branchId, clinicStaffProfileId: profile.id },
+    }),
+    prisma.doctorServiceFee.findMany({
+      where: { clinicStaffProfileId: profile.id },
+      select: { serviceId: true, fee: true },
+    }),
+  ]);
+
+  const mapByServiceId = new Map<number, any>();
+  for (const m of mappings as any[]) mapByServiceId.set(m.serviceId, m);
+
+  const feeByServiceId = new Map<number, number>();
+  for (const f of feeRows as any[]) {
+    if (!feeByServiceId.has(f.serviceId)) feeByServiceId.set(f.serviceId, Number(f.fee));
+  }
+
+  const categoryToRows: Record<string, any[]> = {};
+  for (const s of services as any[]) {
+    const cat = String(s.category);
+    if (!categoryToRows[cat]) categoryToRows[cat] = [];
+    const m = mapByServiceId.get(s.id);
+    categoryToRows[cat].push({
+      serviceId: s.id,
+      name: s.name,
+      category: cat,
+      serviceStatus: s.status,
+      listPrice: s.price != null ? Number(s.price) : null,
+      duration: s.duration ?? null,
+      mapping: m ? toServiceAssignmentMappingDto(m) : null,
+      doctorFee: feeByServiceId.has(s.id) ? feeByServiceId.get(s.id)! : null,
+    });
+  }
+
+  const categories = Object.keys(categoryToRows)
+    .sort()
+    .map((category) => ({ category, services: categoryToRows[category] }));
+
+  return {
+    doctor: {
+      memberId: profile.branchMemberId,
+      displayName: (profile as any).branchMember?.user?.profile?.displayName ?? `Doctor #${profile.branchMemberId}`,
+      profileStatus: profile.status,
+      profileId: profile.id,
+    },
+    categories,
+    allowedRolesByCategory: doctorAssignmentRoles.buildAllowedRolesByCategoryRecord(),
+    activeServiceCount: (services as any[]).length,
+  };
+}
+
+export type BulkServiceAssignmentOp = { op: "upsert" | "delete"; serviceId: number; role?: string; isAllowed?: boolean };
+
+export async function bulkPatchDoctorServiceAssignment(
+  branchId: number,
+  memberId: number,
+  ops: BulkServiceAssignmentOp[],
+  userId: number
+): Promise<{ ok: boolean; errors: Array<{ index: number; message: string }> }> {
+  const errors: Array<{ index: number; message: string }> = [];
+  if (!Array.isArray(ops) || ops.length === 0) {
+    return { ok: false, errors: [{ index: 0, message: "ops array required" }] };
+  }
+  if (ops.length > 200) {
+    return { ok: false, errors: [{ index: 0, message: "Too many operations (max 200)" }] };
+  }
+
+  const profile = await prisma.clinicStaffProfile.findFirst({
+    where: { branchId, branchMemberId: memberId, staffType: DOCTOR_STAFF_TYPE },
+    select: { id: true, status: true },
+  });
+  if (!profile) {
+    return { ok: false, errors: [{ index: 0, message: "Doctor not found in this branch" }] };
+  }
+  if (profile.status !== "ACTIVE") {
+    for (let i = 0; i < ops.length; i++) errors.push({ index: i, message: "Doctor profile is not ACTIVE" });
+    return { ok: false, errors };
+  }
+
+  const profileId = profile.id;
+  const serviceIds = [...new Set(ops.map((o) => Number(o.serviceId)).filter((id) => Number.isFinite(id)))];
+
+  const services = await prisma.service.findMany({
+    where: { branchId, id: { in: serviceIds } },
+    select: { id: true, category: true, status: true },
+  });
+  const serviceById = new Map<number, any>(services.map((s: any) => [s.id, s]));
+
+  const existingMapsList = await prisma.doctorServiceMapping.findMany({
+    where: { clinicStaffProfileId: profileId, branchId, serviceId: { in: serviceIds } },
+  });
+  const existingByServiceId = new Map<number, any>(existingMapsList.map((m: any) => [m.serviceId, m]));
+
+  for (let i = 0; i < ops.length; i++) {
+    const op = ops[i];
+    const sid = Number(op.serviceId);
+    if (!Number.isFinite(sid)) {
+      errors.push({ index: i, message: "Invalid serviceId" });
+      continue;
+    }
+    const svc = serviceById.get(sid);
+    if (op.op === "delete") {
+      continue;
+    }
+    if (op.op !== "upsert") {
+      errors.push({ index: i, message: "Invalid op" });
+      continue;
+    }
+    if (!svc) {
+      errors.push({ index: i, message: "Service not found in this branch" });
+      continue;
+    }
+    const existing = existingByServiceId.get(sid);
+    if (svc.status !== "ACTIVE" && !existing) {
+      errors.push({ index: i, message: "Cannot assign inactive service" });
+      continue;
+    }
+    if (svc.status !== "ACTIVE" && existing) {
+      errors.push({ index: i, message: "Cannot modify mapping for inactive service" });
+      continue;
+    }
+    const role = op.role ?? existing?.role ?? "CONSULTANT";
+    try {
+      doctorAssignmentRoles.assertRoleAllowedForCategory(role, String(svc.category));
+    } catch (e: any) {
+      errors.push({ index: i, message: e?.message ?? "Invalid role" });
+    }
+  }
+
+  if (errors.length > 0) return { ok: false, errors };
+
+  await prisma.$transaction(async (tx: any) => {
+    for (let i = 0; i < ops.length; i++) {
+      const op = ops[i];
+      const sid = Number(op.serviceId);
+      if (op.op === "delete") {
+        const ex = existingByServiceId.get(sid);
+        if (!ex) continue;
+        await tx.doctorServiceMapping.delete({ where: { id: ex.id } });
+        await auditDoctorServiceMappingTx(tx, branchId, profileId, "SERVICE_MAPPING_DELETE", userId, {
+          oldValue: { serviceId: sid },
+        });
+        existingByServiceId.delete(sid);
+        continue;
+      }
+      const svc = serviceById.get(sid)!;
+      const existing = existingByServiceId.get(sid);
+      const role = op.role ?? existing?.role ?? "CONSULTANT";
+      const isAllowed = op.isAllowed !== undefined ? op.isAllowed : existing?.isAllowed ?? true;
+
+      if (existing) {
+        const oldVal = {
+          status: existing.status,
+          isAllowed: existing.isAllowed,
+          role: existing.role,
+          customDuration: existing.customDuration,
+        };
+        const result = await tx.doctorServiceMapping.update({
+          where: { id: existing.id },
+          data: {
+            role,
+            isAllowed,
+            customDuration: existing.customDuration,
+            bookingType: existing.bookingType,
+            requiresApproval: existing.requiresApproval,
+            notes: existing.notes,
+            status: existing.status,
+          },
+        });
+        await auditDoctorServiceMappingTx(tx, branchId, profileId, "SERVICE_MAPPING_UPDATE", userId, {
+          oldValue: oldVal,
+          newValue: {
+            serviceId: sid,
+            status: result.status,
+            isAllowed: result.isAllowed,
+            role: result.role,
+          },
+        });
+        existingByServiceId.set(sid, result);
+      } else {
+        const result = await tx.doctorServiceMapping.create({
+          data: {
+            clinicStaffProfileId: profileId,
+            serviceId: sid,
+            branchId,
+            role,
+            isAllowed,
+            requiresApproval: false,
+            status: "ACTIVE",
+          },
+        });
+        await auditDoctorServiceMappingTx(tx, branchId, profileId, "SERVICE_MAPPING_CREATE", userId, {
+          newValue: { serviceId: sid, status: result.status, role: result.role },
+        });
+        existingByServiceId.set(sid, result);
+      }
+    }
+  });
+
+  return { ok: true, errors: [] };
+}
+
+function parseTemplatePayload(payload: unknown): { items: Array<{ serviceId: number; role?: string }> } {
+  const p = payload as any;
+  if (!p || !Array.isArray(p.items)) return { items: [] };
+  return {
+    items: p.items
+      .map((x: any) => ({ serviceId: Number(x.serviceId), role: x.role ? String(x.role) : undefined }))
+      .filter((x: any) => Number.isFinite(x.serviceId)),
+  };
+}
+
+export async function listDoctorServiceAssignmentTemplates(branchId: number, forMemberId?: number) {
+  const where: any =
+    forMemberId != null
+      ? {
+          branchId,
+          OR: [{ scope: "BRANCH" }, { scope: "MEMBER", branchMemberId: forMemberId }],
+        }
+      : { branchId, scope: "BRANCH" };
+
+  const rows = await prisma.doctorServiceAssignmentTemplate.findMany({
+    where,
+    orderBy: { name: "asc" },
+  });
+  return (rows as any[]).map((r: any) => {
+    const { items } = parseTemplatePayload(r.payload);
+    return {
+      id: r.id,
+      name: r.name,
+      scope: r.scope,
+      branchMemberId: r.branchMemberId,
+      itemCount: items.length,
+      createdAt: r.createdAt.toISOString(),
+    };
+  });
+}
+
+export async function getDoctorServiceAssignmentTemplateById(branchId: number, templateId: number) {
+  const r = await prisma.doctorServiceAssignmentTemplate.findFirst({
+    where: { id: templateId, branchId },
+  });
+  if (!r) return null;
+  const payload = parseTemplatePayload((r as any).payload);
+  return {
+    id: (r as any).id,
+    name: (r as any).name,
+    scope: (r as any).scope,
+    branchMemberId: (r as any).branchMemberId,
+    itemCount: payload.items.length,
+    createdAt: (r as any).createdAt.toISOString(),
+    payload,
+  };
+}
+
+export async function createDoctorServiceAssignmentTemplate(
+  branchId: number,
+  userId: number,
+  body: { name: string; scope?: string; branchMemberId?: number | null; payload: { items: Array<{ serviceId: number; role?: string }> } }
+) {
+  const scope = body.scope === "MEMBER" ? "MEMBER" : "BRANCH";
+  const branchMemberId = scope === "MEMBER" ? Number(body.branchMemberId) : null;
+  if (scope === "MEMBER" && !Number.isFinite(branchMemberId)) {
+    throw new Error("branchMemberId required for MEMBER scope template");
+  }
+  const items = (body.payload?.items ?? []).filter((x) => Number.isFinite(Number(x.serviceId)));
+  if (!items.length) throw new Error("payload.items required");
+  const serviceIds = items.map((i) => Number(i.serviceId));
+  const uniq = [...new Set(serviceIds)];
+  const svcs = await prisma.service.findMany({
+    where: { branchId, id: { in: uniq }, status: "ACTIVE" },
+    select: { id: true, category: true },
+  });
+  if (svcs.length !== uniq.length) {
+    throw new Error("One or more services are invalid or inactive for this branch");
+  }
+  for (const it of items) {
+    const svc = (svcs as any[]).find((s: any) => s.id === Number(it.serviceId));
+    if (!svc) continue;
+    const role = it.role ?? "CONSULTANT";
+    doctorAssignmentRoles.assertRoleAllowedForCategory(role, String(svc.category));
+  }
+  const row = await prisma.doctorServiceAssignmentTemplate.create({
+    data: {
+      branchId,
+      name: String(body.name).slice(0, 128),
+      scope,
+      branchMemberId: scope === "MEMBER" ? branchMemberId : null,
+      payload: { items },
+      createdByUserId: userId,
+    },
+  });
+  return getDoctorServiceAssignmentTemplateById(branchId, row.id);
+}
+
+export async function updateDoctorServiceAssignmentTemplate(
+  branchId: number,
+  templateId: number,
+  _userId: number,
+  body: { name?: string; payload?: { items: Array<{ serviceId: number; role?: string }> } }
+) {
+  const existing = await prisma.doctorServiceAssignmentTemplate.findFirst({
+    where: { id: templateId, branchId },
+  });
+  if (!existing) throw new Error("Template not found");
+  const data: any = {};
+  if (body.name != null) data.name = String(body.name).slice(0, 128);
+  if (body.payload?.items) {
+    const items = body.payload.items.filter((x) => Number.isFinite(Number(x.serviceId)));
+    const serviceIds = items.map((i) => Number(i.serviceId));
+    const uniq = [...new Set(serviceIds)];
+    const svcs = await prisma.service.findMany({
+      where: { branchId, id: { in: uniq }, status: "ACTIVE" },
+      select: { id: true, category: true },
+    });
+    if (svcs.length !== uniq.length) {
+      throw new Error("One or more services are invalid or inactive for this branch");
+    }
+    for (const it of items) {
+      const svc = (svcs as any[]).find((s: any) => s.id === Number(it.serviceId));
+      if (!svc) continue;
+      const role = it.role ?? "CONSULTANT";
+      doctorAssignmentRoles.assertRoleAllowedForCategory(role, String(svc.category));
+    }
+    data.payload = { items };
+  }
+  if (Object.keys(data).length === 0) return getDoctorServiceAssignmentTemplateById(branchId, templateId);
+  await prisma.doctorServiceAssignmentTemplate.update({
+    where: { id: templateId },
+    data,
+  });
+  return getDoctorServiceAssignmentTemplateById(branchId, templateId);
+}
+
+export async function deleteDoctorServiceAssignmentTemplate(branchId: number, templateId: number) {
+  const existing = await prisma.doctorServiceAssignmentTemplate.findFirst({
+    where: { id: templateId, branchId },
+  });
+  if (!existing) throw new Error("Template not found");
+  await prisma.doctorServiceAssignmentTemplate.delete({ where: { id: templateId } });
+}
+
+export async function applyDoctorServiceAssignmentTemplate(
+  branchId: number,
+  templateId: number,
+  targetMemberId: number,
+  mode: "merge" | "replace",
+  userId: number
+): Promise<{ ok: boolean; errors: Array<{ index: number; message: string }> }> {
+  const tpl = await prisma.doctorServiceAssignmentTemplate.findFirst({
+    where: { id: templateId, branchId },
+  });
+  if (!tpl) throw new Error("Template not found");
+  const { items } = parseTemplatePayload((tpl as any).payload);
+  if ((tpl as any).scope === "MEMBER" && (tpl as any).branchMemberId != null && (tpl as any).branchMemberId !== targetMemberId) {
+    throw new Error("This template belongs to another doctor");
+  }
+  if (!items.length) return { ok: true, errors: [] };
+
+  const ops: BulkServiceAssignmentOp[] = [];
+  const profileId = await getProfileId(branchId, targetMemberId);
+  if (!profileId) throw new Error("Doctor not found in this branch");
+
+  if (mode === "replace") {
+    const allMaps = await prisma.doctorServiceMapping.findMany({
+      where: { branchId, clinicStaffProfileId: profileId },
+      select: { serviceId: true },
+    });
+    for (const m of allMaps as any[]) {
+      ops.push({ op: "delete", serviceId: m.serviceId });
+    }
+  }
+  for (const it of items) {
+    ops.push({ op: "upsert", serviceId: it.serviceId, role: it.role ?? "CONSULTANT", isAllowed: true });
+  }
+  return bulkPatchDoctorServiceAssignment(branchId, targetMemberId, ops, userId);
 }

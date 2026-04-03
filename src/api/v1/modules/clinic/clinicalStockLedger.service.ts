@@ -6,7 +6,7 @@
 const prisma =
   require("../../../../infrastructure/db/prismaClient").default ??
   require("../../../../infrastructure/db/prismaClient");
-const { Decimal } = require("@prisma/client/runtime/library");
+const { Decimal } = require("@prisma/client-runtime-utils");
 
 export type ClinicalLedgerEntryInput = {
   orgId: number;

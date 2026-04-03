@@ -64,6 +64,7 @@ Every approve/reject is logged to `approval_action_logs`:
 - **Owner routes:** `src/api/v1/modules/owner/owner.routes.ts`; handler in `ownerPolicy.controller.ts`.
 - **Clinic routes:** `src/api/v1/modules/clinic/clinic.routes.ts`; handler in `clinic.controller.ts`.
 - **Owner UI:** `bpa_web/app/owner/(larkon)/approvals/page.tsx`; menu: “Clinic Approvals” in `permissionMenu.ts`.
+- **See also (staff doctor approvals UI / enterprise plan):** `bpa_web/docs/STAFF_CLINIC_DOCTOR_APPROVALS_ENTERPRISE_PLAN.md`.
 
 ## Backlog (30+ flows)
 

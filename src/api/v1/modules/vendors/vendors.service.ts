@@ -27,6 +27,12 @@ async function createVendor(data: CreateVendorInput) {
     openingBalance: data.openingBalance ?? 0,
     notes: data.notes?.trim() || null,
     contactJson: (data.contactJson ?? undefined) as any,
+    defaultLeadTimeDays: data.defaultLeadTimeDays ?? undefined,
+    minOrderValue: data.minOrderValue != null ? data.minOrderValue : undefined,
+    currencyPreference: data.currencyPreference?.trim() || undefined,
+    asnSupported: data.asnSupported ?? undefined,
+    deliveryWindowsJson: (data.deliveryWindowsJson ?? undefined) as any,
+    preferredWarehouseId: data.preferredWarehouseId ?? undefined,
   };
 
   let code = data.code?.trim() || null;
@@ -98,6 +104,12 @@ async function updateVendor(id: number, orgId: number, data: UpdateVendorInput) 
   if (data.openingBalance !== undefined) payload.openingBalance = data.openingBalance;
   if (data.notes !== undefined) payload.notes = data.notes?.trim() || null;
   if (data.contactJson !== undefined) payload.contactJson = data.contactJson;
+  if (data.defaultLeadTimeDays !== undefined) payload.defaultLeadTimeDays = data.defaultLeadTimeDays;
+  if (data.minOrderValue !== undefined) payload.minOrderValue = data.minOrderValue;
+  if (data.currencyPreference !== undefined) payload.currencyPreference = data.currencyPreference?.trim() || null;
+  if (data.asnSupported !== undefined) payload.asnSupported = data.asnSupported;
+  if (data.deliveryWindowsJson !== undefined) payload.deliveryWindowsJson = data.deliveryWindowsJson as any;
+  if (data.preferredWarehouseId !== undefined) payload.preferredWarehouseId = data.preferredWarehouseId;
 
   await prisma.vendor.update({
     where: { id },

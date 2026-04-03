@@ -22,6 +22,19 @@ export const CLINIC_APPROVAL_REQUEST_TYPES = [
 
 export type ClinicApprovalRequestType = (typeof CLINIC_APPROVAL_REQUEST_TYPES)[number];
 
+/** Types surfaced on staff Doctor Operations → Pending approvals (subset of clinic approval workflow). */
+export const DOCTOR_APPROVAL_QUEUE_TYPES: ClinicApprovalRequestType[] = [
+  "DOCTOR_INVITE",
+  "DOCTOR_SCHEDULE",
+  "DOCTOR_FEE_CHANGE",
+  "DOCTOR_ACTIVATION",
+  "DOCTOR_DEACTIVATION",
+  "DOCTOR_SERVICE_PRIVILEGE",
+  "DOCTOR_PACKAGE_PRIVILEGE",
+  "DOCTOR_LEAVE",
+  "DOCTOR_CREDENTIAL",
+];
+
 export const CLINIC_APPROVAL_REQUEST_STATUSES = ["PENDING", "APPROVED", "REJECTED"] as const;
 
 export type ClinicApprovalRequestStatus = (typeof CLINIC_APPROVAL_REQUEST_STATUSES)[number];

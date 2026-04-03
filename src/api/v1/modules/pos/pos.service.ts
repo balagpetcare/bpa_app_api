@@ -41,6 +41,22 @@ async function getProductByBarcode(branchId: number, barcode: string) {
       select: { price: true },
     });
     if (locationPrice) price = Number(locationPrice.price);
+    else {
+      const branch = await prisma.branch.findUnique({
+        where: { id: branchId },
+        select: { orgId: true },
+      });
+      if (branch) {
+        const { resolveSellingPrice } = require("../pricing/pricingEngine.service");
+        const resolved = await resolveSellingPrice({
+          orgId: branch.orgId,
+          variantId: variant.id,
+          branchId,
+          locationId: shopLocation.id,
+        });
+        if (resolved.price != null) price = resolved.price;
+      }
+    }
   }
   return {
     productId: variant.productId,
@@ -380,7 +396,7 @@ async function createPosReturn(data: {
     let creditAmount = 0;
     for (const item of returnRequest.items) {
       const oi = orderItemsByVariant.get(item.variantId);
-      if (oi) creditAmount += Number(oi.price) * item.quantity;
+      if (oi) creditAmount += Number((oi as { price?: unknown }).price) * item.quantity;
     }
     creditAmount = Math.round(creditAmount * 100) / 100;
 

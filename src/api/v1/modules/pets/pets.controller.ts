@@ -43,12 +43,48 @@ function handlePrismaUnique(res, e) {
     if (arr.includes("microchipNumber")) {
       return res.status(409).json({
         success: false,
+        code: "DUPLICATE_PET",
         message: "This microchip number is already used.",
         field: "microchipNumber",
       });
     }
+    if (arr.includes("uniquePetId")) {
+      return res.status(409).json({
+        success: false,
+        code: "DUPLICATE_PET",
+        message: "Pet ID collision; please retry.",
+      });
+    }
   }
   return null;
+}
+
+async function resolveTaxonomySnapshots(p: {
+  animalTypeId: number;
+  breedId?: number | null;
+  subBreedId?: number | null;
+  colorId?: number | null;
+  coatPatternId?: number | null;
+  sizeId?: number | null;
+  customBreedText?: string | null;
+  customColorText?: string | null;
+}) {
+  const [animalType, breed, subBreed, color, coatPattern, size] = await Promise.all([
+    p.animalTypeId ? prisma.animalType.findUnique({ where: { id: p.animalTypeId }, select: { name: true } }) : null,
+    p.breedId ? prisma.breed.findUnique({ where: { id: p.breedId }, select: { name: true } }) : null,
+    p.subBreedId ? prisma.subBreed.findUnique({ where: { id: p.subBreedId }, select: { name: true } }) : null,
+    p.colorId ? prisma.animalColor.findUnique({ where: { id: p.colorId }, select: { name: true } }) : null,
+    p.coatPatternId ? prisma.coatPattern.findUnique({ where: { id: p.coatPatternId }, select: { name: true } }) : null,
+    p.sizeId ? prisma.animalSize.findUnique({ where: { id: p.sizeId }, select: { name: true } }) : null,
+  ]);
+  return {
+    animalTypeNameSnapshot: animalType?.name ?? null,
+    breedNameSnapshot: (p.customBreedText?.trim() || breed?.name) ?? null,
+    subBreedNameSnapshot: subBreed?.name ?? null,
+    colorNameSnapshot: (p.customColorText?.trim() || color?.name) ?? null,
+    coatPatternNameSnapshot: coatPattern?.name ?? null,
+    sizeNameSnapshot: size?.name ?? null,
+  };
 }
 
 // --------------------------------------------------
@@ -65,6 +101,10 @@ exports.getAllPets = async (req, res) => {
       include: {
         animalType: true,
         breed: true,
+        subBreed: true,
+        color: true,
+        coatPattern: true,
+        size: true,
         profilePic: true,
         weights: { orderBy: { recordedAt: "desc" }, take: 1 }, // latest weight
       },
@@ -83,6 +123,12 @@ exports.getAllPets = async (req, res) => {
   }
 };
 
+// Canonical Pet model: same uniquePetId pattern as clinic; userId = req.user.id only.
+function generateUniquePetId() {
+  const hex = require("crypto").randomBytes(6).toString("hex").toUpperCase();
+  return `PET-${hex}`;
+}
+
 // --------------------------------------------------
 // POST /api/v1/user/pets/register OR /api/v1/user/pets
 // --------------------------------------------------
@@ -97,6 +143,12 @@ exports.createPet = async (req, res) => {
       name,
       animalTypeId,
       breedId,
+      subBreedId,
+      colorId,
+      coatPatternId,
+      sizeId,
+      customBreedText,
+      customColorText,
       dateOfBirth,
       sex,
       microchipNumber,
@@ -116,35 +168,75 @@ exports.createPet = async (req, res) => {
       });
     }
 
-    const gender = parseGender(sex);
-      if (!gender) {
-        return res.status(400).json({
+    const microchip = toNullableString(microchipNumber);
+    if (microchip) {
+      const existing = await prisma.pet.findFirst({
+        where: { microchipNumber: microchip, deleted: false },
+        select: { id: true },
+      });
+      if (existing) {
+        return res.status(409).json({
           success: false,
-          message: "Invalid sex. Allowed values: MALE, FEMALE",
+          code: "DUPLICATE_PET",
+          message: "This microchip number is already used.",
+          field: "microchipNumber",
         });
       }
+    }
 
-      const pet = await prisma.pet.create({
-        data: {
-          name: String(name).trim(),
-          sex: gender, // ✅ enum-safe
-          dateOfBirth: parseNullableDate(dateOfBirth),
-          microchipNumber: toNullableString(microchipNumber),
-          isRescue: toBool(isRescue, false),
-          isNeutered: toBool(isNeutered, false),
-          foodHabits: toNullableString(foodHabits),
-          healthDisorders: toNullableString(healthDisorders),
-          notes: toNullableString(notes),
-
-          // ✅ relations (NO direct IDs)
-          user: { connect: { id: Number(userId) } },
-          animalType: { connect: { id: Number(animalTypeId) } },
-          ...(breedId ? { breed: { connect: { id: Number(breedId) } } } : {}),
-          ...(profilePicId
-            ? { profilePic: { connect: { id: Number(profilePicId) } } }
-            : {}),
-        },
+    const gender = parseGender(sex);
+    if (!gender) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid sex. Allowed values: MALE, FEMALE",
       });
+    }
+
+    const snapshots = await resolveTaxonomySnapshots({
+      animalTypeId: Number(animalTypeId),
+      breedId: toNullableInt(breedId),
+      subBreedId: toNullableInt(subBreedId),
+      colorId: toNullableInt(colorId),
+      coatPatternId: toNullableInt(coatPatternId),
+      sizeId: toNullableInt(sizeId),
+      customBreedText: toNullableString(customBreedText),
+      customColorText: toNullableString(customColorText),
+    });
+
+    const uniquePetId = generateUniquePetId();
+    const pet = await prisma.pet.create({
+      data: {
+        name: String(name).trim(),
+        sex: gender,
+        dateOfBirth: parseNullableDate(dateOfBirth),
+        microchipNumber: microchip ?? null,
+        uniquePetId,
+        isRescue: toBool(isRescue, false),
+        isNeutered: toBool(isNeutered, false),
+        foodHabits: toNullableString(foodHabits),
+        healthDisorders: toNullableString(healthDisorders),
+        notes: toNullableString(notes),
+        animalTypeNameSnapshot: snapshots.animalTypeNameSnapshot,
+        breedNameSnapshot: snapshots.breedNameSnapshot,
+        subBreedNameSnapshot: snapshots.subBreedNameSnapshot,
+        colorNameSnapshot: snapshots.colorNameSnapshot,
+        coatPatternNameSnapshot: snapshots.coatPatternNameSnapshot,
+        sizeNameSnapshot: snapshots.sizeNameSnapshot,
+        customBreedText: toNullableString(customBreedText),
+        customColorText: toNullableString(customColorText),
+
+        user: { connect: { id: Number(userId) } },
+        animalType: { connect: { id: Number(animalTypeId) } },
+        ...(breedId ? { breed: { connect: { id: Number(breedId) } } } : {}),
+        ...(subBreedId ? { subBreed: { connect: { id: Number(subBreedId) } } } : {}),
+        ...(colorId ? { color: { connect: { id: Number(colorId) } } } : {}),
+        ...(coatPatternId ? { coatPattern: { connect: { id: Number(coatPatternId) } } } : {}),
+        ...(sizeId ? { size: { connect: { id: Number(sizeId) } } } : {}),
+        ...(profilePicId
+          ? { profilePic: { connect: { id: Number(profilePicId) } } }
+          : {}),
+      },
+    });
 
     // -------------------------
     // 2️⃣ Store initial weight (OPTIONAL, separate table)
@@ -168,6 +260,10 @@ exports.createPet = async (req, res) => {
       include: {
         animalType: true,
         breed: true,
+        subBreed: true,
+        color: true,
+        coatPattern: true,
+        size: true,
         profilePic: true,
         weights: { orderBy: { recordedAt: "desc" }, take: 1 },
       },
@@ -204,6 +300,12 @@ exports.updatePet = async (req, res) => {
       name,
       animalTypeId,
       breedId,
+      subBreedId,
+      colorId,
+      coatPatternId,
+      sizeId,
+      customBreedText,
+      customColorText,
       dateOfBirth,
       sex,
       microchipNumber,
@@ -249,6 +351,24 @@ exports.updatePet = async (req, res) => {
       const bid = toNullableInt(breedId);
       data.breed = bid ? { connect: { id: Number(bid) } } : { disconnect: true };
     }
+    if (subBreedId !== undefined) {
+      const sid = toNullableInt(subBreedId);
+      data.subBreed = sid ? { connect: { id: Number(sid) } } : { disconnect: true };
+    }
+    if (colorId !== undefined) {
+      const cid = toNullableInt(colorId);
+      data.color = cid ? { connect: { id: Number(cid) } } : { disconnect: true };
+    }
+    if (coatPatternId !== undefined) {
+      const cpid = toNullableInt(coatPatternId);
+      data.coatPattern = cpid ? { connect: { id: Number(cpid) } } : { disconnect: true };
+    }
+    if (sizeId !== undefined) {
+      const szid = toNullableInt(sizeId);
+      data.size = szid ? { connect: { id: Number(szid) } } : { disconnect: true };
+    }
+    if (customBreedText !== undefined) data.customBreedText = toNullableString(customBreedText);
+    if (customColorText !== undefined) data.customColorText = toNullableString(customColorText);
     if (profilePicId !== undefined) {
       const pid = toNullableInt(profilePicId);
       data.profilePic = pid ? { connect: { id: Number(pid) } } : { disconnect: true };
@@ -260,10 +380,31 @@ exports.updatePet = async (req, res) => {
     // ✅ Ownership check + update in a transaction
     const existing = await prisma.pet.findFirst({
       where: { id: petId, userId: Number(userId), deleted: false },
-      select: { id: true },
+      select: { id: true, animalTypeId: true, breedId: true, subBreedId: true, colorId: true, coatPatternId: true, sizeId: true, customBreedText: true, customColorText: true },
     });
     if (!existing) {
       return res.status(404).json({ success: false, message: "Pet not found" });
+    }
+
+    const taxonomyKeys = ["subBreedId", "colorId", "coatPatternId", "sizeId", "customBreedText", "customColorText", "breedId", "animalTypeId"];
+    const taxonomyChanged = taxonomyKeys.some((k) => req.body[k] !== undefined);
+    if (taxonomyChanged) {
+      const snapshots = await resolveTaxonomySnapshots({
+        animalTypeId: animalTypeId !== undefined ? Number(animalTypeId) : existing.animalTypeId,
+        breedId: breedId !== undefined ? toNullableInt(breedId) : existing.breedId,
+        subBreedId: subBreedId !== undefined ? toNullableInt(subBreedId) : existing.subBreedId,
+        colorId: colorId !== undefined ? toNullableInt(colorId) : existing.colorId,
+        coatPatternId: coatPatternId !== undefined ? toNullableInt(coatPatternId) : existing.coatPatternId,
+        sizeId: sizeId !== undefined ? toNullableInt(sizeId) : existing.sizeId,
+        customBreedText: customBreedText !== undefined ? toNullableString(customBreedText) : existing.customBreedText,
+        customColorText: customColorText !== undefined ? toNullableString(customColorText) : existing.customColorText,
+      });
+      data.animalTypeNameSnapshot = snapshots.animalTypeNameSnapshot;
+      data.breedNameSnapshot = snapshots.breedNameSnapshot;
+      data.subBreedNameSnapshot = snapshots.subBreedNameSnapshot;
+      data.colorNameSnapshot = snapshots.colorNameSnapshot;
+      data.coatPatternNameSnapshot = snapshots.coatPatternNameSnapshot;
+      data.sizeNameSnapshot = snapshots.sizeNameSnapshot;
     }
 
     await prisma.$transaction(async (tx) => {
@@ -281,6 +422,10 @@ exports.updatePet = async (req, res) => {
       include: {
         animalType: true,
         breed: true,
+        subBreed: true,
+        color: true,
+        coatPattern: true,
+        size: true,
         profilePic: true,
         weights: { orderBy: { recordedAt: "desc" }, take: 1 },
       },
@@ -311,6 +456,10 @@ exports.getPetById = async (req, res) => {
       include: {
         animalType: true,
         breed: true,
+        subBreed: true,
+        color: true,
+        coatPattern: true,
+        size: true,
         profilePic: true,
         weights: { orderBy: { recordedAt: "desc" }, take: 1 },
       },

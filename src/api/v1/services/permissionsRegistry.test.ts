@@ -18,7 +18,7 @@ describe("permissionsRegistry.service", () => {
       label: expect.any(String),
       group: "Governance",
       description: expect.any(String),
-      scope: expect.stringMatching(/^(admin|producer|both)$/),
+      scope: expect.stringMatching(/^(admin|producer|both|branch)$/),
     });
   });
 
@@ -30,7 +30,7 @@ describe("permissionsRegistry.service", () => {
         expect(p).toHaveProperty("label", expect.any(String));
         expect(p).toHaveProperty("group", group);
         expect(p).toHaveProperty("description", expect.any(String));
-        expect(["admin", "producer", "both"]).toContain(p.scope);
+        expect(["admin", "producer", "both", "branch"]).toContain(p.scope);
       }
     }
   });

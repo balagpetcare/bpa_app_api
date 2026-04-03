@@ -10,11 +10,38 @@ const {
   resolveAuthContexts,
   decideRedirect,
 } = require("../../services/authUnified.service");
+const { memberRoleToWarehouseStaffRole } = require("../../utils/warehouseStaffRoleMapping");
+
+/** BranchAccessPermission.role is MemberRole — omit when invite uses WarehouseStaffRole-only values. */
+function memberRoleForBranchAccessPermission(role: string | null | undefined): string | undefined {
+  if (!role) return undefined;
+  const r = String(role).toUpperCase();
+  const memberRoles = new Set([
+    "OWNER",
+    "ORG_ADMIN",
+    "BRANCH_MANAGER",
+    "BRANCH_STAFF",
+    "SELLER",
+    "DELIVERY_MANAGER",
+    "DELIVERY_STAFF",
+    "WAREHOUSE_MANAGER",
+    "RECEIVING_STAFF",
+    "DISPATCH_STAFF",
+  ]);
+  return memberRoles.has(r) ? r : undefined;
+}
 
 /** Cookie options for access_token: host-only in dev (no Domain), so browser accepts on localhost:port. */
 function getAccessTokenCookieOptions() {
   const isProd = process.env.NODE_ENV === "production";
-  const opts = {
+  const opts: {
+    httpOnly: boolean;
+    sameSite: string;
+    secure: boolean;
+    maxAge: number;
+    path: string;
+    domain?: string;
+  } = {
     httpOnly: true,
     sameSite: "lax",
     secure: isProd,
@@ -28,7 +55,12 @@ function getAccessTokenCookieOptions() {
 /** Options for clearCookie (must match set cookie so browser clears the right one). */
 function getAccessTokenClearCookieOptions() {
   const isProd = process.env.NODE_ENV === "production";
-  const opts = { httpOnly: true, sameSite: "lax", secure: isProd, path: "/" };
+  const opts: { httpOnly: boolean; sameSite: string; secure: boolean; path: string; domain?: string } = {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: isProd,
+    path: "/",
+  };
   if (isProd && process.env.COOKIE_DOMAIN) opts.domain = process.env.COOKIE_DOMAIN;
   return opts;
 }
@@ -834,6 +866,7 @@ exports.verifyInvite = async (req, res) => {
       where: { tokenHash },
       include: {
         branch: { select: { id: true, name: true } },
+        warehouse: { select: { id: true, name: true } },
         org: { select: { id: true, name: true } },
       },
     });
@@ -871,16 +904,20 @@ exports.verifyInvite = async (req, res) => {
       return res.json({
         success: true,
         data: {
-          inviteType: "BRANCH_STAFF",
+          inviteType: staffInvite.targetType === "WAREHOUSE" ? "WAREHOUSE_STAFF" : "BRANCH_STAFF",
+          targetType: staffInvite.targetType || "BRANCH",
           orgId: staffInvite.orgId,
           branchId: staffInvite.branchId,
-          role: staffInvite.role,
+          warehouseId: staffInvite.warehouseId || null,
+          role: staffInvite.role || null,
+          warehouseRole: staffInvite.warehouseRole || null,
           email: staffInvite.email || null,
           phone: staffInvite.phone || null,
           displayName: staffInvite.displayName || null,
           expiresAt: staffInvite.expiresAt,
           org: staffInvite.org || null,
           branch: staffInvite.branch || null,
+          warehouse: staffInvite.warehouse || null,
           userExists,
           requiresRegistration: !userExists,
         },
@@ -988,7 +1025,11 @@ exports.acceptInvite = async (req, res) => {
     // 1) Staff invite
     const staffInvite = await prisma.staffInvite.findUnique({
       where: { tokenHash },
-      include: { branch: { select: { id: true, orgId: true } }, org: { select: { id: true, name: true } } },
+      include: {
+        branch: { select: { id: true, orgId: true } },
+        warehouse: { select: { id: true, orgId: true, isActive: true } },
+        org: { select: { id: true, name: true } },
+      },
     });
 
     if (staffInvite) {
@@ -1049,21 +1090,153 @@ exports.acceptInvite = async (req, res) => {
           uid = created.id;
         }
 
-        const member = await tx.branchMember.upsert({
-          where: { branchId_userId: { branchId: staffInvite.branchId, userId: uid } },
-          update: { role: staffInvite.role, status: "ACTIVE" },
-          create: {
-            orgId: staffInvite.orgId,
-            branchId: staffInvite.branchId,
-            userId: uid,
-            role: staffInvite.role,
-            status: "ACTIVE",
-            invitedByUserId: staffInvite.invitedByUserId,
-          },
-          select: { id: true },
-        });
+        let member: { id: number } | null = null;
+        if ((staffInvite.targetType || "BRANCH") === "WAREHOUSE") {
+          if (!staffInvite.warehouseId || !staffInvite.warehouseRole) {
+            throw Object.assign(new Error("Invalid warehouse invitation"), { statusCode: 400 });
+          }
+          const wh = await tx.warehouse.findUnique({
+            where: { id: staffInvite.warehouseId },
+            select: { id: true, orgId: true, isActive: true, branchId: true },
+          });
+          if (!wh || !wh.isActive) {
+            throw Object.assign(new Error("Warehouse not available"), { statusCode: 400 });
+          }
+          if (Number(wh.orgId) !== Number(staffInvite.orgId)) {
+            throw Object.assign(new Error("Invitation organization mismatch"), { statusCode: 400 });
+          }
 
-        if (staffInvite.inviteAsDoctor) {
+          // CRITICAL FIX: Create BranchMember for warehouse staff (unified staff model)
+          member = await tx.branchMember.upsert({
+            where: { branchId_userId: { branchId: wh.branchId, userId: uid } },
+            update: { role: staffInvite.warehouseRole, status: "ACTIVE" },
+            create: {
+              orgId: staffInvite.orgId,
+              branchId: wh.branchId,
+              userId: uid,
+              role: staffInvite.warehouseRole,
+              status: "ACTIVE",
+              invitedByUserId: staffInvite.invitedByUserId,
+            },
+          });
+
+          // CRITICAL FIX: Create BranchAccessPermission for warehouse staff
+          const bapRoleWh = memberRoleForBranchAccessPermission(staffInvite.warehouseRole);
+          await tx.branchAccessPermission.upsert({
+            where: { branchId_userId: { branchId: wh.branchId, userId: uid } },
+            update: {
+              status: "APPROVED",
+              ...(bapRoleWh ? { role: bapRoleWh } : {}),
+              approvedByUserId: staffInvite.invitedByUserId,
+              approvedAt: new Date(),
+            },
+            create: {
+              branchId: wh.branchId,
+              userId: uid,
+              status: "APPROVED",
+              ...(bapRoleWh ? { role: bapRoleWh } : {}),
+              invitedByUserId: staffInvite.invitedByUserId,
+              approvedByUserId: staffInvite.invitedByUserId,
+              approvedAt: new Date(),
+            },
+          });
+
+          // Create WarehouseStaffAssignment
+          const existingAssignment = await tx.warehouseStaffAssignment.findFirst({
+            where: {
+              warehouseId: staffInvite.warehouseId,
+              userId: uid,
+              role: staffInvite.warehouseRole,
+            },
+            select: { id: true, isActive: true },
+          });
+          if (existingAssignment) {
+            await tx.warehouseStaffAssignment.update({
+              where: { id: existingAssignment.id },
+              data: { isActive: true, removedAt: null },
+            });
+          } else {
+            await tx.warehouseStaffAssignment.create({
+              data: {
+                warehouseId: staffInvite.warehouseId,
+                userId: uid,
+                role: staffInvite.warehouseRole,
+                isActive: true,
+              },
+            });
+          }
+        } else {
+          if (!staffInvite.branchId || !staffInvite.role) {
+            throw Object.assign(new Error("Invalid branch invitation"), { statusCode: 400 });
+          }
+          member = await tx.branchMember.upsert({
+            where: { branchId_userId: { branchId: staffInvite.branchId, userId: uid } },
+            update: { role: staffInvite.role, status: "ACTIVE" },
+            create: {
+              orgId: staffInvite.orgId,
+              branchId: staffInvite.branchId,
+              userId: uid,
+              role: staffInvite.role,
+              status: "ACTIVE",
+              invitedByUserId: staffInvite.invitedByUserId,
+            },
+            select: { id: true },
+          });
+
+          await tx.branchAccessPermission.upsert({
+            where: { branchId_userId: { branchId: staffInvite.branchId, userId: uid } },
+            update: {
+              status: "APPROVED",
+              role: staffInvite.role,
+              approvedByUserId: staffInvite.invitedByUserId,
+              approvedAt: new Date(),
+            },
+            create: {
+              branchId: staffInvite.branchId,
+              userId: uid,
+              status: "APPROVED",
+              role: staffInvite.role,
+              invitedByUserId: staffInvite.invitedByUserId,
+              approvedByUserId: staffInvite.invitedByUserId,
+              approvedAt: new Date(),
+            },
+          });
+
+          const whRole = memberRoleToWarehouseStaffRole(staffInvite.role);
+          if (whRole) {
+            const linkedWarehouse = await tx.warehouse.findFirst({
+              where: { branchId: staffInvite.branchId, isActive: true },
+              select: { id: true },
+            });
+            if (linkedWarehouse) {
+              const existingAssignment = await tx.warehouseStaffAssignment.findFirst({
+                where: {
+                  warehouseId: linkedWarehouse.id,
+                  userId: uid,
+                  role: whRole,
+                },
+                select: { id: true, isActive: true },
+              });
+              if (existingAssignment) {
+                await tx.warehouseStaffAssignment.update({
+                  where: { id: existingAssignment.id },
+                  data: { isActive: true, removedAt: null },
+                });
+              } else {
+                await tx.warehouseStaffAssignment.create({
+                  data: {
+                    warehouseId: linkedWarehouse.id,
+                    userId: uid,
+                    role: whRole,
+                    isActive: true,
+                  },
+                });
+              }
+            }
+          }
+        }
+
+        if ((staffInvite.targetType || "BRANCH") === "BRANCH" && staffInvite.inviteAsDoctor && member) {
           const branchWithTypes = await tx.branch.findUnique({
             where: { id: staffInvite.branchId },
             select: { types: { select: { type: { select: { code: true } } } } },
@@ -1108,7 +1281,7 @@ exports.acceptInvite = async (req, res) => {
 
       let onboardingRequired = false;
       let onboardingPath = null;
-      if (staffInvite.inviteAsDoctor) {
+      if ((staffInvite.targetType || "BRANCH") === "BRANCH" && staffInvite.inviteAsDoctor) {
         const profile = await prisma.clinicStaffProfile.findFirst({
           where: { branchMember: { userId, branchId: staffInvite.branchId }, staffType: "DOCTOR" },
           select: { onboardingStatus: true },
@@ -1131,7 +1304,13 @@ exports.acceptInvite = async (req, res) => {
           displayName: user?.profile?.displayName || null,
           username: user?.profile?.username || null,
         },
-        data: { branchId: staffInvite.branchId, role: staffInvite.role },
+        data: {
+          targetType: staffInvite.targetType || "BRANCH",
+          branchId: staffInvite.branchId || null,
+          warehouseId: staffInvite.warehouseId || null,
+          role: staffInvite.role || null,
+          warehouseRole: staffInvite.warehouseRole || null,
+        },
         default_redirect: staffRedirect,
         onboardingRequired: onboardingRequired || undefined,
         onboardingPath: onboardingPath || undefined,

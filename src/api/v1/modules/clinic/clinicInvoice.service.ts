@@ -13,11 +13,17 @@ export async function createOrUpdateClinicInvoice(data: {
   orderId: number;
   clinicalCaseId?: number | null;
   surgeryPackageId?: number | null;
+  surgeryCaseId?: number | null;
   doctorFeeAmount?: number | null;
   clinicShareAmount?: number | null;
   supportFeeAmount?: number | null;
   consumableCost?: number | null;
   discountApplied?: number | null;
+  anesthesiaCharge?: number | null;
+  otCharge?: number | null;
+  equipmentCharge?: number | null;
+  labCharge?: number | null;
+  billingStatus?: string | null;
 }) {
   const order = await prisma.order.findUnique({
     where: { id: data.orderId },
@@ -44,6 +50,14 @@ export async function createOrUpdateClinicInvoice(data: {
     where: { orderId: data.orderId },
   });
 
+  const extra: any = {};
+  if (data.surgeryCaseId !== undefined) extra.surgeryCaseId = data.surgeryCaseId ?? undefined;
+  if (data.anesthesiaCharge !== undefined) extra.anesthesiaCharge = data.anesthesiaCharge ?? undefined;
+  if (data.otCharge !== undefined) extra.otCharge = data.otCharge ?? undefined;
+  if (data.equipmentCharge !== undefined) extra.equipmentCharge = data.equipmentCharge ?? undefined;
+  if (data.labCharge !== undefined) extra.labCharge = data.labCharge ?? undefined;
+  if (data.billingStatus !== undefined) extra.billingStatus = data.billingStatus ?? undefined;
+
   const invoice = existing
     ? await prisma.clinicInvoice.update({
         where: { orderId: data.orderId },
@@ -55,6 +69,7 @@ export async function createOrUpdateClinicInvoice(data: {
           supportFeeAmount: supportFee,
           consumableCost: directCost,
           discountApplied: discountApplied || undefined,
+          ...extra,
         },
       })
     : await prisma.clinicInvoice.create({
@@ -67,6 +82,7 @@ export async function createOrUpdateClinicInvoice(data: {
           supportFeeAmount: supportFee,
           consumableCost: directCost,
           discountApplied: discountApplied || undefined,
+          ...extra,
         },
       });
 
@@ -76,7 +92,7 @@ export async function createOrUpdateClinicInvoice(data: {
     distributableMargin,
     doctorShare: doctorFee,
     clinicShare,
-    supportShare,
+    supportShare: supportFee,
     grossProfit: distributableMargin,
     snapshotJson: {
       orderTotal: revenue,
@@ -85,7 +101,7 @@ export async function createOrUpdateClinicInvoice(data: {
       directCost,
       doctorShare: doctorFee,
       clinicShare,
-      supportShare,
+      supportShare: supportFee,
     },
   };
   const existingSheet = await prisma.invoiceCostSheet.findFirst({
@@ -129,6 +145,18 @@ export async function getClinicInvoiceByOrderId(orderId: number) {
     include: {
       clinicalCase: { select: { id: true, status: true } },
       surgeryPackage: { select: { id: true, packageCode: true, packageName: true } },
+      surgeryCase: { select: { id: true, caseNumber: true, status: true } },
+      costSheets: true,
+    },
+  });
+}
+
+/** Get clinic invoice by surgery case id */
+export async function getClinicInvoiceBySurgeryCaseId(surgeryCaseId: number) {
+  return prisma.clinicInvoice.findUnique({
+    where: { surgeryCaseId },
+    include: {
+      order: { select: { id: true, orderNumber: true, totalAmount: true, paymentStatus: true } },
       costSheets: true,
     },
   });

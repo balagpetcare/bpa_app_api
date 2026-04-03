@@ -60,7 +60,7 @@ export async function autoReconcile(branchId: number, reconciliationDate?: Date 
       where: {
         ...administrationWhere,
         injectionTokenId: null,
-        medicineSource: { in: ["INTERNAL", "EXTERNAL"] },
+        medicineSource: { in: ["INTERNAL_CLINIC", "CLINIC_PROVIDED_MEDICINE"] },
       },
     }),
     prisma.vialSession.aggregate({
@@ -221,17 +221,29 @@ export async function autoReconcile(branchId: number, reconciliationDate?: Date 
     },
   });
   if (hasMismatch && result.branch?.orgId) {
-    try {
-      await medicineIncidentService.raiseIncident({
-        orgId: result.branch.orgId,
-        branchId,
-        incidentType: "REPEATED_VIAL_MISMATCH",
-        relatedEntityType: "DailyReconciliation",
-        relatedEntityId: String(result.id),
-        severity: "MEDIUM",
-      });
-    } catch (_) {
-      // avoid failing reconciliation if incident raise fails
+    const incidentsToRaise: { incidentType: "REPEATED_VIAL_MISMATCH" | "TOKEN_UNUSED_INJECTIONS" }[] = [];
+    if (mismatchDetails.noTokenInternalAdministrations || mismatchDetails.unusedTokens || mismatchDetails.tokenInjectionCountMismatch) {
+      incidentsToRaise.push({ incidentType: "TOKEN_UNUSED_INJECTIONS" });
+    }
+    if (mismatchDetails.usedMlVsRemainingMismatch || mismatchDetails.vialCapacityMismatch) {
+      incidentsToRaise.push({ incidentType: "REPEATED_VIAL_MISMATCH" });
+    }
+    if (incidentsToRaise.length === 0) {
+      incidentsToRaise.push({ incidentType: "REPEATED_VIAL_MISMATCH" });
+    }
+    for (const { incidentType } of incidentsToRaise) {
+      try {
+        await medicineIncidentService.raiseIncident({
+          orgId: result.branch.orgId,
+          branchId,
+          incidentType,
+          relatedEntityType: "DailyReconciliation",
+          relatedEntityId: String(result.id),
+          severity: "MEDIUM",
+        });
+      } catch (_) {
+        // avoid failing reconciliation if incident raise fails
+      }
     }
   }
   return result;

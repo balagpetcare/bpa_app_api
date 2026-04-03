@@ -5,7 +5,13 @@ import prisma from "../../../../infrastructure/db/prismaClient";
 import * as openVialService from "./openVial.service";
 import * as injectionTokenService from "./injectionToken.service";
 import * as outsideMedicineService from "./outsideMedicine.service";
+import * as dispenseControl from "./dispenseControl.service";
 import type { MedicineSource } from "@prisma/client";
+import {
+  normalizeMedicineSourceInput,
+  medicineSourceRequiresClinicVial,
+  medicineSourceIsPatientBroughtOutside,
+} from "./medicineSource.util";
 
 export type RecordAdministrationInput = {
   branchId: number;
@@ -37,15 +43,18 @@ export async function recordAdministration(data: RecordAdministrationInput): Pro
   }
 
   return prisma.$transaction(async (tx) => {
-    let resolvedSource: MedicineSource = data.medicineSource ?? "INTERNAL";
+    let resolvedSource: MedicineSource = normalizeMedicineSourceInput(data.medicineSource, "INTERNAL_CLINIC");
     let token: any = null;
-    // OUTSIDE medicine always requires token (no emergency bypass) and must not use clinic vial
-    if (data.medicineSource === "OUTSIDE" && data.allowEmergencyBypass) {
-      throw new Error("OUTSIDE medicine cannot use emergency bypass; injection token is required");
+
+    if (medicineSourceIsPatientBroughtOutside(resolvedSource) && data.allowEmergencyBypass) {
+      throw new Error(
+        "Patient-brought outside medicine cannot use emergency bypass; use a validated injection token and normal flow"
+      );
     }
-    if (data.medicineSource === "OUTSIDE" && data.vialSessionId != null) {
-      throw new Error("OUTSIDE medicine cannot be linked to clinic vial session");
+    if (medicineSourceIsPatientBroughtOutside(resolvedSource) && data.vialSessionId != null) {
+      throw new Error("Patient-brought outside medicine cannot be linked to clinic vial session");
     }
+
     if (!data.allowEmergencyBypass) {
       if (!data.injectionTokenId) {
         throw new Error("injectionTokenId is required");
@@ -79,47 +88,56 @@ export async function recordAdministration(data: RecordAdministrationInput): Pro
       resolvedSource = token.medicineSource;
     }
 
-    // EXTERNAL is take-home sale and should never be used as injection source.
-    if (resolvedSource === "EXTERNAL") {
-      throw new Error("EXTERNAL medicine source is not valid for injection administration");
+    const needsClinicVial = medicineSourceRequiresClinicVial(resolvedSource);
+    if (needsClinicVial && !data.allowEmergencyBypass && data.vialSessionId == null) {
+      throw new Error("Vial session is required for clinic-supplied medicine dose administration");
     }
 
-    // OUTSIDE requires pharmacy verification (receive entry with batch/expiry) before injection.
-    if (resolvedSource === "OUTSIDE") {
+    if (medicineSourceIsPatientBroughtOutside(resolvedSource)) {
       const valid = await outsideMedicineService.hasValidOutsideReceive(
         Number(data.branchId),
         Number(data.variantId)
       );
       if (!valid) {
         throw new Error(
-          "OUTSIDE medicine requires a pharmacy verification (receive) record for this branch and variant before injection"
+          "Patient-brought outside medicine requires a pharmacy verification (receive) record for this branch and variant before injection"
         );
       }
     }
 
-    // Room mismatch: token had a pre-selected vial in a room; selected vial must be in same room.
-    if (token != null && data.vialSessionId != null) {
+    if (data.vialSessionId != null) {
       const [tokenWithVial, vialSession] = await Promise.all([
-        (tx as any).injectionToken.findFirst({
-          where: { id: Number(data.injectionTokenId), branchId: data.branchId },
-          select: {
-            selectedVialSessionId: true,
-            selectedVialSession: { select: { roomId: true } },
-          },
-        }),
+        token != null && data.injectionTokenId != null
+          ? (tx as any).injectionToken.findFirst({
+              where: { id: Number(data.injectionTokenId), branchId: data.branchId },
+              select: {
+                selectedVialSessionId: true,
+                selectedVialSession: { select: { roomId: true } },
+              },
+            })
+          : null,
         (tx as any).vialSession.findFirst({
           where: { id: Number(data.vialSessionId), branchId: data.branchId },
-          select: { roomId: true },
+          select: { roomId: true, activatedFromDispenseRequestId: true, branchId: true },
         }),
       ]);
-      const tokenRoomId = tokenWithVial?.selectedVialSession?.roomId ?? null;
-      const selectedRoomId = vialSession?.roomId ?? null;
-      if (tokenRoomId != null && selectedRoomId != null && tokenRoomId !== selectedRoomId) {
-        throw new Error("ROOM_MISMATCH");
+      const tokenWithVialRes = tokenWithVial ?? null;
+      const vialSessionRes = vialSession ?? null;
+      if (tokenWithVialRes && vialSessionRes) {
+        const tokenRoomId = tokenWithVialRes?.selectedVialSession?.roomId ?? null;
+        const selectedRoomId = vialSessionRes?.roomId ?? null;
+        if (tokenRoomId != null && selectedRoomId != null && tokenRoomId !== selectedRoomId) {
+          throw new Error("ROOM_MISMATCH");
+        }
+      }
+      if (vialSessionRes?.activatedFromDispenseRequestId != null) {
+        await dispenseControl.requireDispenseRequestReceived(
+          vialSessionRes.activatedFromDispenseRequestId,
+          data.branchId
+        );
       }
     }
 
-    // Resolve treatment day item when token is linked to a treatment course (auto-complete day item on record).
     let treatmentDayItemId: number | null = null;
     if (token?.treatmentDayId != null && token?.treatmentCourseId != null) {
       const dayItem = await (tx as any).treatmentDayItem.findFirst({
@@ -200,7 +218,7 @@ export async function getConsumptionByVisit(visitId: number): Promise<any[]> {
     include: {
       variant: { select: { id: true, title: true, sku: true } },
       vialSession: { select: { id: true } },
-      administeredBy: { select: { id: true }, profile: { select: { displayName: true } } },
+      administeredBy: { select: { id: true, profile: { select: { displayName: true } } } },
     },
     orderBy: { administeredAt: "desc" },
   });
@@ -212,7 +230,7 @@ export async function getConsumptionByVialSession(vialSessionId: number): Promis
     include: {
       variant: { select: { id: true, title: true } },
       visit: { select: { id: true, treatmentCode: true } },
-      patient: { select: { id: true }, profile: { select: { displayName: true } } },
+      patient: { select: { id: true, profile: { select: { displayName: true } } } },
     },
     orderBy: { administeredAt: "asc" },
   });

@@ -48,11 +48,22 @@ type OptimizeImageOpts = { maxSide?: number; quality?: number };
 async function optimizeImage(file, opts: OptimizeImageOpts = {}) {
   const maxSide = Number(opts.maxSide || appConfig.mediaPolicy?.imageMaxSide || process.env.IMAGE_MAX_SIDE || 1600);
   const quality = Number(opts.quality || appConfig.mediaPolicy?.imageJpegQuality || process.env.IMAGE_JPEG_QUALITY || 82);
-  const outBuf = await sharp(file.buffer)
-    .rotate()
-    .resize(maxSide, maxSide, { fit: 'inside' })
-    .jpeg({ quality })
-    .toBuffer();
+  let outBuf;
+  try {
+    outBuf = await sharp(file.buffer)
+      .rotate()
+      .resize(maxSide, maxSide, { fit: 'inside' })
+      .jpeg({ quality })
+      .toBuffer();
+  } catch (err) {
+    console.warn('optimizeImage skipped: sharp could not process uploaded image buffer', {
+      mimetype: file?.mimetype,
+      originalname: file?.originalname,
+      size: file?.size || file?.buffer?.length || 0,
+      message: err?.message || String(err),
+    });
+    return file;
+  }
 
   const base = (file.originalname || 'image').replace(/\.[^/.]+$/, '');
   return {

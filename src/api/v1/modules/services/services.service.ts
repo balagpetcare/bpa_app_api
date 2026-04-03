@@ -159,6 +159,14 @@ async function createService(data: {
   isCustom?: boolean;
   proposedByUserId?: number | null;
   approvalStatus?: string | null;
+  baseCost?: number | null;
+  minSafePrice?: number | null;
+  staffInstructions?: string | null;
+  pricingExplanation?: string | null;
+  visibleToPublic?: boolean;
+  preparationNotes?: string | null;
+  aftercareNotes?: string | null;
+  faqJson?: object | null;
 }) {
   const serviceCode =
     data.serviceCode != null && data.serviceCode !== ""
@@ -189,6 +197,14 @@ async function createService(data: {
       isCustom: data.isCustom || false,
       proposedByUserId: data.proposedByUserId ?? undefined,
       approvalStatus: data.approvalStatus ?? undefined,
+      baseCost: data.baseCost ?? undefined,
+      minSafePrice: data.minSafePrice ?? undefined,
+      staffInstructions: data.staffInstructions?.trim() || undefined,
+      pricingExplanation: data.pricingExplanation?.trim() || undefined,
+      visibleToPublic: data.visibleToPublic !== false,
+      preparationNotes: data.preparationNotes?.trim() || undefined,
+      aftercareNotes: data.aftercareNotes?.trim() || undefined,
+      faqJson: data.faqJson ?? undefined,
     },
     include: {
       org: true,
@@ -222,6 +238,14 @@ async function updateService(
     taxRuleJson?: object | null;
     applicableSpecies?: string[] | null;
     approvalStatus?: string | null;
+    baseCost?: number | null;
+    minSafePrice?: number | null;
+    staffInstructions?: string | null;
+    pricingExplanation?: string | null;
+    visibleToPublic?: boolean;
+    preparationNotes?: string | null;
+    aftercareNotes?: string | null;
+    faqJson?: object | null;
   },
   branchId?: number
 ) {
@@ -254,6 +278,14 @@ async function updateService(
   if (data.taxRuleJson !== undefined) updateData.taxRuleJson = data.taxRuleJson;
   if (data.applicableSpecies !== undefined) updateData.applicableSpecies = data.applicableSpecies;
   if (data.approvalStatus !== undefined) updateData.approvalStatus = data.approvalStatus;
+  if (data.baseCost !== undefined) updateData.baseCost = data.baseCost;
+  if (data.minSafePrice !== undefined) updateData.minSafePrice = data.minSafePrice;
+  if (data.staffInstructions !== undefined) updateData.staffInstructions = data.staffInstructions?.trim() || null;
+  if (data.pricingExplanation !== undefined) updateData.pricingExplanation = data.pricingExplanation?.trim() || null;
+  if (data.visibleToPublic !== undefined) updateData.visibleToPublic = data.visibleToPublic;
+  if (data.preparationNotes !== undefined) updateData.preparationNotes = data.preparationNotes?.trim() || null;
+  if (data.aftercareNotes !== undefined) updateData.aftercareNotes = data.aftercareNotes?.trim() || null;
+  if (data.faqJson !== undefined) updateData.faqJson = data.faqJson;
 
   const service = await prisma.service.update({
     where: { id: serviceId },

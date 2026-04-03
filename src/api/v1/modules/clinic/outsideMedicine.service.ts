@@ -27,7 +27,7 @@ export async function recordOutsideReceive(data: RecordOutsideReceiveInput): Pro
     },
     include: {
       variant: { select: { id: true, title: true, sku: true } },
-      receivedBy: { select: { id: true }, profile: { select: { displayName: true } } },
+      receivedBy: { select: { id: true, profile: { select: { displayName: true } } } },
       branch: { select: { id: true, name: true } },
     },
   });

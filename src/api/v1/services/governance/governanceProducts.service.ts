@@ -273,7 +273,7 @@ export async function actOnGovernanceProduct(
 ): Promise<{ success: boolean; message: string }> {
   const product = await prisma.authProduct.findFirst({
     where: { id: productId },
-    select: { id: true, producerOrgId: true, status: true, productName: true },
+    select: { id: true, producerOrgId: true, status: true, productName: true, submittedAt: true },
   });
   if (!product) throw new Error("NOT_FOUND");
 
@@ -354,7 +354,7 @@ export async function actOnGovernanceProduct(
       return { success: true, message: "Reactivated" };
     }
     if (approvalRow.status === "REJECTED") {
-      await prisma.$transaction([
+      await (prisma.$transaction as any)([
         prisma.producerApproval.update({
           where: { id: approvalRow.id },
           data: { status: "APPROVED", reviewedByUserId, reviewedAt: now, note: note ? String(note).slice(0, 2000) : null },
@@ -370,7 +370,7 @@ export async function actOnGovernanceProduct(
   }
 
   if (action === "DECLINE") {
-    const ops: Promise<unknown>[] = [
+    const ops: any[] = [
       prisma.authProduct.update({
         where: { id: productId },
         data: { status: "CHANGES_REQUESTED", reviewedAt: now, reviewedByAdminId: reviewedByUserId, reviewNotes: note ? String(note).slice(0, 2000) : null },
@@ -384,13 +384,13 @@ export async function actOnGovernanceProduct(
         })
       );
     }
-    await prisma.$transaction(ops);
+    await (prisma.$transaction as any)(ops);
     return { success: true, message: "Changes requested" };
   }
 
   if (action === "REJECT") {
     const reason = (note ?? "").trim().length >= 5 ? (note ?? "").trim() : "Rejected by admin";
-    const ops: Promise<unknown>[] = [
+    const ops: any[] = [
       prisma.authProduct.update({
         where: { id: productId },
         data: { status: "REJECTED", reviewedAt: now, reviewedByAdminId: reviewedByUserId, reviewNotes: reason },
@@ -404,7 +404,7 @@ export async function actOnGovernanceProduct(
         })
       );
     }
-    await prisma.$transaction(ops);
+    await (prisma.$transaction as any)(ops);
     return { success: true, message: "Rejected" };
   }
 

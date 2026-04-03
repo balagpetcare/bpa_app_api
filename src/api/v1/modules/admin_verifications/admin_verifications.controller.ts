@@ -1429,7 +1429,11 @@ exports.listBranchKycs = async (req, res) => {
       prisma.branchProfileDetails.findMany({
         where,
         orderBy: { updatedAt: "desc" },
-        include: { branch: { select: { id: true, name: true, orgId: true } } },
+        include: {
+          branch: {
+            select: { id: true, name: true, orgId: true, status: true, verificationStatus: true },
+          },
+        },
         take: limit,
         skip: offset,
       }),
@@ -1474,12 +1478,11 @@ exports.approveBranchKyc = async (req, res) => {
         where: { id },
         data: { verificationStatus: "VERIFIED", reviewedAt: new Date(), reviewedByAdminId: adminUserId, rejectionReason: null },
       });
-      // After branch verification, move branch back to DRAFT (ready for publish request)
-      try {
-        await tx.branch.update({ where: { id: bp.branchId }, data: { status: "DRAFT" } });
-      } catch (bErr) {
-        console.warn("branch.status update failed (ignored):", bErr?.message || bErr);
-      }
+      // Sync Branch row so owner panel and clinic flows see ACTIVE + VERIFIED (single source of truth).
+      await tx.branch.update({
+        where: { id: bp.branchId },
+        data: { status: "ACTIVE", verificationStatus: "VERIFIED" },
+      });
       return bp;
     });
     await logAction({ entityType: "BRANCH", entityId: id, action: "APPROVE", fromStatus: current.verificationStatus, toStatus: "VERIFIED", adminUserId, note: req.body?.note });
@@ -1518,11 +1521,10 @@ exports.rejectBranchKyc = async (req, res) => {
         where: { id },
         data: { verificationStatus: "REJECTED", reviewedAt: new Date(), reviewedByAdminId: adminUserId, rejectionReason: String(reason), reviewNote: note || null },
       });
-      try {
-        await tx.branch.update({ where: { id: bp.branchId }, data: { status: "DRAFT" } });
-      } catch (bErr) {
-        console.warn("branch.status update failed (ignored):", bErr?.message || bErr);
-      }
+      await tx.branch.update({
+        where: { id: bp.branchId },
+        data: { status: "DRAFT", verificationStatus: "REJECTED" },
+      });
       return bp;
     });
     await logAction({ entityType: "BRANCH", entityId: id, action: "REJECT", fromStatus: current.verificationStatus, toStatus: "REJECTED", adminUserId, note: note || reason });
@@ -1559,11 +1561,10 @@ exports.requestChangesBranchKyc = async (req, res) => {
         where: { id },
         data: { verificationStatus: "REQUEST_CHANGES", reviewedAt: new Date(), reviewedByAdminId: adminUserId, reviewNote: note || null },
       });
-      try {
-        await tx.branch.update({ where: { id: bp.branchId }, data: { status: "DRAFT" } });
-      } catch (bErr) {
-        console.warn("branch.status update failed (ignored):", bErr?.message || bErr);
-      }
+      await tx.branch.update({
+        where: { id: bp.branchId },
+        data: { status: "DRAFT" },
+      });
       return bp;
     });
     await logAction({ entityType: "BRANCH", entityId: id, action: "REQUEST_CHANGES", fromStatus: current.verificationStatus, toStatus: "REQUEST_CHANGES", adminUserId, note });
@@ -1600,11 +1601,11 @@ exports.suspendBranchKyc = async (req, res) => {
         where: { id },
         data: { verificationStatus: "SUSPENDED", reviewedAt: new Date(), reviewedByAdminId: adminUserId, reviewNote: note || null },
       });
-      try {
-        await tx.branch.update({ where: { id: bp.branchId }, data: { status: "SUSPENDED" } });
-      } catch (bErr) {
-        console.warn("branch.status update failed (ignored):", bErr?.message || bErr);
-      }
+      // BranchStatus enum has no SUSPENDED; use BLOCKED so branch is not operational for appointments/clinic.
+      await tx.branch.update({
+        where: { id: bp.branchId },
+        data: { status: "BLOCKED" },
+      });
       return bp;
     });
     await logAction({ entityType: "BRANCH", entityId: id, action: "SUSPEND", fromStatus: current.verificationStatus, toStatus: "SUSPENDED", adminUserId, note });

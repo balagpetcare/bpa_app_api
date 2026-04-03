@@ -1,8 +1,10 @@
 # BPA Clinic Injection Tokens + Injection Room — Final Stabilization Audit
 
-**Date:** 2026-03-14.  
-**Scope:** injection-tokens, injection-room, token validation, dose recording, room mismatch, bypass, board filters.  
+**Date:** 2026-03-14.
+**Scope:** injection-tokens, injection-room, token validation, dose recording, room mismatch, bypass, board filters.
 **Classification:** blocker / non-blocking gap / polish / no issue.
+
+**See also:** [CLINIC_INJECTION_TOKEN_AUDIT.md](./CLINIC_INJECTION_TOKEN_AUDIT.md) — enterprise internal vs external patient / billing / gap analysis (codebase-first, 2026-03-23).
 
 ---
 

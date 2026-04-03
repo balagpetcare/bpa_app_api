@@ -18,6 +18,8 @@ export const CLINIC_ERROR_CODES = {
   NOT_A_CLINIC_BRANCH: "NOT_A_CLINIC_BRANCH",
   CLINIC_MODULE_DISABLED: "CLINIC_MODULE_DISABLED",
   PATIENT_NOT_FOUND: "PATIENT_NOT_FOUND",
+  /** Pet exists but has no appointment, visit, or clinic registration at this branch */
+  PATIENT_NOT_IN_BRANCH: "PATIENT_NOT_IN_BRANCH",
   OWNER_NOT_FOUND: "OWNER_NOT_FOUND",
   VISIT_NOT_FOUND: "VISIT_NOT_FOUND",
   PAST_DATETIME_NOT_ALLOWED: "PAST_DATETIME_NOT_ALLOWED",
@@ -33,6 +35,15 @@ export const CLINIC_ERROR_CODES = {
   ROOM_TYPE_INCOMPATIBLE: "ROOM_TYPE_INCOMPATIBLE",
   ROOM_REQUIRED_FOR_CONFIRMATION: "ROOM_REQUIRED_FOR_CONFIRMATION",
   ROOM_MISMATCH: "ROOM_MISMATCH",
+  SNAPSHOT_ONLY_CANNOT_CHECK_IN: "SNAPSHOT_ONLY_CANNOT_CHECK_IN",
+  PET_OWNER_MISMATCH: "PET_OWNER_MISMATCH",
+  DUPLICATE_PET: "DUPLICATE_PET",
+  SURGERY_CASE_NOT_FOUND: "SURGERY_CASE_NOT_FOUND",
+  COMPLETION_REQUIREMENTS_NOT_MET: "COMPLETION_REQUIREMENTS_NOT_MET",
+  /** Only branch members with clinic staff profile staffType=DOCTOR may author prescriptions */
+  PRESCRIPTION_FORBIDDEN: "PRESCRIPTION_FORBIDDEN",
+  /** Finalized or dispensed prescriptions cannot be edited without an amendment workflow */
+  PRESCRIPTION_NOT_EDITABLE: "PRESCRIPTION_NOT_EDITABLE",
 } as const;
 
 export function sendClinicError(
@@ -40,10 +51,11 @@ export function sendClinicError(
   statusCode: number,
   message: string,
   code: string = CLINIC_ERROR_CODES.VALIDATION_ERROR,
-  meta?: { requiredPermission?: string }
+  meta?: { requiredPermission?: string; unmet?: string[] }
 ): void {
   const body: Record<string, unknown> = { success: false, message, code };
   if (meta?.requiredPermission) body.requiredPermission = meta.requiredPermission;
+  if (meta?.unmet && meta.unmet.length) body.unmet = meta.unmet;
   res.status(statusCode).json(body);
 }
 

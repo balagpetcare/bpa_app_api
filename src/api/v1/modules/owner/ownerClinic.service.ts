@@ -8,6 +8,10 @@ const servicesService = require("../services/services.service");
 const serviceCatalog = require("../clinic/serviceCatalog.service");
 const { CLINIC_ROLE_TEMPLATE_PERMISSIONS } = require("../../constants/branchRoles");
 const { createStaffInvite } = require("../../services/staffInvite.service");
+const {
+  appendDoctorServiceFeeChangeLog,
+  snapshotDoctorServiceFeeRow,
+} = require("../clinic/doctorServiceFeeAudit.service");
 
 /**
  * Write a DoctorAuditLog entry (CP6). Caller must pass orgId, branchId, clinicStaffProfileId.
@@ -662,7 +666,12 @@ async function getClinicSettings(prisma: any, userId: number, branchId: number) 
     }
   }
   const current = json as Record<string, unknown>;
-  const appointment = { ...DEFAULT_CLINIC_APPOINTMENT_SETTINGS, ...(current.appointment || {}) };
+  const apptRaw = current.appointment;
+  const apptObj =
+    typeof apptRaw === "object" && apptRaw !== null && !Array.isArray(apptRaw)
+      ? (apptRaw as Record<string, unknown>)
+      : {};
+  const appointment = { ...DEFAULT_CLINIC_APPOINTMENT_SETTINGS, ...apptObj };
   return { ...current, appointment };
 }
 
@@ -734,6 +743,14 @@ async function createClinicService(
     isCustom?: boolean;
     proposedByUserId?: number | null;
     approvalStatus?: string | null;
+    baseCost?: number | null;
+    minSafePrice?: number | null;
+    staffInstructions?: string | null;
+    pricingExplanation?: string | null;
+    visibleToPublic?: boolean;
+    preparationNotes?: string | null;
+    aftercareNotes?: string | null;
+    faqJson?: object | null;
   }
 ) {
   const branch = await ensureClinicBranchForOwner(prisma, userId, branchId);
@@ -768,6 +785,14 @@ async function createClinicService(
     isCustom: data.isCustom,
     proposedByUserId: data.proposedByUserId,
     approvalStatus: data.approvalStatus,
+    baseCost: data.baseCost,
+    minSafePrice: data.minSafePrice,
+    staffInstructions: data.staffInstructions,
+    pricingExplanation: data.pricingExplanation,
+    visibleToPublic: data.visibleToPublic,
+    preparationNotes: data.preparationNotes,
+    aftercareNotes: data.aftercareNotes,
+    faqJson: data.faqJson,
   });
 }
 
@@ -797,6 +822,14 @@ async function updateClinicService(
     taxRuleJson?: object | null;
     applicableSpecies?: string[] | null;
     approvalStatus?: string | null;
+    baseCost?: number | null;
+    minSafePrice?: number | null;
+    staffInstructions?: string | null;
+    pricingExplanation?: string | null;
+    visibleToPublic?: boolean;
+    preparationNotes?: string | null;
+    aftercareNotes?: string | null;
+    faqJson?: object | null;
   }
 ) {
   const branch = await ensureClinicBranchForOwner(prisma, userId, branchId);
@@ -1655,7 +1688,14 @@ async function listScheduleExceptions(prisma: any, userId: number, branchId: num
   }
   return prisma.doctorScheduleException.findMany({
     where,
-    include: { doctor: { select: { id: true }, user: { select: { profile: { select: { displayName: true } } } } } },
+    include: {
+      doctor: {
+        select: {
+          id: true,
+          user: { select: { profile: { select: { displayName: true } } } },
+        },
+      },
+    },
     orderBy: [{ date: "asc" }, { type: "asc" }],
   });
 }
@@ -1891,7 +1931,7 @@ async function inviteClinicDoctor(
     inviteAsDoctor: true,
   };
 
-  const { invite, rawToken } = await createStaffInvite(prisma, branchId, inviteBody, userId, "OWNER");
+  const { invite, rawToken, existingPending } = await createStaffInvite(prisma, branchId, inviteBody, userId, "OWNER");
 
   const isProd = String(process.env.NODE_ENV || "").toLowerCase() === "production";
   return {
@@ -1901,7 +1941,8 @@ async function inviteClinicDoctor(
     role: invite.role,
     status: invite.status,
     expiresAt: invite.expiresAt,
-    ...(isProd ? {} : { devInviteToken: rawToken }),
+    existingPending: Boolean(existingPending),
+    ...(isProd || !rawToken ? {} : { devInviteToken: rawToken }),
   };
 }
 
@@ -2103,19 +2144,80 @@ async function putClinicDoctorServices(
   });
   const validIds = new Set(validServices.map((s: { id: number }) => s.id));
 
+  const beforeRows = await prisma.doctorServiceFee.findMany({
+    where: { clinicStaffProfileId: profileId },
+  });
+  const beforeByKey = new Map(
+    beforeRows.map((b: { serviceId: number; species: string | null }) => [`${b.serviceId}|${b.species ?? ""}`, b])
+  );
+
+  const newKeys = new Set(
+    items.filter((r) => validIds.has(r.serviceId)).map((r) => {
+      const sp = (r as { species?: string | null }).species ?? null;
+      return `${r.serviceId}|${sp ?? ""}`;
+    })
+  );
+
+  for (const oldRow of beforeRows) {
+    const k = `${oldRow.serviceId}|${(oldRow as { species?: string | null }).species ?? ""}`;
+    if (!newKeys.has(k)) {
+      await appendDoctorServiceFeeChangeLog(prisma, {
+        doctorServiceFeeId: (oldRow as { id: number }).id,
+        actorUserId: userId,
+        beforeJson: snapshotDoctorServiceFeeRow(oldRow as any),
+        afterJson: { removed: true, context: "OWNER_DOCTOR_FEES_REPLACE" },
+        changeReason: "OWNER_DOCTOR_FEES_ROW_REMOVED",
+      });
+    }
+  }
+
   await prisma.doctorServiceFee.deleteMany({ where: { clinicStaffProfileId: profileId } });
 
   for (const row of items) {
     if (!validIds.has(row.serviceId)) continue;
-    await prisma.doctorServiceFee.create({
+    const species = (row as { species?: string | null }).species ?? null;
+    const key = `${row.serviceId}|${species ?? ""}`;
+    const old = beforeByKey.get(key) as
+      | { fee: unknown; feeModel?: string | null; feePercent?: unknown; fixedAmount?: unknown; doctorAcknowledgedAt?: Date | null }
+      | undefined;
+    const feeModel = (row as { feeModel?: string }).feeModel ?? old?.feeModel ?? "FIXED";
+    const feePct = (row as { feePercent?: number | null }).feePercent ?? old?.feePercent ?? null;
+    const fixedAmt = (row as { fixedAmount?: number | null }).fixedAmount ?? old?.fixedAmount ?? null;
+    const feeChanged =
+      !old ||
+      Number(old.fee) !== Number(row.fee) ||
+      String(old.feeModel || "FIXED") !== String(feeModel || "FIXED") ||
+      Number(old.feePercent ?? NaN) !== Number(feePct ?? NaN) ||
+      Number(old.fixedAmount ?? NaN) !== Number(fixedAmt ?? NaN);
+
+    const created = await prisma.doctorServiceFee.create({
       data: {
         clinicStaffProfileId: profileId,
         serviceId: row.serviceId,
+        species,
         fee: row.fee,
+        feeModel: feeModel as any,
+        feePercent: feePct != null ? feePct : null,
+        fixedAmount: fixedAmt != null ? fixedAmt : null,
         durationMin: row.durationMin ?? null,
         isActive: row.isActive !== false,
         notes: row.notes ?? null,
+        feeLockedByClinic: (row as { feeLockedByClinic?: boolean }).feeLockedByClinic === true,
+        pendingManagerChangeAt: feeChanged ? new Date() : null,
+        pendingManagerChangeByUserId: feeChanged ? userId : null,
+        doctorAcknowledgedAt: feeChanged ? null : old?.doctorAcknowledgedAt ?? null,
+        doctorAcknowledgedByUserId: feeChanged ? null : (old as any)?.doctorAcknowledgedByUserId ?? null,
+        lastAgreedAt: feeChanged ? null : (old as any)?.lastAgreedAt ?? null,
+        lastAgreedFee: feeChanged ? null : (old as any)?.lastAgreedFee ?? null,
+        revisionNote: (row as { revisionNote?: string | null }).revisionNote ?? null,
       },
+    });
+    await appendDoctorServiceFeeChangeLog(prisma, {
+      doctorServiceFeeId: created.id,
+      actorUserId: userId,
+      beforeJson: old ? snapshotDoctorServiceFeeRow(old as any) : {},
+      afterJson: snapshotDoctorServiceFeeRow(created as any),
+      changeReason: old ? "OWNER_DOCTOR_FEES_REPLACED_ROW" : "OWNER_DOCTOR_FEES_ADDED_ROW",
     });
   }
 

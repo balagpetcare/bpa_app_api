@@ -1,17 +1,38 @@
 const prisma = require("../../../../infrastructure/db/prismaClient");
 const { env } = require("../../../../config/env");
 
-// GET /api/v1/common/animal-types
+// GET /api/v1/common/animal-categories
+exports.getAnimalCategories = async (req, res) => {
+  try {
+    const categories = await prisma.animalCategory.findMany({
+      where: { isActive: true },
+      select: { id: true, code: true, name: true, displayOrder: true },
+      orderBy: [{ displayOrder: "asc" }, { name: "asc" }],
+    });
+    return res.status(200).json({ success: true, categories });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: "Failed to fetch animal categories" });
+  }
+};
+
+// GET /api/v1/common/animal-types (optional ?categoryId=)
 exports.getAnimalTypes = async (req, res) => {
   try {
+    const categoryId = req.query.categoryId != null ? Number(req.query.categoryId) : null;
+    const where: { OR: { isActive: boolean | null }[]; categoryId?: number } = {
+      OR: [{ isActive: true }, { isActive: null }],
+    };
+    if (Number.isFinite(categoryId) && categoryId > 0) where.categoryId = categoryId;
+
     const types = await prisma.animalType.findMany({
-      select: { id: true, name: true },
-      orderBy: { name: "asc" },
+      where,
+      select: { id: true, name: true, code: true, categoryId: true, displayOrder: true },
+      orderBy: [{ displayOrder: "asc" }, { name: "asc" }],
     });
 
     return res.status(200).json({
       success: true,
-      types,
+      types: types.map((t) => ({ id: t.id, name: t.name, code: t.code ?? undefined, categoryId: t.categoryId ?? undefined, displayOrder: t.displayOrder ?? undefined })),
     });
   } catch (e) {
     return res.status(500).json({
@@ -21,10 +42,10 @@ exports.getAnimalTypes = async (req, res) => {
   }
 };
 
-// GET /api/v1/common/breeds/:typeId
+// GET /api/v1/common/breeds/:typeId (or /animal-types/:id/breeds via getBreedsByTypeId)
 exports.getBreedsByType = async (req, res) => {
   try {
-    const typeId = Number(req.params.typeId);
+    const typeId = Number(req.params.typeId ?? req.params.id);
 
     const type = await prisma.animalType.findUnique({
       where: { id: typeId },
@@ -39,21 +60,85 @@ exports.getBreedsByType = async (req, res) => {
     }
 
     const breeds = await prisma.breed.findMany({
-      where: { animalTypeId: typeId },
-      select: { id: true, name: true },
-      orderBy: { name: "asc" },
+      where: { animalTypeId: typeId, OR: [{ isActive: true }, { isActive: null }] },
+      select: { id: true, name: true, defaultSizeId: true, isMixed: true, isOther: true },
+      orderBy: [{ displayOrder: "asc" }, { name: "asc" }],
     });
 
     return res.status(200).json({
       success: true,
       type,
-      breeds,
+      breeds: breeds.map((b) => ({ id: b.id, name: b.name, defaultSizeId: b.defaultSizeId ?? undefined, isMixed: b.isMixed, isOther: b.isOther })),
     });
   } catch (e) {
     return res.status(500).json({
       success: false,
       message: "Failed to fetch breeds",
     });
+  }
+};
+
+// GET /api/v1/common/breeds/:breedId/sub-breeds
+exports.getSubBreedsByBreed = async (req, res) => {
+  try {
+    const breedId = Number(req.params.breedId);
+    const breed = await prisma.breed.findUnique({
+      where: { id: breedId },
+      select: { id: true, name: true },
+    });
+    if (!breed) {
+      return res.status(404).json({ success: false, message: "Breed not found" });
+    }
+    const subBreeds = await prisma.subBreed.findMany({
+      where: { breedId, isActive: true },
+      select: { id: true, code: true, name: true, displayOrder: true },
+      orderBy: [{ displayOrder: "asc" }, { name: "asc" }],
+    });
+    return res.status(200).json({ success: true, breed, subBreeds });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: "Failed to fetch sub-breeds" });
+  }
+};
+
+// GET /api/v1/common/animal-colors
+exports.getAnimalColors = async (req, res) => {
+  try {
+    const colors = await prisma.animalColor.findMany({
+      where: { isActive: true },
+      select: { id: true, code: true, name: true, hexPreview: true, displayOrder: true },
+      orderBy: [{ displayOrder: "asc" }, { name: "asc" }],
+    });
+    return res.status(200).json({ success: true, colors });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: "Failed to fetch animal colors" });
+  }
+};
+
+// GET /api/v1/common/coat-patterns
+exports.getCoatPatterns = async (req, res) => {
+  try {
+    const patterns = await prisma.coatPattern.findMany({
+      where: { isActive: true },
+      select: { id: true, code: true, name: true, displayOrder: true },
+      orderBy: [{ displayOrder: "asc" }, { name: "asc" }],
+    });
+    return res.status(200).json({ success: true, patterns });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: "Failed to fetch coat patterns" });
+  }
+};
+
+// GET /api/v1/common/animal-sizes
+exports.getAnimalSizes = async (req, res) => {
+  try {
+    const sizes = await prisma.animalSize.findMany({
+      where: { isActive: true },
+      select: { id: true, code: true, name: true, minWeightKg: true, maxWeightKg: true, displayOrder: true },
+      orderBy: [{ displayOrder: "asc" }, { name: "asc" }],
+    });
+    return res.status(200).json({ success: true, sizes });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: "Failed to fetch animal sizes" });
   }
 };
 

@@ -5,6 +5,34 @@
 const prisma = require("../../../../infrastructure/db/prismaClient").default ?? require("../../../../infrastructure/db/prismaClient");
 const { randomUUID } = require("crypto");
 const dispenseControlService = require("./dispenseControl.service");
+const countryMedicineCatalog = require("../../services/countryMedicineCatalog.service");
+
+const countryMedicineBrandItemInclude = {
+  select: {
+    id: true,
+    packageMarkDisplay: true,
+    brand: { select: { displayName: true, manufacturer: { select: { displayName: true } } } },
+    presentation: {
+      select: {
+        strengthDisplay: true,
+        generic: { select: { displayName: true } },
+        dosageForm: { select: { displayName: true } },
+      },
+    },
+  },
+};
+
+export type PrescriptionItemInput = {
+  medicineName: string;
+  dosage: string;
+  frequency: string;
+  duration: string;
+  quantity?: number;
+  instructions?: string;
+  productVariantId?: number;
+  clinicalItemVariantId?: number;
+  countryMedicineBrandId?: number | null;
+};
 
 function generateQrToken(): string {
   return randomUUID().replace(/-/g, "").slice(0, 16).toUpperCase();
@@ -12,8 +40,16 @@ function generateQrToken(): string {
 
 async function createPrescription(
   visitId: number,
-  data: { petId: number; doctorId: number; notes?: string; items: { medicineName: string; dosage: string; frequency: string; duration: string; quantity?: number; instructions?: string; productVariantId?: number }[] }
+  data: { petId: number; doctorId: number; notes?: string; items: PrescriptionItemInput[] }
 ): Promise<any> {
+  const visit = await prisma.visit.findUnique({
+    where: { id: visitId },
+    select: { branchId: true },
+  });
+  if (!visit) throw countryMedicineCatalog.visitNotFoundError();
+  const catalogErr = await countryMedicineCatalog.validatePrescriptionItemsForBranch(visit.branchId, data.items);
+  if (catalogErr) throw countryMedicineCatalog.rxCatalogValidationError(catalogErr);
+
   const qrToken = generateQrToken();
   const prescription = await prisma.prescription.create({
     data: {
@@ -32,10 +68,21 @@ async function createPrescription(
           quantity: item.quantity ?? null,
           instructions: item.instructions ?? null,
           productVariantId: item.productVariantId ?? null,
+          clinicalItemVariantId: item.clinicalItemVariantId ?? null,
+          countryMedicineBrandId: item.countryMedicineBrandId ?? null,
         })),
       },
     },
-    include: { items: true, doctor: { select: { id: true } }, pet: { select: { id: true, name: true } } },
+    include: {
+      items: {
+        include: {
+          clinicalItemVariant: { select: { id: true, variantName: true, sku: true } },
+          countryMedicineBrand: countryMedicineBrandItemInclude,
+        },
+      },
+      doctor: { select: { id: true } },
+      pet: { select: { id: true, name: true } },
+    },
   });
   return prescription;
 }
@@ -43,22 +90,97 @@ async function createPrescription(
 async function getPrescriptionById(prescriptionId: number): Promise<any | null> {
   return prisma.prescription.findUnique({
     where: { id: prescriptionId },
-    include: { items: true, visit: true, pet: true, doctor: { include: { user: { select: { profile: { select: { displayName: true } } } } } } },
+    include: {
+      items: {
+        include: {
+          clinicalItemVariant: { select: { id: true, variantName: true, sku: true, item: { select: { name: true, itemCode: true } } } },
+          countryMedicineBrand: countryMedicineBrandItemInclude,
+        },
+      },
+      visit: true,
+      pet: true,
+      doctor: { include: { user: { select: { profile: { select: { displayName: true } } } } } },
+    },
   });
 }
 
 async function getPrescriptionByQrToken(qrToken: string): Promise<any | null> {
   return prisma.prescription.findUnique({
     where: { qrToken },
-    include: { items: true, visit: true, pet: true, doctor: { include: { user: { select: { profile: { select: { displayName: true } } } } } } },
+    include: {
+      items: {
+        include: {
+          clinicalItemVariant: { select: { id: true, variantName: true, sku: true } },
+          countryMedicineBrand: countryMedicineBrandItemInclude,
+        },
+      },
+      visit: true,
+      pet: true,
+      doctor: { include: { user: { select: { profile: { select: { displayName: true } } } } } },
+    },
   });
 }
 
 async function listByVisit(visitId: number): Promise<any[]> {
   return prisma.prescription.findMany({
     where: { visitId },
-    include: { items: true },
+    include: {
+      items: {
+        include: {
+          clinicalItemVariant: { select: { id: true, variantName: true } },
+          countryMedicineBrand: countryMedicineBrandItemInclude,
+        },
+      },
+    },
     orderBy: { createdAt: "desc" },
+  });
+}
+
+/**
+ * Update a DRAFT prescription (notes and/or items). Only DRAFT can be updated.
+ */
+async function updatePrescription(
+  prescriptionId: number,
+  data: { notes?: string; items?: PrescriptionItemInput[] }
+): Promise<any | null> {
+  const p = await prisma.prescription.findUnique({
+    where: { id: prescriptionId },
+    include: { items: true, visit: { select: { branchId: true } } },
+  });
+  if (!p || p.status !== "DRAFT") return null;
+
+  const updateData: Record<string, unknown> = {};
+  if (data.notes !== undefined) updateData.notes = data.notes;
+  if (data.items !== undefined && Array.isArray(data.items) && data.items.length >= 0) {
+    const catalogErr = await countryMedicineCatalog.validatePrescriptionItemsForBranch(p.visit.branchId, data.items);
+    if (catalogErr) throw countryMedicineCatalog.rxCatalogValidationError(catalogErr);
+    await prisma.prescriptionItem.deleteMany({ where: { prescriptionId } });
+    updateData.items = {
+      create: data.items.map((item) => ({
+        medicineName: item.medicineName,
+        dosage: item.dosage,
+        frequency: item.frequency,
+        duration: item.duration,
+        quantity: item.quantity ?? null,
+        instructions: item.instructions ?? null,
+        productVariantId: item.productVariantId ?? null,
+        clinicalItemVariantId: item.clinicalItemVariantId ?? null,
+        countryMedicineBrandId: item.countryMedicineBrandId ?? null,
+      })),
+    };
+  }
+
+  return prisma.prescription.update({
+    where: { id: prescriptionId },
+    data: updateData,
+    include: {
+      items: {
+        include: {
+          clinicalItemVariant: { select: { id: true, variantName: true, sku: true } },
+          countryMedicineBrand: countryMedicineBrandItemInclude,
+        },
+      },
+    },
   });
 }
 
@@ -101,9 +223,12 @@ async function markDispensed(
           requestedByUserId: opts.requestedByUserId,
           patientId: p.visit.patientId,
           visitId: p.visit.id,
+          prescriptionId: prescriptionId,
+          transactionType: "CLINIC_USE",
           urgencyLevel: "NORMAL",
           items: itemsWithVariant.map((i) => ({
             variantId: i.productVariantId,
+            clinicalItemVariantId: i.clinicalItemVariantId ?? null,
             requestedQty: i.quantity ?? 1,
             unit: null,
             reason: `Prescription #${prescriptionId}: ${i.medicineName}`,
@@ -156,6 +281,7 @@ module.exports = {
   getPrescriptionById,
   getPrescriptionByQrToken,
   listByVisit,
+  updatePrescription,
   finalizePrescription,
   markDispensed,
   searchMedicine,

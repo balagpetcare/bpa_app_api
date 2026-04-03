@@ -214,7 +214,7 @@ if (phone !== undefined) authData.phone = toNullableString(phone);
         wallet: true,
         pets: {
           where: { deleted: false },
-          include: { animalType: true, breed: true, profilePic: true },
+          include: { animalType: true, breed: true, subBreed: true, color: true, size: true, profilePic: true },
           orderBy: { createdAt: "desc" },
         },
         galleryItems: {
@@ -254,7 +254,7 @@ exports.getUserById = async (req: any, res: any) => {
         wallet: true,
         pets: {
           where: { deleted: false },
-          include: { animalType: true, breed: true, profilePic: true },
+          include: { animalType: true, breed: true, subBreed: true, color: true, size: true, profilePic: true },
           orderBy: { createdAt: "desc" },
         },
         galleryItems: {

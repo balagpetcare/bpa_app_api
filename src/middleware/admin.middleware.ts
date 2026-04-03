@@ -107,6 +107,13 @@ const ADMIN_PANEL_PERMISSIONS = [
   "admin.kyc.manage",
   "admin.audit.read",
   "admin.permissions.read",
+  "medicine.master.read",
+  "medicine.master.write",
+  "medicine.catalog.listing.manage",
+  "medicine.catalog.import",
+  "medicine.catalog.export",
+  "medicine.catalog.review",
+  "medicine.catalog.governance",
 ];
 
 module.exports = async function requireAdmin(req, res, next) {

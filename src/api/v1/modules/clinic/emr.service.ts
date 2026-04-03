@@ -50,6 +50,64 @@ interface SOAPContent {
   plan?: string;
 }
 
+const VISIT_LIST_SORT_FIELDS = new Set(["createdAt", "startedAt", "completedAt"]);
+
+async function attachVisitListSignals(branchId: number, visits: any[]) {
+  if (!visits.length) return;
+  const visitIds = visits.map((v) => v.id);
+  const appointmentIds = visits.map((v) => v.appointmentId).filter((x: any) => x != null) as number[];
+
+  const tickets = await prisma.queueTicket.findMany({
+    where: {
+      branchId,
+      OR: [{ visitId: { in: visitIds } }, ...(appointmentIds.length ? [{ appointmentId: { in: appointmentIds } }] : [])],
+    },
+    select: { id: true, status: true, tokenNo: true, visitId: true, appointmentId: true, updatedAt: true },
+    orderBy: { updatedAt: "desc" },
+  });
+
+  const byVisitId = new Map<number, any>();
+  const byApptId = new Map<number, any>();
+  for (const t of tickets) {
+    if (t.visitId != null && !byVisitId.has(t.visitId)) byVisitId.set(t.visitId, t);
+    if (t.appointmentId != null && !byApptId.has(t.appointmentId)) byApptId.set(t.appointmentId, t);
+  }
+
+  const ledgers = await prisma.doctorSettlementLedger.findMany({
+    where: { branchId, visitId: { in: visitIds } },
+    select: { visitId: true, settlementStatus: true, doctorShare: true, id: true },
+    orderBy: { id: "desc" },
+  });
+  const ledgerByVisit = new Map<number, any>();
+  for (const L of ledgers) {
+    if (L.visitId != null && !ledgerByVisit.has(L.visitId)) ledgerByVisit.set(L.visitId, L);
+  }
+
+  const orderRows = await prisma.order.findMany({
+    where: { branchId, visitId: { in: visitIds } },
+    select: { visitId: true, paymentStatus: true },
+  });
+  const billingByVisit = new Map<number, { orderCount: number; unpaidOrderCount: number }>();
+  for (const o of orderRows) {
+    if (o.visitId == null) continue;
+    const cur = billingByVisit.get(o.visitId) || { orderCount: 0, unpaidOrderCount: 0 };
+    cur.orderCount += 1;
+    if (o.paymentStatus !== "COMPLETED") cur.unpaidOrderCount += 1;
+    billingByVisit.set(o.visitId, cur);
+  }
+
+  for (const v of visits) {
+    const t = byVisitId.get(v.id) || (v.appointmentId ? byApptId.get(v.appointmentId) : null);
+    v.queueTicket = t ? { id: t.id, status: t.status, tokenNo: t.tokenNo } : null;
+    const L = ledgerByVisit.get(v.id);
+    const shareRaw = L?.doctorShare;
+    const doctorShare = shareRaw != null && Number.isFinite(Number(shareRaw)) ? Number(shareRaw) : null;
+    v.settlement = L ? { ledgerId: L.id, settlementStatus: L.settlementStatus, doctorShare } : null;
+    const b = billingByVisit.get(v.id) || { orderCount: 0, unpaidOrderCount: 0 };
+    v.billing = { orderCount: b.orderCount, unpaidOrderCount: b.unpaidOrderCount };
+  }
+}
+
 async function listVisits(
   branchId: number,
   opts: {
@@ -61,6 +119,14 @@ async function listVisits(
     fromDate?: Date;
     toDate?: Date;
     search?: string;
+    status?: string[];
+    doctorId?: number;
+    appointmentId?: number;
+    hasAppointment?: boolean;
+    sortField?: string;
+    sortDir?: "asc" | "desc";
+    includeSignals?: boolean;
+    unpaidOnly?: boolean;
   } = {}
 ): Promise<{ visits: any[]; total: number }> {
   const limit = Math.min(opts.limit ?? 50, 100);
@@ -68,6 +134,16 @@ async function listVisits(
   const where: any = { branchId };
   if (opts.petId != null) where.petId = opts.petId;
   if (opts.patientId != null) where.patientId = opts.patientId;
+  if (opts.doctorId != null) where.doctorId = opts.doctorId;
+  if (opts.appointmentId != null) where.appointmentId = opts.appointmentId;
+  if (opts.hasAppointment === true) where.appointmentId = { not: null };
+  if (opts.hasAppointment === false) where.appointmentId = null;
+  if (opts.unpaidOnly) {
+    where.orders = { some: { paymentStatus: { not: "COMPLETED" } } };
+  }
+  if (opts.status && opts.status.length > 0) {
+    where.status = { in: opts.status };
+  }
   if (opts.treatmentCode) {
     where.treatmentCode = { contains: opts.treatmentCode, mode: "insensitive" };
   }
@@ -85,6 +161,9 @@ async function listVisits(
     ];
   }
 
+  const sortField = opts.sortField && VISIT_LIST_SORT_FIELDS.has(opts.sortField) ? opts.sortField : "createdAt";
+  const sortDir = opts.sortDir === "asc" ? "asc" : "desc";
+
   const [visits, total] = await Promise.all([
     prisma.visit.findMany({
       where,
@@ -93,14 +172,20 @@ async function listVisits(
         patient: { select: { id: true, profile: { select: { displayName: true } }, auth: { select: { phone: true, email: true } } } },
         doctor: { select: { id: true, user: { select: { profile: { select: { displayName: true } } } } } },
         appointment: { select: { id: true, scheduledStartAt: true, status: true } },
+        clinicalCase: { select: { id: true, status: true } },
+        surgeryCase: { select: { id: true, status: true } },
         _count: { select: { vitals: true, notes: true } },
       },
-      orderBy: { createdAt: "desc" },
+      orderBy: { [sortField]: sortDir } as any,
       take: limit,
       skip: offset,
     }),
     prisma.visit.count({ where }),
   ]);
+
+  if (opts.includeSignals !== false) {
+    await attachVisitListSignals(branchId, visits);
+  }
 
   return { visits, total };
 }
@@ -109,13 +194,35 @@ async function getVisitById(branchId: number, visitId: number, opts?: { includeP
   const visit = await prisma.visit.findFirst({
     where: { id: visitId, branchId },
     include: {
-      pet: { include: { animalType: true, breed: true } },
+      pet: { include: { animalType: true, breed: true, subBreed: true, color: true, size: true } },
       patient: { select: { id: true, profile: { select: { displayName: true } }, auth: { select: { phone: true, email: true } } } },
-      doctor: { select: { id: true, user: { select: { profile: { select: { displayName: true } } } } } },
+      doctor: {
+        select: {
+          id: true,
+          user: { select: { profile: { select: { displayName: true } } } },
+          clinicStaffProfile: { select: { defaultConsultationFee: true, followUpFee: true } },
+        },
+      },
       appointment: { include: { intake: true } },
+      clinicalCase: { select: { id: true, status: true, totalCharges: true, totalCollected: true } },
+      surgeryCase: { select: { id: true, status: true } },
+      queueTickets: {
+        take: 8,
+        orderBy: { id: "desc" },
+        select: { id: true, status: true, tokenNo: true, checkInAt: true, calledAt: true, visitId: true, startedAt: true, endedAt: true },
+      },
       vitals: { orderBy: { createdAt: "desc" } },
       notes: { orderBy: { createdAt: "desc" }, include: { createdBy: { select: { id: true, user: { select: { profile: { select: { displayName: true } } } } } } } },
       attachments: true,
+      _count: {
+        select: {
+          prescriptions: true,
+          labRequisitions: true,
+          orders: true,
+          dispenseRequests: true,
+          injectionTokens: true,
+        },
+      },
     },
   });
   if (!visit) return null;
@@ -241,6 +348,196 @@ async function addVisitAttachment(
   });
 }
 
+async function getVisitsSummaryForBranch(branchId: number, fromDate?: Date, toDate?: Date) {
+  const whereBase: any = { branchId };
+  if (fromDate || toDate) {
+    whereBase.createdAt = {};
+    if (fromDate) whereBase.createdAt.gte = fromDate;
+    if (toDate) whereBase.createdAt.lte = toDate;
+  }
+
+  const completedWhere: any = { branchId, status: "COMPLETED" };
+  if (fromDate || toDate) {
+    completedWhere.completedAt = {};
+    if (fromDate) completedWhere.completedAt.gte = fromDate;
+    if (toDate) completedWhere.completedAt.lte = toDate;
+  }
+
+  const [grouped, openCount, completedInRange] = await Promise.all([
+    prisma.visit.groupBy({
+      by: ["status"],
+      where: whereBase,
+      _count: { id: true },
+    }),
+    prisma.visit.count({
+      where: { branchId, status: { in: ["CHECKED_IN", "IN_PROGRESS"] } },
+    }),
+    prisma.visit.count({ where: completedWhere }),
+  ]);
+
+  const byStatus: Record<string, number> = {};
+  for (const row of grouped) {
+    byStatus[row.status] = row._count.id;
+  }
+
+  const visitsInRange = await prisma.visit.findMany({
+    where: whereBase,
+    select: { id: true },
+  });
+  const ids = visitsInRange.map((v) => v.id);
+  let visitsWithUnpaidOrders = 0;
+  if (ids.length > 0) {
+    const unpaidDistinct = await prisma.order.findMany({
+      where: { branchId, visitId: { in: ids }, paymentStatus: { not: "COMPLETED" } },
+      distinct: ["visitId"],
+      select: { visitId: true },
+    });
+    visitsWithUnpaidOrders = unpaidDistinct.filter((o) => o.visitId != null).length;
+  }
+
+  return {
+    byStatus,
+    openPipelineCount: openCount,
+    completedInDateRange: completedInRange,
+    visitsInDateRange: ids.length,
+    visitsWithUnpaidOrders,
+  };
+}
+
+async function getVisitQueueEventsForBranch(branchId: number, visitId: number) {
+  const visit = await prisma.visit.findFirst({
+    where: { id: visitId, branchId },
+    select: { id: true, appointmentId: true },
+  });
+  if (!visit) return null;
+
+  const tickets = await prisma.queueTicket.findMany({
+    where: {
+      branchId,
+      OR: [{ visitId }, ...(visit.appointmentId != null ? [{ appointmentId: visit.appointmentId }] : [])],
+    },
+    select: { id: true, tokenNo: true, status: true, checkInAt: true, calledAt: true, startedAt: true, endedAt: true, visitId: true },
+    orderBy: { id: "desc" },
+  });
+  const ticketIds = tickets.map((t) => t.id);
+  if (ticketIds.length === 0) {
+    return { tickets: [], events: [] };
+  }
+  const events = await prisma.queueEvent.findMany({
+    where: { ticketId: { in: ticketIds } },
+    orderBy: { createdAt: "asc" },
+    include: { ticket: { select: { tokenNo: true, status: true } } },
+  });
+  return { tickets, events };
+}
+
+/**
+ * Canonical visit completion (staff + doctor): branch policy, optional override when `canOverride`,
+ * appointment sync, settlement via updateVisit, DoctorAuditLog.
+ * Doctor flow: caller must enforce visit ownership; pass auditOpts.changedByRole "DOCTOR".
+ */
+async function completeVisitWithPolicy(
+  branchId: number,
+  visitId: number,
+  userId: number,
+  body?: { overrideReason?: string | null },
+  auditOpts?: { changedByRole?: "STAFF" | "DOCTOR"; completionSource?: string }
+): Promise<{ ok: true; visit: any } | { ok: false; code: string; unmet?: string[] }> {
+  const visitRow = await prisma.visit.findFirst({
+    where: { id: visitId, branchId },
+    select: { id: true, orgId: true, branchId: true, appointmentId: true, doctorId: true, status: true },
+  });
+  if (!visitRow) return { ok: false, code: "NOT_FOUND" };
+
+  if (visitRow.status === "COMPLETED") {
+    const full = await getVisitById(branchId, visitId, { includePreviousVisits: true });
+    return { ok: true, visit: full };
+  }
+
+  const visitCompletionPolicy = require("../doctor/visitCompletionPolicy");
+  const eligibility = await visitCompletionPolicy.checkVisitCompletionEligibilityInBranch(visitId, branchId);
+  if (!eligibility) return { ok: false, code: "NOT_FOUND" };
+
+  const trimmedOverride =
+    body?.overrideReason != null && String(body.overrideReason).trim().length > 0
+      ? String(body.overrideReason).trim()
+      : "";
+
+  let overrideUsed = false;
+  if (!eligibility.eligible) {
+    if (!trimmedOverride) {
+      return { ok: false, code: "COMPLETION_REQUIREMENTS_NOT_MET", unmet: eligibility.unmet || [] };
+    }
+    if (!eligibility.canOverride) {
+      return { ok: false, code: "COMPLETION_REQUIREMENTS_NOT_MET", unmet: eligibility.unmet || [] };
+    }
+    overrideUsed = true;
+  }
+
+  const changedByRole = auditOpts?.changedByRole === "DOCTOR" ? "DOCTOR" : "STAFF";
+
+  const completedAt = new Date();
+  const updated = await updateVisit(branchId, visitId, { status: "COMPLETED", completedAt });
+
+  if (visitRow.appointmentId && userId) {
+    try {
+      const aptSvc = require("./appointment.service");
+      await aptSvc.completeAppointment(visitRow.appointmentId, userId, { orgId: visitRow.orgId, branchId });
+    } catch (e: any) {
+      if (e?.code === "INVALID_STATUS_TRANSITION" || e?.name === "InvalidTransitionError") {
+        console.warn(`[completeVisitWithPolicy] appointment ${visitRow.appointmentId} transition skipped: ${e?.message}`);
+      } else {
+        throw e;
+      }
+    }
+  }
+
+  let clinicStaffProfileId: number | null =
+    (await prisma.branchMember.findUnique({ where: { id: visitRow.doctorId }, select: { clinicStaffProfileId: true } }))?.clinicStaffProfileId ??
+    null;
+  if (clinicStaffProfileId == null && Number.isFinite(userId)) {
+    const completerMember = await prisma.branchMember.findFirst({
+      where: { userId, branchId },
+      select: { clinicStaffProfileId: true },
+    });
+    clinicStaffProfileId = completerMember?.clinicStaffProfileId ?? null;
+  }
+
+  if (Number.isFinite(userId) && userId > 0) {
+    const newValue: Record<string, unknown> = {
+      visitId,
+      appointmentId: visitRow.appointmentId ?? null,
+      completedAt: completedAt.toISOString(),
+      completedByUserId: userId,
+      overrideUsed,
+      overrideReason: overrideUsed ? trimmedOverride : null,
+      unmet: !eligibility.eligible ? eligibility.unmet || [] : null,
+      visitContext: { isEmergency: eligibility.isEmergency, isFollowUpOnly: eligibility.isFollowUpOnly },
+    };
+    if (changedByRole === "STAFF") {
+      newValue.actor = "STAFF_CLINIC";
+    }
+    if (auditOpts?.completionSource) {
+      newValue.completionSource = auditOpts.completionSource;
+    }
+
+    await prisma.doctorAuditLog.create({
+      data: {
+        orgId: visitRow.orgId,
+        branchId: visitRow.branchId,
+        clinicStaffProfileId,
+        action: overrideUsed ? "VISIT_COMPLETED_OVERRIDE" : "VISIT_COMPLETED",
+        newValue: newValue as object,
+        changedByUserId: userId,
+        changedByRole,
+      },
+    });
+  }
+
+  const full = await getVisitById(branchId, visitId, { includePreviousVisits: true });
+  return { ok: true, visit: full ?? updated };
+}
+
 module.exports = {
   listVisits,
   getVisitById,
@@ -250,4 +547,7 @@ module.exports = {
   addClinicalNote,
   addVisitAttachment,
   generateNextTreatmentCode,
+  getVisitsSummaryForBranch,
+  getVisitQueueEventsForBranch,
+  completeVisitWithPolicy,
 };

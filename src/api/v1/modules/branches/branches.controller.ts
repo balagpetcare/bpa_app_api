@@ -2,6 +2,7 @@ const { requireBranchMemberRoles, isOrgOwner } = require("../../middlewares/memb
 const { resolveBranchAccessProfile } = require("../../services/branchAccessPermission.service");
 const { createNotification } = require("../../services/notification.service");
 const { createStaffInvite, getInviteableRolesForInviter } = require("../../services/staffInvite.service");
+const { BRANCH_ROLE_PERMISSIONS } = require("../../constants/branchRoles");
 
 function getPrisma(req) {
   if (!req.prisma) throw new Error('Prisma instance not found on req.prisma');
@@ -11,6 +12,13 @@ function getPrisma(req) {
 function branchHasType(branch, code) {
   const links = branch?.types || [];
   return links.some((x) => String(x?.type?.code || "").toUpperCase() === String(code).toUpperCase());
+}
+
+/** Branch taxonomy codes that typically have a linked central Warehouse row. */
+function branchLooksLikeWarehouseFacility(branch) {
+  const codes = new Set(["WAREHOUSE", "CENTRAL_WAREHOUSE", "WAREHOUSE_DC", "DISTRIBUTION_CENTER"]);
+  const links = branch?.types || [];
+  return links.some((x) => codes.has(String(x?.type?.code || "").toUpperCase()));
 }
 
 function asIntId(v) {
@@ -90,14 +98,35 @@ exports.inviteBranchMember = async (req, res) => {
     }
 
     const inviterRole = ownerByOrg ? "OWNER" : (member?.role ?? managerRole);
-    const { invite, rawToken } = await createStaffInvite(prisma, branchId, req.body || {}, userId, inviterRole);
+    const body = req.body && typeof req.body === "object" ? { ...req.body } : {};
+    let warehouseId =
+      body.warehouseId != null && body.warehouseId !== "" ? Number(body.warehouseId) : undefined;
+    if (!Number.isFinite(warehouseId) && branchLooksLikeWarehouseFacility(branch)) {
+      const linkedWh = await prisma.warehouse.findFirst({
+        where: { branchId, isActive: true },
+        select: { id: true },
+        orderBy: { id: "asc" },
+      });
+      if (linkedWh) warehouseId = linkedWh.id;
+    }
+    const inviteResult = await createStaffInvite(
+      prisma,
+      branchId,
+      { ...body, ...(warehouseId != null ? { warehouseId } : {}) },
+      userId,
+      inviterRole
+    );
+    const { invite, rawToken, existingPending } = inviteResult;
     const isProd = String(process.env.NODE_ENV || "").toLowerCase() === "production";
 
-    return res.status(201).json({
+    return res.status(existingPending ? 200 : 201).json({
       success: true,
       ok: true,
       invitationId: invite.id,
       status: invite.status,
+      message: existingPending
+        ? "A pending invitation already exists for this person with the same role. Use Resend if they need a new link."
+        : undefined,
       data: {
         inviteId: invite.id,
         orgId: invite.orgId,
@@ -105,10 +134,19 @@ exports.inviteBranchMember = async (req, res) => {
         role: invite.role,
         status: invite.status,
         expiresAt: invite.expiresAt,
-        ...(isProd ? {} : { devInviteToken: rawToken }),
+        existingPending: Boolean(existingPending),
+        ...(isProd || !rawToken ? {} : { devInviteToken: rawToken }),
       },
     });
   } catch (e) {
+    const { isStaffInviteDuplicatePendingError } = require("../../services/staffInvite.errors");
+    if (isStaffInviteDuplicatePendingError(e)) {
+      return res.status(409).json({
+        success: false,
+        message: e.message,
+        error: { code: e.code, meta: e.meta },
+      });
+    }
     if (e?.message === "role is required" || e?.message === "phone or email is required" || e?.message === "Invalid role for this branch type") {
       return res.status(400).json({ success: false, message: e.message });
     }
@@ -324,6 +362,25 @@ exports.getBranchMe = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Forbidden: no approved access to this branch' });
     }
 
+    const wsaForBranch = await prisma.warehouseStaffAssignment.findMany({
+      where: {
+        userId,
+        isActive: true,
+        warehouse: { branchId, isActive: true },
+      },
+      select: { role: true },
+    });
+    const permSet = new Set(profile.permissions || []);
+    for (const a of wsaForBranch) {
+      const extra = BRANCH_ROLE_PERMISSIONS[a.role] || [];
+      for (const p of extra) permSet.add(p);
+    }
+
+    const linkedWarehouseCount = await prisma.warehouse.count({
+      where: { branchId, isActive: true },
+    });
+    const userHasWarehouseAssignment = wsaForBranch.length > 0;
+
     const branch = await prisma.branch.findUnique({
       where: { id: branchId },
       include: {
@@ -357,14 +414,20 @@ exports.getBranchMe = async (req, res) => {
 
     const myAccess = {
       role: profile.role,
-      permissions: profile.permissions,
+      permissions: Array.from(permSet),
       scopes: profile.scopes,
     };
 
     return res.json({
       success: true,
       data: {
-        branch: branchPayload,
+        branch: {
+          ...branchPayload,
+          warehouseContext: {
+            linkedWarehouseCount,
+            userHasWarehouseAssignment,
+          },
+        },
         myAccess,
       },
     });

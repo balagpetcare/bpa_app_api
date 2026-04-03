@@ -3,7 +3,7 @@
  * All operations are scoped to producerOrgId.
  */
 
-import type { PrismaClient } from "@prisma/client";
+import type { Prisma, PrismaClient } from "@prisma/client";
 import type { TicketCategory, TicketPriority } from "@prisma/client";
 
 function toInt(v: unknown): number | null {
@@ -74,11 +74,11 @@ export async function listTickets(prisma: PrismaClient, params: ListTicketsParam
   const pageSize = Math.min(100, Math.max(1, params.pageSize ?? 20));
   const skip = (page - 1) * pageSize;
 
-  const where: { producerOrgId: number; status?: string; priority?: string; category?: string } = {
+  const where: Prisma.SupportTicketWhereInput = {
     producerOrgId: params.producerOrgId,
   };
-  if (params.status) where.status = params.status;
-  if (params.priority) where.priority = params.priority;
+  if (params.status) where.status = params.status as any;
+  if (params.priority) where.priority = params.priority as any;
   if (params.category) where.category = params.category as TicketCategory;
 
   const [items, total] = await Promise.all([

@@ -89,7 +89,7 @@ export async function recordDestruction(data: RecordDestructionInput): Promise<a
     },
     include: {
       auditBin: true,
-      destroyedBy: { select: { id: true }, profile: { select: { displayName: true } } },
+      destroyedBy: { select: { id: true, profile: { select: { displayName: true } } } },
     },
   });
 }

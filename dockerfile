@@ -8,21 +8,18 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends openssl ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
-# Dependencies
-COPY package*.json ./
+# Schema + local Prisma runner must exist before `npm ci` so `postinstall` can run generate
+COPY package*.json package-lock.json ./
+COPY prisma ./prisma
+COPY scripts/run-local-prisma.cjs ./scripts/run-local-prisma.cjs
 RUN npm ci
 
-# Prisma schema first (better layer caching)
-COPY prisma ./prisma
-RUN npx prisma generate
-
-# App source
+# Full tree (updates prisma if changed — regenerate client before build)
 COPY . .
-
-# Build TypeScript -> dist/
+RUN node scripts/run-local-prisma.cjs generate
 RUN npm run build
 
 EXPOSE 3000
 
 # Run migrations (safe for empty DB) then start
-CMD ["sh", "-c", "npx prisma migrate deploy || true && node dist/index.js"]
+CMD ["sh", "-c", "node scripts/run-local-prisma.cjs migrate deploy || true && node dist/index.js"]

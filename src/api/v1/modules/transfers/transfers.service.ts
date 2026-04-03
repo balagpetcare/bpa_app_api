@@ -3,12 +3,17 @@ const ledgerService = require("../inventory/ledger.service");
 
 /**
  * Create a stock transfer (draft).
- * Lot-backed only: lotId is required for each item.
+ * Items may be lot-backed (lotId set) or non-lot aggregate (lotId null) when policy allows.
  */
 async function createTransfer(data: {
   fromLocationId: number;
   toLocationId: number;
-  items: Array<{ variantId: number; quantity: number; lotId: number }>;
+  items: Array<{
+    variantId: number;
+    quantity: number;
+    lotId: number | null;
+    stockRequestItemId?: number | null;
+  }>;
   createdByUserId?: number;
 }) {
   const transfer = await prisma.stockTransfer.create({
@@ -20,7 +25,8 @@ async function createTransfer(data: {
       items: {
         create: data.items.map((item) => ({
           variantId: item.variantId,
-          lotId: item.lotId,
+          lotId: item.lotId ?? null,
+          stockRequestItemId: item.stockRequestItemId != null ? item.stockRequestItemId : null,
           quantitySent: item.quantity,
           quantityReceived: 0,
           quantityDamaged: 0,
@@ -77,8 +83,34 @@ async function sendTransfer(transferId: number, createdByUserId?: number) {
 
     for (const item of transfer.items) {
       if (!item.lotId) {
-        throw new Error(`lotId required for transfer item (variantId ${item.variantId}). Lot-backed transfers only.`);
+        const aggregate = await tx.stockBalance.findUnique({
+          where: {
+            locationId_variantId: {
+              locationId: transfer.fromLocationId,
+              variantId: item.variantId,
+            },
+          },
+        });
+        const available = aggregate?.onHandQty ?? 0;
+        if (available < item.quantitySent) {
+          throw new Error(
+            `Insufficient aggregate stock for variant ${item.variantId}. Available: ${available}, Required: ${item.quantitySent}`
+          );
+        }
+        const ledger = await ledgerService.recordLedgerEntryInTx(tx, {
+          locationId: transfer.fromLocationId,
+          variantId: item.variantId,
+          lotId: null,
+          type: "TRANSFER_OUT",
+          quantityDelta: -item.quantitySent,
+          refType: "TRANSFER",
+          refId: transferId.toString(),
+          createdByUserId: createdByUserId ?? undefined,
+        });
+        ledgerIds.push(ledger.id);
+        continue;
       }
+
       const lot = await tx.stockLot.findUnique({
         where: { id: item.lotId },
         select: { expDate: true, lotCode: true, variantId: true },
@@ -163,6 +195,8 @@ async function receiveTransfer(
   transferId: number,
   data: {
     items: Array<{
+      /** When set, receive line maps 1:1 to this transfer row (multi-line same variant / partial waves). */
+      transferItemId?: number;
       variantId: number;
       quantityReceived: number;
       quantityDamaged?: number;
@@ -194,12 +228,56 @@ async function receiveTransfer(
       data.items.length > 0
         ? data.items
         : transfer.items.map((i) => ({
+            transferItemId: i.id,
             variantId: i.variantId,
             quantityReceived: i.quantitySent,
             quantityDamaged: 0,
             quantityExpired: 0,
             lotId: i.lotId ?? undefined,
           }));
+
+    const usedTransferItemIds = new Set<number>();
+
+    function resolveTransferItem(receiveItem: (typeof receiveItems)[0]) {
+      if (receiveItem.transferItemId != null) {
+        const tid = Number(receiveItem.transferItemId);
+        const ti = transfer.items.find((i) => i.id === tid);
+        if (!ti) {
+          throw new Error(`transferItemId ${tid} does not belong to this transfer`);
+        }
+        if (usedTransferItemIds.has(ti.id)) {
+          throw new Error(`Duplicate receive line for transferItemId ${tid}`);
+        }
+        if (ti.variantId !== receiveItem.variantId) {
+          throw new Error(`variantId does not match transfer item ${tid}`);
+        }
+        usedTransferItemIds.add(ti.id);
+        return ti;
+      }
+
+      const lotIdRecv = receiveItem.lotId ?? undefined;
+      const candidates = transfer.items
+        .filter((i) => {
+          if (usedTransferItemIds.has(i.id)) return false;
+          if (i.variantId !== receiveItem.variantId) return false;
+          if (lotIdRecv != null) {
+            return i.lotId === lotIdRecv;
+          }
+          // No lot on receive line: only match aggregate (non-lot) transfer rows; lot-backed lines need transferItemId or explicit lotId
+          return i.lotId == null;
+        })
+        .sort((a, b) => a.id - b.id);
+
+      const ti = candidates[0];
+      if (!ti) {
+        throw new Error(
+          `No unmatched transfer line for variantId ${receiveItem.variantId}` +
+            (lotIdRecv != null ? ` lotId ${lotIdRecv}` : "")
+        );
+      }
+      usedTransferItemIds.add(ti.id);
+      return ti;
+    }
 
     const ledgerIds: number[] = [];
     let hasMismatch = false;
@@ -214,11 +292,10 @@ async function receiveTransfer(
       missingQty: number;
     }> = [];
 
+    const receivedQtyByTransferItemId = new Map<number, number>();
+
     for (const receiveItem of receiveItems) {
-      const transferItem = transfer.items.find((i) => i.variantId === receiveItem.variantId);
-      if (!transferItem) {
-        throw new Error(`Item variantId ${receiveItem.variantId} not found in transfer`);
-      }
+      const transferItem = resolveTransferItem(receiveItem);
 
       const qtyReceived = receiveItem.quantityReceived ?? 0;
       const qtyDamaged = receiveItem.quantityDamaged ?? 0;
@@ -249,6 +326,7 @@ async function receiveTransfer(
           quantityExpired: qtyExpired,
         },
       });
+      receivedQtyByTransferItemId.set(transferItem.id, qtyReceived);
 
       const lotId = receiveItem.lotId ?? transferItem.lotId ?? undefined;
 
@@ -296,7 +374,7 @@ async function receiveTransfer(
     }
 
     const totalReceived = transfer.items.reduce(
-      (sum, i) => sum + (receiveItems.find((r) => r.variantId === i.variantId)?.quantityReceived ?? 0),
+      (sum, ti) => sum + (receivedQtyByTransferItemId.get(ti.id) ?? 0),
       0
     );
     const totalSent = transfer.items.reduce((sum, i) => sum + i.quantitySent, 0);
@@ -360,6 +438,30 @@ async function receiveTransfer(
 
   const stockRequestService = require("../stock_requests/stock_requests.service");
   await stockRequestService.markRequestReceivedIfLinked(transferId, result.fullReceived);
+
+  const { logWarehouseAudit } = require("../warehouse/warehouseAudit.service");
+  const { resolveOrgIdForLocation } = require("../inventory/stockAvailability.service");
+  const toLoc = result.transfer.toLocationId;
+  const recvOrgId = await resolveOrgIdForLocation(toLoc);
+  if (recvOrgId != null) {
+    const whId = (result.transfer as { toLocation?: { warehouseId: number | null } }).toLocation?.warehouseId ?? null;
+    void logWarehouseAudit({
+      orgId: recvOrgId,
+      warehouseId: whId,
+      category: "OPERATIONS",
+      action: "TRANSFER_RECEIVE",
+      entityType: "StockTransfer",
+      entityId: String(transferId),
+      metadata: {
+        hasMismatch: result.hasMismatch,
+        ledgerEntryCount: result.ledgerIds.length,
+        status: result.transfer.status,
+        stockRequestId: (result.transfer as { stockRequestId?: number | null }).stockRequestId ?? null,
+      },
+      actorUserId: data.createdByUserId ?? null,
+    }).catch(() => {});
+  }
+
   return { transfer: result.transfer, ledgerIds: result.ledgerIds, hasMismatch: result.hasMismatch };
 }
 

@@ -29,8 +29,22 @@ router.get("/patients/:petId/history", ctrl.getPatientHistory);
 router.get("/follow-ups", ctrl.listFollowUps);
 router.get("/cases", ctrl.listCases);
 router.get("/prescriptions", ctrl.listPrescriptions);
+router.get("/medicine-catalog/search", ctrl.searchMedicineCatalog);
+router.get("/medicine-catalog/brands/:brandId", ctrl.getMedicineCatalogBrand);
 router.get("/visits", ctrl.listVisits);
 router.get("/visits/:id", ctrl.getVisit);
+router.get("/visits/:id/completion-eligibility", ctrl.getCompletionEligibility);
+router.post("/visits/:id/notes", ctrl.addVisitNote);
+router.post("/visits/:id/vitals", ctrl.addVisitVital);
+router.get("/visits/:id/billing-summary", ctrl.getVisitBillingSummary);
+router.patch("/visits/:id/complete", ctrl.completeVisit);
+router.post("/visits/:id/follow-up", ctrl.createVisitFollowUp);
+router.post("/visits/:id/lab-requisitions", ctrl.createVisitLabRequisition);
+router.post("/visits/:id/prescriptions", ctrl.createVisitPrescription);
+router.patch("/prescriptions/:prescriptionId", ctrl.updatePrescription);
+router.post("/prescriptions/:prescriptionId/finalize", ctrl.finalizePrescription);
+router.post("/visits/:id/attachments", ctrl.addVisitAttachment);
+router.get("/productivity", ctrl.getProductivity);
 router.patch("/profile/branches/:branchMemberId/fee", ctrl.updateBranchFee);
 router.post("/appointments/:id/confirm", ctrl.confirmAppointment);
 router.post("/appointments/:id/cancel", ctrl.cancelAppointment);
@@ -45,6 +59,7 @@ router.post("/clinics/:branchId/onboarding/complete", ctrl.completeOnboarding);
 
 // My services (species-wise fees)
 router.get("/clinics/:branchId/my-services", ctrl.getMyServices);
+router.post("/clinics/:branchId/my-services/acknowledge", ctrl.postMyServicesAcknowledge);
 router.put("/clinics/:branchId/my-services", ctrl.putMyServices);
 
 // My schedule (direct edit when policy allows)
@@ -76,6 +91,13 @@ router.get("/notifications", ctrl.listNotifications);
 router.get("/notifications/unread-count", ctrl.getNotificationUnreadCount);
 router.post("/notifications/:id/read", ctrl.markNotificationRead);
 router.get("/reminders", ctrl.getReminders);
+
+// Enterprise Surgery Module (doctor panel)
+router.get("/surgeries", ctrl.listSurgeries);
+router.get("/surgeries/:id", ctrl.getSurgeryById);
+router.patch("/surgeries/:id/notes", ctrl.updateSurgeryNotes);
+router.post("/surgeries/:id/start", ctrl.surgeryStart);
+router.post("/surgeries/:id/complete", ctrl.surgeryComplete);
 
 // Doctor verification (draft, documents, submit, licenses)
 router.get("/verification", verificationCtrl.getVerification);

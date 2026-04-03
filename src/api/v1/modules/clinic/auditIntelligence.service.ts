@@ -23,7 +23,8 @@ export async function getBranchManagerDashboard(branchId: number): Promise<any> 
   const now = new Date();
   const { dayEnd } = dayRange();
 
-  const [issuedToday, unresolvedReturns, activeSessions, pendingApprovals, tokensGenerated, tokensUsed, injectionsToday, latestReconciliation, flaggedReconciliations] = await Promise.all([
+  const { getLowStockAlerts, getNearExpiryAlerts } = await import("./clinicalItemStock.service");
+  const [issuedToday, unresolvedReturns, activeSessions, pendingApprovals, tokensGenerated, tokensUsed, injectionsToday, latestReconciliation, flaggedReconciliations, totalMedicines, lowStock, nearExpiry] = await Promise.all([
     prisma.dispenseRequest.count({ where: { branchId, status: { in: ["ISSUED", "PARTIALLY_ISSUED"] }, createdAt: { gte: dayStart } } }),
     prisma.vialReturn.count({ where: { verificationStatus: "PENDING" } }),
     prisma.vialSession.count({ where: { branchId, status: { in: ["ACTIVE", "PARTIALLY_USED"] }, validUntil: { gt: now } } }),
@@ -43,12 +44,18 @@ export async function getBranchManagerDashboard(branchId: number): Promise<any> 
     prisma.dailyReconciliation.count({
       where: { branchId, hasMismatch: true, status: { in: ["FLAGGED", "PENDING"] } },
     }),
+    prisma.branchItemStock.count({ where: { branchId } }),
+    getLowStockAlerts(branchId),
+    getNearExpiryAlerts(branchId, 30),
   ]);
   return {
     issuedToday,
     unresolvedReturns,
     activeSessions,
     pendingApprovals,
+    totalMedicines,
+    lowStockCount: lowStock.length,
+    nearExpiryCount: nearExpiry.length,
     injectionMonitor: {
       tokensGenerated,
       tokensUsed,
@@ -63,12 +70,24 @@ export async function getBranchManagerDashboard(branchId: number): Promise<any> 
 }
 
 export async function getPharmacyDashboard(branchId: number): Promise<any> {
-  const [pendingRequests, approvedNotIssued, openBins] = await Promise.all([
+  const { getLowStockAlerts, getNearExpiryAlerts } = await import("./clinicalItemStock.service");
+  const [pendingRequests, approvedNotIssued, openBins, stockRows, lowStock, nearExpiry] = await Promise.all([
     prisma.dispenseRequest.count({ where: { branchId, status: "PENDING" } }),
     prisma.dispenseRequest.count({ where: { branchId, status: "APPROVED" } }),
     prisma.auditBin.count({ where: { branchId, status: "OPEN" } }),
+    prisma.branchItemStock.count({ where: { branchId } }),
+    getLowStockAlerts(branchId),
+    getNearExpiryAlerts(branchId, 30),
   ]);
-  return { pendingRequests, approvedNotIssued, openBins };
+  return {
+    pendingRequests,
+    approvedNotIssued,
+    openBins,
+    totalMedicines: stockRows,
+    lowStockCount: lowStock.length,
+    nearExpiryCount: nearExpiry.length,
+    nearExpiryBatches: nearExpiry.slice(0, 20),
+  };
 }
 
 export async function getAuditorDashboard(branchId: number): Promise<any> {

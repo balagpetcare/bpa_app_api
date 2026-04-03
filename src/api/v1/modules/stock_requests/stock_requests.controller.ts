@@ -1,6 +1,9 @@
 export {};
 const service = require("./stock_requests.service");
-const { getManagedBranchesForUser } = require("../../services/branchManager.service");
+const {
+  userCanAccessStockRequestBranch,
+  getStockRequestListBranchIdsForUser,
+} = require("./stockRequestAccess");
 const { createNotification } = require("../../services/notification.service");
 const db = require("../../../../infrastructure/db/prismaClient").default;
 
@@ -19,7 +22,7 @@ async function create(req: any, res: any) {
     if (!userId) {
       return res.status(401).json({ success: false, message: "Unauthorized" });
     }
-    const { branchId, items } = req.body;
+    const { branchId, items, orgId: bodyOrgId, requesterStaffId: _requesterStaffId } = req.body;
     if (!branchId || !items?.length) {
       return res.status(400).json({
         success: false,
@@ -33,14 +36,23 @@ async function create(req: any, res: any) {
     if (!branch) {
       return res.status(404).json({ success: false, message: "Branch not found" });
     }
-    const managed = await getManagedBranchesForUser(userId);
-    const canAccess = managed.some((b: any) => b.branchId === branch.id);
-    const ownedOrg = await db.organization.findFirst({
-      where: { ownerUserId: userId },
-      select: { id: true },
-    });
-    if (!canAccess && ownedOrg?.id !== branch.orgId) {
-      return res.status(403).json({ success: false, message: "Not authorized to create request for this branch" });
+    if (bodyOrgId != null && String(bodyOrgId).trim() !== "") {
+      const n = Number(bodyOrgId);
+      if (Number.isFinite(n) && n > 0 && n !== branch.orgId) {
+        return res.status(400).json({
+          success: false,
+          message: "orgId does not match this branch's organization",
+        });
+      }
+    }
+    const perms = Array.isArray(req.user?.permissions) ? req.user.permissions : [];
+    const gate = await userCanAccessStockRequestBranch(userId, branch.id, perms);
+    if (!gate.ok) {
+      return res.status(403).json({
+        success: false,
+        message: "Not authorized to create request for this branch",
+        code: "STOCK_REQUEST_BRANCH_FORBIDDEN",
+      });
     }
     const request = await service.createRequest({
       orgId: branch.orgId,
@@ -88,8 +100,7 @@ async function list(req: any, res: any) {
       if (org) filterOrgId = org.id;
     }
     if (!filterOrgId) {
-      const managed = await getManagedBranchesForUser(userId);
-      branchIds = managed.map((b: any) => b.branchId);
+      branchIds = await getStockRequestListBranchIdsForUser(userId);
       if (branchId && branchIds.includes(branchId)) {
         branchIds = [branchId];
       } else if (branchId) {
@@ -123,13 +134,16 @@ async function getById(req: any, res: any) {
     }
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ success: false, message: "Invalid id" });
-    const fromLocationId = req.query.fromLocationId ? Number(req.query.fromLocationId) : undefined;
+    let fromLocationId: number | undefined;
+    if (req.query.fromLocationId != null && String(req.query.fromLocationId).trim() !== "") {
+      const n = Number(req.query.fromLocationId);
+      fromLocationId = Number.isFinite(n) && n > 0 ? n : undefined;
+    }
     const request = await service.getRequestById(id, { fromLocationId });
     if (!request) {
       return res.status(404).json({ success: false, message: "Stock request not found" });
     }
-    const managed = await getManagedBranchesForUser(userId);
-    const branchIds = managed.map((b: any) => b.branchId);
+    const branchIds = await getStockRequestListBranchIdsForUser(userId);
     const ownedOrgs = await db.organization.findMany({
       where: { ownerUserId: userId },
       select: { id: true },
@@ -166,13 +180,13 @@ async function updateItems(req: any, res: any) {
       select: { branchId: true, orgId: true },
     });
     if (!existing) return res.status(404).json({ success: false, message: "Stock request not found" });
-    const managed = await getManagedBranchesForUser(userId);
-    const canAccess = managed.some((b: any) => b.branchId === existing.branchId);
     const ownedOrg = await db.organization.findFirst({
       where: { ownerUserId: userId },
       select: { id: true },
     });
-    if (!canAccess && ownedOrg?.id !== existing.orgId) {
+    const perms = Array.isArray(req.user?.permissions) ? req.user.permissions : [];
+    const gate = await userCanAccessStockRequestBranch(userId, existing.branchId, perms);
+    if (!gate.ok && ownedOrg?.id !== existing.orgId) {
       return res.status(403).json({ success: false, message: "Not authorized to update this request" });
     }
     const request = await service.updateRequestItems(
@@ -205,9 +219,9 @@ async function submit(req: any, res: any) {
       select: { branchId: true, orgId: true },
     });
     if (!existing) return res.status(404).json({ success: false, message: "Stock request not found" });
-    const managed = await getManagedBranchesForUser(userId);
-    const canAccess = managed.some((b: any) => b.branchId === existing.branchId);
-    if (!canAccess) return res.status(403).json({ success: false, message: "Not authorized" });
+    const perms = Array.isArray(req.user?.permissions) ? req.user.permissions : [];
+    const gate = await userCanAccessStockRequestBranch(userId, existing.branchId, perms);
+    if (!gate.ok) return res.status(403).json({ success: false, message: "Not authorized" });
     const request = await service.submitRequest(id);
     try {
       const org = await db.organization.findUnique({
@@ -259,20 +273,115 @@ async function cancel(req: any, res: any) {
       select: { branchId: true, orgId: true },
     });
     if (!existing) return res.status(404).json({ success: false, message: "Stock request not found" });
-    const managed = await getManagedBranchesForUser(userId);
+    const listBranchIds = await getStockRequestListBranchIdsForUser(userId);
     const ownedOrg = await db.organization.findFirst({
       where: { ownerUserId: userId },
       select: { id: true },
     });
-    const canAccess =
-      managed.some((b: any) => b.branchId === existing.branchId) ||
-      ownedOrg?.id === existing.orgId;
+    const canAccess = listBranchIds.includes(existing.branchId) || ownedOrg?.id === existing.orgId;
     if (!canAccess) return res.status(403).json({ success: false, message: "Not authorized" });
     const request = await service.cancelRequest(id);
     return res.status(200).json({ success: true, data: request });
   } catch (e: any) {
     console.error("stock_requests.cancel", e);
     return res.status(400).json({ success: false, message: e?.message || "Failed to cancel" });
+  }
+}
+
+/**
+ * PATCH /api/v1/stock-requests/:id/fulfill — Owner: flexible fulfillment (partial/over, extras, optional lots).
+ * Body: fromLocationId, toLocationId, manualMode?, items?, extraItems?
+ */
+async function fulfill(req: any, res: any) {
+  try {
+    const userId = getUserId(req);
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ success: false, message: "Invalid id" });
+    const { fromLocationId, toLocationId, manualMode, items, extraItems } = req.body || {};
+    if (!fromLocationId || !toLocationId) {
+      return res.status(400).json({
+        success: false,
+        message: "fromLocationId and toLocationId are required",
+      });
+    }
+    const hasItems = Array.isArray(items) && items.length > 0;
+    const hasExtras = Array.isArray(extraItems) && extraItems.length > 0;
+    if (!hasItems && !hasExtras) {
+      return res.status(400).json({
+        success: false,
+        message: "items and/or extraItems (non-empty) are required",
+      });
+    }
+    const existing = await db.stockRequest.findUnique({
+      where: { id },
+      select: { orgId: true },
+    });
+    if (!existing) return res.status(404).json({ success: false, message: "Stock request not found" });
+    const ownedOrg = await db.organization.findFirst({
+      where: { ownerUserId: userId },
+      select: { id: true },
+    });
+    if (ownedOrg?.id !== existing.orgId) {
+      return res.status(403).json({ success: false, message: "Only org owner can fulfill" });
+    }
+    const result = await service.fulfillStockRequestFlexible(id, {
+      fromLocationId: Number(fromLocationId),
+      toLocationId: Number(toLocationId),
+      manualMode: Boolean(manualMode),
+      items: hasItems
+        ? items.map((i: any) => ({
+            stockRequestItemId: i.stockRequestItemId != null ? Number(i.stockRequestItemId) : undefined,
+            variantId: i.variantId != null ? Number(i.variantId) : undefined,
+            fulfillQty: Number(i.fulfillQty),
+            lots: Array.isArray(i.lots)
+              ? i.lots.map((l: any) => ({
+                  lotId: Number(l.lotId),
+                  quantity: Number(l.quantity),
+                }))
+              : undefined,
+          }))
+        : undefined,
+      extraItems: hasExtras
+        ? extraItems.map((i: any) => ({
+            productId: Number(i.productId),
+            variantId: Number(i.variantId),
+            fulfillQty: Number(i.fulfillQty),
+            lots: Array.isArray(i.lots)
+              ? i.lots.map((l: any) => ({
+                  lotId: Number(l.lotId),
+                  quantity: Number(l.quantity),
+                }))
+              : undefined,
+          }))
+        : undefined,
+      createdByUserId: userId,
+    });
+    const refreshed = await service.getRequestById(id, { fromLocationId: Number(fromLocationId) });
+    const fulfillment = result.fulfillment as { dispatched?: boolean; message?: string };
+    if (!fulfillment?.dispatched) {
+      return res.status(422).json({
+        success: false,
+        data: {
+          transfer: null,
+          fulfillment: result.fulfillment,
+          request: refreshed,
+        },
+        message: fulfillment?.message || "No quantity could be dispatched",
+      });
+    }
+    return res.status(200).json({
+      success: true,
+      data: {
+        transfer: result.transfer,
+        fulfillment: result.fulfillment,
+        request: refreshed,
+      },
+      message: fulfillment?.message || "Dispatched",
+    });
+  } catch (e: any) {
+    console.error("stock_requests.fulfill", e);
+    return res.status(400).json({ success: false, message: e?.message || "Failed to fulfill" });
   }
 }
 
@@ -309,7 +418,7 @@ async function dispatch(req: any, res: any) {
       toLocationId: Number(toLocationId),
       items: items.map((i: any) => ({
         variantId: Number(i.variantId),
-        lotId: Number(i.lotId),
+        lotId: i.lotId == null || i.lotId === "" ? null : Number(i.lotId),
         quantity: Number(i.quantity),
       })),
       createdByUserId: userId,
@@ -402,6 +511,141 @@ async function decline(req: any, res: any) {
   }
 }
 
+/**
+ * PATCH /api/v1/stock-requests/:id/items/:itemId/cancel — Owner: cancel specific line (full or partial qty).
+ * Body: { cancelledQty, reason? }
+ */
+async function cancelLineHandler(req: any, res: any) {
+  try {
+    const userId = getUserId(req);
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+
+    const requestId = Number(req.params.id);
+    const itemId = Number(req.params.itemId);
+    if (!requestId || !itemId) {
+      return res.status(400).json({ success: false, message: "Invalid id or itemId" });
+    }
+
+    const { cancelledQty, reason } = req.body || {};
+    if (!cancelledQty || cancelledQty < 0) {
+      return res.status(400).json({ success: false, message: "cancelledQty is required and must be >= 0" });
+    }
+
+    // Check owner authorization
+    const existing = await db.stockRequest.findUnique({
+      where: { id: requestId },
+      select: { orgId: true },
+    });
+    if (!existing) return res.status(404).json({ success: false, message: "Stock request not found" });
+
+    const ownedOrg = await db.organization.findFirst({
+      where: { ownerUserId: userId },
+      select: { id: true },
+    });
+    if (ownedOrg?.id !== existing.orgId) {
+      return res.status(403).json({ success: false, message: "Only org owner can cancel lines" });
+    }
+
+    const item = await service.cancelLine(requestId, itemId, {
+      cancelledQty: Number(cancelledQty),
+      reason: reason ? String(reason) : undefined,
+      cancelledByUserId: userId,
+    });
+
+    return res.status(200).json({ success: true, data: item, message: "Line cancelled" });
+  } catch (e: any) {
+    console.error("stock_requests.cancelLine", e);
+    return res.status(400).json({ success: false, message: e?.message || "Failed to cancel line" });
+  }
+}
+
+/**
+ * PATCH /api/v1/stock-requests/:id/items/:itemId/restore — Owner: restore cancelled line (sets cancelledQty = 0).
+ */
+async function restoreLineHandler(req: any, res: any) {
+  try {
+    const userId = getUserId(req);
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+
+    const requestId = Number(req.params.id);
+    const itemId = Number(req.params.itemId);
+    if (!requestId || !itemId) {
+      return res.status(400).json({ success: false, message: "Invalid id or itemId" });
+    }
+
+    // Check owner authorization
+    const existing = await db.stockRequest.findUnique({
+      where: { id: requestId },
+      select: { orgId: true },
+    });
+    if (!existing) return res.status(404).json({ success: false, message: "Stock request not found" });
+
+    const ownedOrg = await db.organization.findFirst({
+      where: { ownerUserId: userId },
+      select: { id: true },
+    });
+    if (ownedOrg?.id !== existing.orgId) {
+      return res.status(403).json({ success: false, message: "Only org owner can restore lines" });
+    }
+
+    const item = await service.restoreLine(requestId, itemId);
+
+    return res.status(200).json({ success: true, data: item, message: "Line restored" });
+  } catch (e: any) {
+    console.error("stock_requests.restoreLine", e);
+    return res.status(400).json({ success: false, message: e?.message || "Failed to restore line" });
+  }
+}
+
+/**
+ * POST /api/v1/stock-requests/:id/allocation-preview — Owner: preview FEFO allocation without executing dispatch.
+ * Body: { fromLocationId, items: [{ stockRequestItemId, fulfillQty }] }
+ */
+async function allocationPreviewHandler(req: any, res: any) {
+  try {
+    const userId = getUserId(req);
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+
+    const requestId = Number(req.params.id);
+    if (!requestId) {
+      return res.status(400).json({ success: false, message: "Invalid id" });
+    }
+
+    const { fromLocationId, items } = req.body || {};
+    if (!fromLocationId || !items?.length) {
+      return res.status(400).json({ success: false, message: "fromLocationId and items are required" });
+    }
+
+    // Check owner authorization
+    const existing = await db.stockRequest.findUnique({
+      where: { id: requestId },
+      select: { orgId: true },
+    });
+    if (!existing) return res.status(404).json({ success: false, message: "Stock request not found" });
+
+    const ownedOrg = await db.organization.findFirst({
+      where: { ownerUserId: userId },
+      select: { id: true },
+    });
+    if (ownedOrg?.id !== existing.orgId) {
+      return res.status(403).json({ success: false, message: "Only org owner can preview allocation" });
+    }
+
+    const result = await service.allocationPreview(requestId, {
+      fromLocationId: Number(fromLocationId),
+      items: items.map((i: any) => ({
+        stockRequestItemId: Number(i.stockRequestItemId),
+        fulfillQty: Number(i.fulfillQty),
+      })),
+    });
+
+    return res.status(200).json({ success: true, data: result });
+  } catch (e: any) {
+    console.error("stock_requests.allocationPreview", e);
+    return res.status(400).json({ success: false, message: e?.message || "Failed to preview allocation" });
+  }
+}
+
 module.exports = {
   create,
   list,
@@ -411,5 +655,9 @@ module.exports = {
   cancel,
   approve,
   decline,
+  fulfill,
   dispatch,
+  cancelLineHandler,
+  restoreLineHandler,
+  allocationPreviewHandler,
 };

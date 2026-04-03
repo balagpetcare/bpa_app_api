@@ -1,35 +1,19 @@
 import * as service from "./dispatches.service";
 import { notifyDispatchReceived } from "./dispatches.notifications";
+import { getIncomingInboundUnifiedForBranch } from "../inventory/inboundReceipts.service";
 import prisma from "../../../../infrastructure/db/prismaClient";
 import { auditStockDispatch, auditGrn, auditDiscrepancy } from "../inventory/auditHelper";
-import { getEffectiveBranchIdsForOwnerPanel } from "../../services/ownerPanelAccess.service";
+import {
+  getAllowedBranchIdsForInboundReceive,
+  getOrgIdForInboundUser,
+} from "../../services/inboundReceiveBranchAccess.service";
 
 async function getOrgIdForUser(userId: number): Promise<number | null> {
-  const owner = await prisma.organization.findFirst({
-    where: { ownerUserId: userId },
-    select: { id: true },
-  });
-  if (owner) return owner.id;
-  const member = await prisma.orgMember.findFirst({
-    where: { userId, status: "ACTIVE" },
-    select: { orgId: true },
-  });
-  return member?.orgId ?? null;
+  return getOrgIdForInboundUser(userId);
 }
 
-/** Branch IDs the user may use for incoming/receive: ACTIVE BranchMember + owner-panel effective branches. */
 async function getAllowedBranchIdsForDispatches(userId: number): Promise<number[]> {
-  const [branchMemberIds, ownerPanelIds] = await Promise.all([
-    prisma.branchMember.findMany({
-      where: { userId, status: "ACTIVE" },
-      select: { branchId: true },
-    }),
-    getEffectiveBranchIdsForOwnerPanel(prisma, userId),
-  ]);
-  const set = new Set<number>();
-  for (const m of branchMemberIds) if (m.branchId != null) set.add(m.branchId);
-  for (const id of ownerPanelIds) set.add(id);
-  return Array.from(set);
+  return getAllowedBranchIdsForInboundReceive(userId);
 }
 
 exports.listDispatches = async (req, res) => {
@@ -90,7 +74,7 @@ exports.createDispatch = async (req, res) => {
     const stockRequestId = parseInt(req.params.id ?? req.body.stockRequestId);
     if (!stockRequestId) return res.status(400).json({ success: false, message: "stockRequestId required" });
 
-    const { fromLocationId, toLocationId, items, transport } = req.body;
+    const { fromLocationId, toLocationId, items, transport, pickListId } = req.body;
     if (!fromLocationId || !toLocationId || !items?.length) {
       return res.status(400).json({ success: false, message: "fromLocationId, toLocationId, and items[] required" });
     }
@@ -112,6 +96,7 @@ exports.createDispatch = async (req, res) => {
       items: parsedItems,
       transport,
       createdByUserId: userId,
+      pickListId: pickListId != null ? parseInt(pickListId, 10) : undefined,
     });
     await auditStockDispatch(req, "CREATE", dispatch.id, null, { status: dispatch.status });
     return res.status(201).json({ success: true, data: dispatch });
@@ -231,5 +216,89 @@ exports.getIncomingDispatches = async (req, res) => {
   } catch (e: any) {
     console.error("getIncomingDispatches error:", e);
     return res.status(500).json({ success: false, message: e?.message ?? "Failed to list incoming dispatches" });
+  }
+};
+
+/** GET .../receipts/incoming-unified — dispatches (PACKED|IN_TRANSIT) + transfers (SENT|IN_TRANSIT) for branch */
+exports.listDispatchDiscrepancies = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const orgId = await getOrgIdForUser(userId);
+    if (!orgId) return res.status(403).json({ success: false, message: "Organization context required" });
+    const dispatchId = parseInt(req.params.id, 10);
+    if (!dispatchId) return res.status(400).json({ success: false, message: "Invalid dispatch ID" });
+    const dispatch = await service.getDispatchById(dispatchId);
+    if (!dispatch || dispatch.orgId !== orgId) return res.status(404).json({ success: false, message: "Not found" });
+    const rows = await service.listDispatchDiscrepancies(dispatchId, orgId);
+    return res.status(200).json({ success: true, data: rows });
+  } catch (e: any) {
+    console.error("listDispatchDiscrepancies error:", e);
+    return res.status(500).json({ success: false, message: e?.message ?? "Failed" });
+  }
+};
+
+exports.createDispatchDiscrepancy = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const orgId = await getOrgIdForUser(userId);
+    if (!orgId) return res.status(403).json({ success: false, message: "Organization context required" });
+    const dispatchId = parseInt(req.params.id, 10);
+    const { variantId, lotId, reasonCode, quantity, notes } = req.body || {};
+    if (!variantId || !reasonCode || quantity == null) {
+      return res.status(400).json({ success: false, message: "variantId, reasonCode, and quantity required" });
+    }
+    const row = await service.createDispatchDiscrepancy({
+      orgId,
+      stockDispatchId: dispatchId,
+      variantId: parseInt(variantId, 10),
+      lotId: lotId != null ? parseInt(lotId, 10) : null,
+      reasonCode: String(reasonCode),
+      quantity: parseInt(quantity, 10),
+      notes: notes != null ? String(notes) : null,
+    });
+    return res.status(201).json({ success: true, data: row });
+  } catch (e: any) {
+    console.error("createDispatchDiscrepancy error:", e);
+    return res.status(400).json({ success: false, message: e?.message ?? "Failed" });
+  }
+};
+
+exports.resolveDispatchDiscrepancy = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const orgId = await getOrgIdForUser(userId);
+    if (!orgId) return res.status(403).json({ success: false, message: "Organization context required" });
+    const discrepancyId = parseInt(req.params.discrepancyId, 10);
+    const { resolutionNote } = req.body || {};
+    const row = await service.resolveDispatchDiscrepancy(discrepancyId, orgId, {
+      resolutionNote: resolutionNote != null ? String(resolutionNote) : null,
+      resolvedByUserId: userId,
+    });
+    return res.status(200).json({ success: true, data: row });
+  } catch (e: any) {
+    console.error("resolveDispatchDiscrepancy error:", e);
+    return res.status(400).json({ success: false, message: e?.message ?? "Failed" });
+  }
+};
+
+exports.getIncomingInboundUnified = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const branchId = parseInt(req.query.branchId as string);
+    if (!branchId) return res.status(400).json({ success: false, message: "branchId required" });
+
+    const allowedBranchIds = await getAllowedBranchIdsForDispatches(userId);
+    if (!allowedBranchIds.includes(branchId)) return res.status(403).json({ success: false, message: "Branch not accessible" });
+
+    const orgId = (await getOrgIdForUser(userId)) ?? undefined;
+    const items = await getIncomingInboundUnifiedForBranch(branchId, orgId);
+    return res.status(200).json({ success: true, data: items });
+  } catch (e: any) {
+    console.error("getIncomingInboundUnified error:", e);
+    return res.status(500).json({ success: false, message: e?.message ?? "Failed to list incoming inbound" });
   }
 };

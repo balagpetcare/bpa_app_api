@@ -288,7 +288,11 @@ export async function calculateDoctorShare(options: {
     };
   }
 
-  const consultationRule = contract.consultationRule as { sharePct?: number; fixedFee?: number } | null;
+  const consultationRule = contract.consultationRule as {
+    sharePct?: number;
+    fixedFee?: number;
+    floorFee?: number;
+  } | null;
   const surgeryRule = contract.surgeryRule as { sharePct?: number; fixedFee?: number } | null;
   const emergencyRule = contract.emergencyRule as { sharePct?: number; fixedFee?: number } | null;
 
@@ -368,6 +372,21 @@ export async function calculateDoctorShare(options: {
         clinicShare: Math.round((options.grossAmount - doctorShare) * 100) / 100,
         rateType,
         rateValue,
+        contractId: contract.id,
+      };
+    }
+    // HYBRID: floor fee + percentage above floor
+    if (typeof consultationRule.floorFee === "number" && typeof consultationRule.sharePct === "number") {
+      rateType = "HYBRID";
+      const floorFee = Math.min(consultationRule.floorFee, options.grossAmount);
+      const excess = Math.max(0, options.grossAmount - floorFee);
+      const upside = Math.round((excess * consultationRule.sharePct) / 100 * 100) / 100;
+      const doctorShare = Math.round((floorFee + upside) * 100) / 100;
+      return {
+        doctorShare,
+        clinicShare: Math.round((options.grossAmount - doctorShare) * 100) / 100,
+        rateType,
+        rateValue: doctorShare,
         contractId: contract.id,
       };
     }

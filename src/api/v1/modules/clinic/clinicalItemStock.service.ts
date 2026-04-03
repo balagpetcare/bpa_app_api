@@ -8,6 +8,7 @@ const prisma =
 const {
   recordClinicalLedgerEntryStandalone,
 } = require("./clinicalStockLedger.service");
+const { Decimal } = require("@prisma/client-runtime-utils");
 
 /** Get or create branch stock row for item+variant */
 async function getOrCreateBranchStock(
@@ -144,7 +145,6 @@ export async function adjustBranchItemStock(
   const reserved = Number(row.reservedQty);
   const available = Math.max(0, newQty - reserved);
 
-  const { Decimal } = require("@prisma/client/runtime/library");
   await prisma.branchItemStock.update({
     where: { id: row.id },
     data: {
@@ -228,5 +228,26 @@ export async function getBranchItemBatches(options: {
       variant: { select: { variantName: true } },
     },
     orderBy: [{ expiryDate: "asc" }, { id: "asc" }],
+  });
+}
+
+/** Get near-expiry batches for branch (expiry within daysAhead). Used for pharmacy dashboard. */
+export async function getNearExpiryAlerts(
+  branchId: number,
+  daysAhead: number = 30
+) {
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() + daysAhead);
+  return prisma.branchItemBatch.findMany({
+    where: {
+      branchId,
+      status: "ACTIVE",
+      expiryDate: { not: null, lte: cutoff, gte: new Date() },
+    },
+    include: {
+      item: { select: { id: true, name: true, itemCode: true } },
+      variant: { select: { id: true, variantName: true } },
+    },
+    orderBy: [{ expiryDate: "asc" }],
   });
 }

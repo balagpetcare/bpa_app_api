@@ -29,9 +29,11 @@ export async function requireAppointmentInBranch(params: {
   select?: Record<string, boolean>;
 }): Promise<any> {
   const { appointmentId, orgId, branchId, select } = params;
+  // Always include orgId and branchId in the select so the branch check is valid when caller passes a custom select.
+  const mergedSelect = { ...(select ?? { id: true, status: true }), orgId: true, branchId: true };
   const appointment = await prisma.appointment.findUnique({
     where: { id: appointmentId },
-    select: select ?? { id: true, status: true, orgId: true, branchId: true },
+    select: mergedSelect,
   });
   if (!appointment) {
     throw new AppointmentNotFoundError("Appointment not found");

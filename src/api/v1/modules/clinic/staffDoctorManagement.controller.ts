@@ -183,6 +183,149 @@ exports.putServiceMatrix = async (req: any, res: any) => {
   }
 };
 
+exports.getServiceAssignmentSummary = async (req: any, res: any) => {
+  try {
+    const branchId = getBranchId(req);
+    const data = await staffDoctorService.getDoctorServiceAssignmentSummary(branchId);
+    return sendClinicSuccess(res, 200, data);
+  } catch (e: any) {
+    return sendClinicError(res, 500, e?.message || "Failed to load summary", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+exports.getServiceAssignmentDetail = async (req: any, res: any) => {
+  try {
+    const branchId = getBranchId(req);
+    const memberId = getMemberId(req);
+    const data = await staffDoctorService.getDoctorServiceAssignmentDetail(branchId, memberId);
+    return sendClinicSuccess(res, 200, data);
+  } catch (e: any) {
+    const msg = e?.message || "Failed to load assignment detail";
+    if (msg.includes("not found")) return sendClinicError(res, 404, msg, CLINIC_ERROR_CODES.NOT_FOUND);
+    return sendClinicError(res, 500, msg, CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+exports.patchServiceAssignmentBulk = async (req: any, res: any) => {
+  try {
+    const branchId = getBranchId(req);
+    const memberId = getMemberId(req);
+    const userId = getUserId(req);
+    const ops = (req.body || {}).ops;
+    const result = await staffDoctorService.bulkPatchDoctorServiceAssignment(branchId, memberId, ops, userId);
+    if (!result.ok) {
+      const first = result.errors?.[0]?.message;
+      const message =
+        first && result.errors.length > 1
+          ? `${first} (+${result.errors.length - 1} more)`
+          : first || "Validation failed";
+      return res.status(422).json({
+        success: false,
+        code: CLINIC_ERROR_CODES.VALIDATION_ERROR,
+        message,
+        errors: result.errors,
+      });
+    }
+    const assignment = await staffDoctorService.getDoctorServiceAssignmentDetail(branchId, memberId);
+    return sendClinicSuccess(res, 200, { ...result, assignment });
+  } catch (e: any) {
+    return sendClinicError(res, 500, e?.message || "Failed to apply bulk update", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+exports.getServiceAssignmentTemplates = async (req: any, res: any) => {
+  try {
+    const branchId = getBranchId(req);
+    const forMemberId = req.query.memberId != null ? Number(req.query.memberId) : undefined;
+    const items = await staffDoctorService.listDoctorServiceAssignmentTemplates(
+      branchId,
+      Number.isFinite(forMemberId as number) ? forMemberId : undefined
+    );
+    return sendClinicSuccess(res, 200, { items });
+  } catch (e: any) {
+    return sendClinicError(res, 500, e?.message || "Failed to list templates", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+exports.postServiceAssignmentTemplate = async (req: any, res: any) => {
+  try {
+    const branchId = getBranchId(req);
+    const userId = getUserId(req);
+    const body = req.body || {};
+    const data = await staffDoctorService.createDoctorServiceAssignmentTemplate(branchId, userId, body);
+    return sendClinicSuccess(res, 201, data);
+  } catch (e: any) {
+    return sendClinicError(res, 400, e?.message || "Failed to create template", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+exports.patchServiceAssignmentTemplate = async (req: any, res: any) => {
+  try {
+    const branchId = getBranchId(req);
+    const userId = getUserId(req);
+    const templateId = Number(req.params.templateId);
+    if (!Number.isFinite(templateId)) {
+      return sendClinicError(res, 400, "Invalid template id", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+    const data = await staffDoctorService.updateDoctorServiceAssignmentTemplate(branchId, templateId, userId, req.body || {});
+    return sendClinicSuccess(res, 200, data);
+  } catch (e: any) {
+    const msg = e?.message || "Failed to update template";
+    if (msg.includes("not found")) return sendClinicError(res, 404, msg, CLINIC_ERROR_CODES.NOT_FOUND);
+    return sendClinicError(res, 400, msg, CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+exports.deleteServiceAssignmentTemplate = async (req: any, res: any) => {
+  try {
+    const branchId = getBranchId(req);
+    const templateId = Number(req.params.templateId);
+    if (!Number.isFinite(templateId)) {
+      return sendClinicError(res, 400, "Invalid template id", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+    await staffDoctorService.deleteDoctorServiceAssignmentTemplate(branchId, templateId);
+    return sendClinicSuccess(res, 200, { deleted: true });
+  } catch (e: any) {
+    const msg = e?.message || "Failed to delete template";
+    if (msg.includes("not found")) return sendClinicError(res, 404, msg, CLINIC_ERROR_CODES.NOT_FOUND);
+    return sendClinicError(res, 500, msg, CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+exports.postApplyServiceAssignmentTemplate = async (req: any, res: any) => {
+  try {
+    const branchId = getBranchId(req);
+    const userId = getUserId(req);
+    const templateId = Number(req.params.templateId);
+    const body = req.body || {};
+    const targetMemberId = Number(body.memberId);
+    const mode = body.mode === "replace" ? "replace" : "merge";
+    if (!Number.isFinite(templateId) || !Number.isFinite(targetMemberId)) {
+      return sendClinicError(res, 400, "templateId and memberId required", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+    const result = await staffDoctorService.applyDoctorServiceAssignmentTemplate(branchId, templateId, targetMemberId, mode, userId);
+    if (!result.ok) {
+      const first = result.errors?.[0]?.message;
+      const message =
+        first && result.errors.length > 1
+          ? `${first} (+${result.errors.length - 1} more)`
+          : first || "Validation failed";
+      return res.status(422).json({
+        success: false,
+        code: CLINIC_ERROR_CODES.VALIDATION_ERROR,
+        message,
+        errors: result.errors,
+      });
+    }
+    const assignment = await staffDoctorService.getDoctorServiceAssignmentDetail(branchId, targetMemberId);
+    return sendClinicSuccess(res, 200, { ...result, assignment });
+  } catch (e: any) {
+    const msg = e?.message || "Failed to apply template";
+    if (msg.includes("not found")) return sendClinicError(res, 404, msg, CLINIC_ERROR_CODES.NOT_FOUND);
+    return sendClinicError(res, 400, msg, CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
 exports.getPackageMatrix = async (req: any, res: any) => {
   try {
     const branchId = getBranchId(req);
@@ -265,6 +408,7 @@ exports.getAuditLogs = async (req: any, res: any) => {
     const filters = {
       memberId: req.query.memberId ? Number(req.query.memberId) : undefined,
       action: req.query.action,
+      actionPrefix: req.query.actionPrefix ? String(req.query.actionPrefix) : undefined,
       from: req.query.from,
       to: req.query.to,
       limit: req.query.limit ? Number(req.query.limit) : undefined,
@@ -286,6 +430,12 @@ exports.postApprovalAction = async (req: any, res: any) => {
     const body = req.body && typeof req.body === "object" ? req.body : {};
     const decision = body.decision === "APPROVED" || body.decision === "REJECTED" ? body.decision : null;
     if (!decision) return sendClinicError(res, 400, "decision required: APPROVED or REJECTED", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    if (decision === "REJECTED") {
+      const rr = body.rejectReason;
+      if (typeof rr !== "string" || !rr.trim()) {
+        return sendClinicError(res, 400, "rejectReason is required when rejecting", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+      }
+    }
     const prisma = require("../../../../infrastructure/db/prismaClient").default ?? require("../../../../infrastructure/db/prismaClient");
     const row = await prisma.clinicApprovalRequest.findUnique({
       where: { id: requestId },

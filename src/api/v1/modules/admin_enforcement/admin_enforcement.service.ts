@@ -3,7 +3,7 @@
  * Trace code -> batch -> product -> org; apply/revert actions with audit.
  */
 
-import type { PrismaClient } from "@prisma/client";
+import type { Prisma, PrismaClient } from "@prisma/client";
 import { hmacHash } from "../../utils/authCodeHasher";
 import * as auditGov from "../../services/governance/auditGovernance.service";
 
@@ -531,7 +531,7 @@ export async function applyAction(
         targetId: String(targetId),
         actionType,
         reason: reason.trim(),
-        meta: params.meta ?? undefined,
+        meta: (params.meta ?? undefined) as Prisma.InputJsonValue | undefined,
         status: "APPLIED",
         appliedByUserId,
       },

@@ -42,6 +42,17 @@ router.use("/admin/verification-metrics", require("./modules/admin_verification_
 router.use("/admin/dashboard", require("./modules/admin_dashboard/admin_dashboard.routes"));
 // Admin producer system overview (KPIs, trends, top producers, alerts)
 router.use("/admin/producer-overview", require("./modules/admin_producer_overview/adminProducerOverview.routes"));
+const authenticateToken = require("../../middleware/auth.middleware");
+const requireAdmin = require("../../middleware/admin.middleware");
+const requirePermission = require("../../middlewares/requirePermission");
+const adminVendorAnalyticsCtrl = require("./modules/ai_intelligence/adminVendorAnalytics.controller");
+router.get(
+  "/admin/vendor-analytics",
+  authenticateToken,
+  requireAdmin,
+  requirePermission("admin.vendor.analytics.read"),
+  adminVendorAnalyticsCtrl.getSummary
+);
 // Admin code lookup (trace code -> batch -> product -> org, verification history, block/unblock)
 router.use("/admin/code-lookup", require("./modules/admin_code_lookup/adminCodeLookup.routes"));
 // V1 universal verification workflow (non-breaking, new endpoints)
@@ -50,6 +61,9 @@ router.use("/admin/organizations", require("./modules/admin_organizations/admin_
 router.use("/admin/branches", require("./modules/admin_branches/admin_branches.routes"));
 router.use("/admin/audit", require("./modules/admin_audit/admin_audit.routes"));
 router.use("/admin/clinical-catalog", require("./modules/admin_clinical_catalog/admin_clinical_catalog.routes"));
+router.use("/admin/medicine-catalog-import", require("./modules/admin_medicine_import/admin_medicine_import.routes"));
+router.use("/admin/medicine", require("./modules/admin_medicine/admin_medicine.workspace.routes"));
+router.use("/admin/medicine-catalog", require("./modules/admin_medicine_catalog/admin_medicine_catalog.routes"));
 router.use("/admin/inventory", require("./modules/admin_inventory/admin_inventory.routes"));
 router.use("/admin/users", require("./modules/admin_users/admin_users.routes"));
 router.use("/admin/staff", require("./modules/admin_staff/admin_staff.routes"));
@@ -213,8 +227,13 @@ router.use("/producer-print", producerPrintAliasRouter);
 router.get("/__route_probe/producer-print", (_req: any, res: any) => res.json({ ok: true }));
 router.get("/__route_probe/admin-governance-products", (_req: any, res: any) => res.status(200).json({ ok: true }));
 
+// Warehouse (MVP Core Feature)
+router.use("/warehouse", countryScopeGuard, require("./modules/warehouse/warehouse.routes"));
+
 // Inventory (MVP Core Feature)
 router.use("/inventory", countryScopeGuard, require("./modules/inventory/inventory.routes"));
+router.use("/network-balance", countryScopeGuard, require("./modules/network_balance/networkBalance.routes"));
+router.use("/reverse-logistics", countryScopeGuard, require("./modules/reverse_logistics/reverseLogistics.routes"));
 
 // Orders (MVP Core Feature)
 router.use("/orders", countryScopeGuard, require("./modules/orders/orders.routes"));
@@ -223,6 +242,111 @@ router.use("/orders", countryScopeGuard, require("./modules/orders/orders.routes
 router.use("/pos", countryScopeGuard, require("./modules/pos/pos.routes"));
 
 // Clinic (Appointment + Queue) — staff panel: /api/v1/clinic/branches/:branchId/...
+// Patient clinical overview — **sole** registration for this path (not in clinic.routes.ts; avoids stale partial dist).
+// See docs/DEV_API_RUN_AND_DIST.md (npm run dev vs npm start).
+const clinicPatientOverviewCtrl = require("./modules/clinic/clinic.controller");
+const authenticateTokenClinicPatient = require("../../middleware/auth.middleware");
+const { requireClinicPermission: requireClinicPermPatientOverview } = require("./modules/clinic/clinic.middleware");
+router.get(
+  "/clinic/branches/:branchId/patients/:petId/clinical-overview",
+  countryScopeGuard,
+  authenticateTokenClinicPatient,
+  requireClinicPermPatientOverview("clinic.patients.read", "clinic.patients.manage"),
+  clinicPatientOverviewCtrl.getPatientClinicalOverview
+);
+// Services & Pricing matrix — registered here first (same pattern as clinical-overview) so `npm start` + dist
+// always picks it up even when dist/clinic.routes.js is stale. Still declared in clinic.routes.ts for dev clarity.
+router.get(
+  "/clinic/branches/:branchId/service-pricing/matrix",
+  countryScopeGuard,
+  authenticateTokenClinicPatient,
+  requireClinicPermPatientOverview(
+    "manager.pricing.view",
+    "clinic.services.manage",
+    "clinic.appointments.read",
+    "clinic.appointments.manage"
+  ),
+  clinicPatientOverviewCtrl.getServicePricingMatrix
+);
+// Service pricing audit trail — early mount (same rationale as matrix; see DEV_API_RUN_AND_DIST.md).
+router.get(
+  "/clinic/branches/:branchId/services/:serviceId(\\d+)/pricing-history",
+  countryScopeGuard,
+  authenticateTokenClinicPatient,
+  requireClinicPermPatientOverview("clinic.services.manage", "manager.pricing.view", "clinic.appointments.manage"),
+  clinicPatientOverviewCtrl.getServicePricingHistory
+);
+// Doctor service assignment (enterprise UI) — early mount (same pattern as clinical-overview / service-pricing matrix).
+// Ensures `npm start` + stale dist still matches these paths; see docs/DEV_API_RUN_AND_DIST.md.
+// Static .../service-assignment/* MUST register before .../doctors/:memberId/service-assignment on this router.
+const staffDoctorCtrlEarly = require("./modules/clinic/staffDoctorManagement.controller");
+const { requireClinicPermission: requireClinicPermStaffDoctor } = require("./modules/clinic/clinic.middleware");
+router.get(
+  "/clinic/branches/:branchId/doctors/service-assignment/summary",
+  countryScopeGuard,
+  authenticateTokenClinicPatient,
+  requireClinicPermStaffDoctor("clinic.doctors.view", "clinic.doctors.manage_services"),
+  staffDoctorCtrlEarly.getServiceAssignmentSummary
+);
+router.get(
+  "/clinic/branches/:branchId/doctors/service-assignment/templates",
+  countryScopeGuard,
+  authenticateTokenClinicPatient,
+  requireClinicPermStaffDoctor("clinic.doctors.view", "clinic.doctors.manage_services"),
+  staffDoctorCtrlEarly.getServiceAssignmentTemplates
+);
+router.post(
+  "/clinic/branches/:branchId/doctors/service-assignment/templates",
+  countryScopeGuard,
+  authenticateTokenClinicPatient,
+  requireClinicPermStaffDoctor("clinic.doctors.manage_services"),
+  staffDoctorCtrlEarly.postServiceAssignmentTemplate
+);
+router.patch(
+  "/clinic/branches/:branchId/doctors/service-assignment/templates/:templateId",
+  countryScopeGuard,
+  authenticateTokenClinicPatient,
+  requireClinicPermStaffDoctor("clinic.doctors.manage_services"),
+  staffDoctorCtrlEarly.patchServiceAssignmentTemplate
+);
+router.delete(
+  "/clinic/branches/:branchId/doctors/service-assignment/templates/:templateId",
+  countryScopeGuard,
+  authenticateTokenClinicPatient,
+  requireClinicPermStaffDoctor("clinic.doctors.manage_services"),
+  staffDoctorCtrlEarly.deleteServiceAssignmentTemplate
+);
+router.post(
+  "/clinic/branches/:branchId/doctors/service-assignment/templates/:templateId/apply",
+  countryScopeGuard,
+  authenticateTokenClinicPatient,
+  requireClinicPermStaffDoctor("clinic.doctors.manage_services"),
+  staffDoctorCtrlEarly.postApplyServiceAssignmentTemplate
+);
+router.get(
+  "/clinic/branches/:branchId/doctors/:memberId/service-assignment",
+  countryScopeGuard,
+  authenticateTokenClinicPatient,
+  requireClinicPermStaffDoctor("clinic.doctors.view", "clinic.doctors.manage_services"),
+  staffDoctorCtrlEarly.getServiceAssignmentDetail
+);
+router.patch(
+  "/clinic/branches/:branchId/doctors/:memberId/service-assignment/bulk",
+  countryScopeGuard,
+  authenticateTokenClinicPatient,
+  requireClinicPermStaffDoctor("clinic.doctors.manage_services"),
+  staffDoctorCtrlEarly.patchServiceAssignmentBulk
+);
+// Clinic approval-requests summary (doctor queue KPIs) — early mount so `npm start` + stale dist
+// still matches GET .../approval-requests/summary; must stay before .../approval-requests/:requestId
+// on any router that could treat "summary" as an id. See docs/DEV_API_RUN_AND_DIST.md.
+router.get(
+  "/clinic/branches/:branchId/approval-requests/summary",
+  countryScopeGuard,
+  authenticateTokenClinicPatient,
+  requireClinicPermPatientOverview("approvals.view", "clinic.packages.read"),
+  clinicPatientOverviewCtrl.getClinicApprovalRequestsSummary
+);
 router.use("/clinic", countryScopeGuard, require("./modules/clinic/clinic.routes"));
 
 // Vet reference (public): countries, regulatory bodies, doc types for doctor verification
@@ -247,6 +371,30 @@ router.use("/transfers", countryScopeGuard, require("./modules/transfers/transfe
 
 // Stock Requests (branch request → owner fulfill → dispatch → receive)
 router.use("/stock-requests", countryScopeGuard, require("./modules/stock_requests/stock_requests.routes"));
+
+// AI Intelligence Phase 4 (forecast, replenishment, procurement, control tower)
+router.use("/ai", countryScopeGuard, require("./modules/ai_intelligence/ai_intelligence.routes"));
+
+// Wave-4: financial intelligence, SLA, operational command center
+router.use("/intelligence", countryScopeGuard, require("./modules/operational_intelligence/operationalIntelligence.routes"));
+router.use("/operations/command-center", countryScopeGuard, require("./modules/operational_intelligence/commandCenter.routes"));
+
+// Wave-5: executive control tower, decision assist, scenario planning (read-heavy; writes are audit/governance only)
+router.use("/executive-tower", countryScopeGuard, require("./modules/executive_tower/executiveTower.routes"));
+
+// Medicine Requisitions (pharmacy supply chain: branch → owner review → FEFO dispatch → receive)
+router.use("/medicine-requisitions", countryScopeGuard, require("./modules/medicine_requisitions/medicine_requisitions.routes"));
+
+// Central Warehouse Module (warehouse CRUD, staff, delivery assignments) - REMOVED: Duplicate registration, using line 231 instead
+router.use("/purchase-orders", countryScopeGuard, require("./modules/purchase_orders/purchaseOrder.routes"));
+router.use("/purchase-requisitions", countryScopeGuard, require("./modules/purchase_requisitions/purchaseRequisition.routes"));
+router.use("/inbound-shipments", countryScopeGuard, require("./modules/inbound_shipments/inboundShipment.routes"));
+router.use("/inbound-discrepancies", countryScopeGuard, require("./modules/inbound_discrepancies/inboundDiscrepancy.routes"));
+router.use("/putaway", countryScopeGuard, require("./modules/putaway/putaway.routes"));
+router.use("/allocation-plans", countryScopeGuard, require("./modules/allocation_plans/allocationPlan.routes"));
+router.use("/fulfillment", countryScopeGuard, require("./modules/fulfillment/fulfillment.routes"));
+router.use("/pick-lists", countryScopeGuard, require("./modules/pick_lists/pickList.routes"));
+router.use("/qc-inspections", countryScopeGuard, require("./modules/qc_inspections/qcInspection.routes"));
 
 // Online Store (aggregated ONLINE_HUB stock)
 router.use("/online-store", countryScopeGuard, require("./modules/online-store/online-store.routes"));

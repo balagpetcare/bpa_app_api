@@ -3,6 +3,7 @@
  */
 import prisma from "../../../../infrastructure/db/prismaClient";
 import * as medicinePolicy from "./medicinePolicy.service";
+import * as dispenseControl from "./dispenseControl.service";
 import { INJECTION_ROOM_TYPES } from "../../constants/roomConstants";
 import type { VialEventType, VialSessionStatus } from "@prisma/client";
 
@@ -24,6 +25,14 @@ export async function openVial(
     activatedFromDispenseRequestId?: number | null; // internal order that triggered this activation
   }
 ): Promise<any> {
+  // Enforcement: dispense request must be received before opening a vial activated from it.
+  if (params.activatedFromDispenseRequestId != null) {
+    await dispenseControl.requireDispenseRequestReceived(
+      params.activatedFromDispenseRequestId,
+      params.branchId
+    );
+  }
+
   // Vial activation only in injection room (or allowed room types).
   if (params.roomId != null) {
     const room = await prisma.branchRoom.findFirst({
@@ -97,7 +106,7 @@ export async function openVial(
     include: {
       variant: { select: { id: true, title: true, sku: true } },
       room: { select: { id: true, name: true } },
-      openedBy: { select: { id: true }, profile: { select: { displayName: true } } },
+      openedBy: { select: { id: true, profile: { select: { displayName: true } } } },
     },
   });
 }
@@ -117,7 +126,7 @@ export async function getActiveSession(branchId: number, variantId: number): Pro
     include: {
       variant: { select: { id: true, title: true } },
       room: { select: { id: true, name: true } },
-      openedBy: { select: { id: true }, profile: { select: { displayName: true } } },
+      openedBy: { select: { id: true, profile: { select: { displayName: true } } } },
     },
   });
 }
@@ -139,8 +148,25 @@ export async function recordDose(
   const db = tx ?? prisma;
   const session = await db.vialSession.findUnique({
     where: { id: sessionId },
+    select: {
+      id: true,
+      branchId: true,
+      status: true,
+      validUntil: true,
+      remainingQty: true,
+      initialQty: true,
+      variantId: true,
+      activatedFromDispenseRequestId: true,
+    },
   });
   if (!session) throw new Error("Vial session not found");
+  // Enforcement: dispense request must be received before using vial from that request.
+  if (session.activatedFromDispenseRequestId != null) {
+    await dispenseControl.requireDispenseRequestReceived(
+      session.activatedFromDispenseRequestId,
+      session.branchId
+    );
+  }
   if (session.status !== "ACTIVE" && session.status !== "PARTIALLY_USED") {
     throw new Error("Vial session is not active");
   }
@@ -279,7 +305,7 @@ export async function listSessions(
       include: {
         variant: { select: { id: true, title: true, sku: true } },
         room: { select: { id: true, name: true } },
-        openedBy: { select: { id: true }, profile: { select: { displayName: true } } },
+        openedBy: { select: { id: true, profile: { select: { displayName: true } } } },
       },
       orderBy: { openedAt: "desc" },
     }),

@@ -224,6 +224,14 @@ exports.createClinicService = async (req: any, res: any) => {
       isCustom: body.isCustom != null ? Boolean(body.isCustom) : undefined,
       proposedByUserId: body.proposedByUserId != null ? Number(body.proposedByUserId) : undefined,
       approvalStatus: body.approvalStatus != null ? String(body.approvalStatus) : undefined,
+      baseCost: body.baseCost !== undefined ? (body.baseCost == null ? null : Number(body.baseCost)) : undefined,
+      minSafePrice: body.minSafePrice !== undefined ? (body.minSafePrice == null ? null : Number(body.minSafePrice)) : undefined,
+      staffInstructions: body.staffInstructions !== undefined ? body.staffInstructions : undefined,
+      pricingExplanation: body.pricingExplanation !== undefined ? body.pricingExplanation : undefined,
+      visibleToPublic: body.visibleToPublic != null ? Boolean(body.visibleToPublic) : undefined,
+      preparationNotes: body.preparationNotes !== undefined ? body.preparationNotes : undefined,
+      aftercareNotes: body.aftercareNotes !== undefined ? body.aftercareNotes : undefined,
+      faqJson: body.faqJson !== undefined ? body.faqJson : undefined,
     });
     if (data === null) return res.status(404).json({ success: false, message: "Clinic branch not found" });
     return res.status(201).json({ success: true, data });
@@ -266,6 +274,14 @@ exports.updateClinicService = async (req: any, res: any) => {
       taxRuleJson: body.taxRuleJson !== undefined ? body.taxRuleJson : undefined,
       applicableSpecies: body.applicableSpecies !== undefined ? (Array.isArray(body.applicableSpecies) ? body.applicableSpecies : undefined) : undefined,
       approvalStatus: body.approvalStatus !== undefined ? (body.approvalStatus == null ? null : String(body.approvalStatus)) : undefined,
+      baseCost: body.baseCost !== undefined ? (body.baseCost == null ? null : Number(body.baseCost)) : undefined,
+      minSafePrice: body.minSafePrice !== undefined ? (body.minSafePrice == null ? null : Number(body.minSafePrice)) : undefined,
+      staffInstructions: body.staffInstructions !== undefined ? body.staffInstructions : undefined,
+      pricingExplanation: body.pricingExplanation !== undefined ? body.pricingExplanation : undefined,
+      visibleToPublic: body.visibleToPublic !== undefined ? Boolean(body.visibleToPublic) : undefined,
+      preparationNotes: body.preparationNotes !== undefined ? body.preparationNotes : undefined,
+      aftercareNotes: body.aftercareNotes !== undefined ? body.aftercareNotes : undefined,
+      faqJson: body.faqJson !== undefined ? body.faqJson : undefined,
     });
     if (data === null) return res.status(404).json({ success: false, message: "Clinic branch or service not found" });
     return res.json({ success: true, data });
@@ -3121,7 +3137,7 @@ exports.listClinicInstrumentIssueLogs = async (req: any, res: any) => {
     const branchId = asInt(req.params.branchId);
     if (!branchId) return res.status(400).json({ success: false, message: "Invalid branchId" });
     const status = req.query?.status === "returned" ? "returned" : req.query?.status === "open" ? "open" : undefined;
-    const where = { branchId };
+    const where: { branchId: number; returnedAt?: null | { not: null } } = { branchId };
     if (status === "open") where.returnedAt = null;
     if (status === "returned") where.returnedAt = { not: null };
     const rows = await prisma.instrumentIssueLog.findMany({

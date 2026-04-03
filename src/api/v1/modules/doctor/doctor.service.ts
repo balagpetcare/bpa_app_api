@@ -6,6 +6,14 @@
 const prisma = require("../../../../infrastructure/db/prismaClient").default ?? require("../../../../infrastructure/db/prismaClient");
 const { assertTransition } = require("../clinic/appointments/appointmentStateMachine");
 const doctorNotificationService = require("./doctorNotification.service");
+const {
+  resolveServiceListPriceFromRows,
+  computeDoctorFeeAmountFromRow,
+} = require("../clinic/servicePricingResolution.service");
+const {
+  appendDoctorServiceFeeChangeLog,
+  snapshotDoctorServiceFeeRow,
+} = require("../clinic/doctorServiceFeeAudit.service");
 
 /**
  * Get all BranchMember IDs for a user where they are a doctor (ClinicStaffProfile with staffType=DOCTOR).
@@ -274,8 +282,36 @@ async function callAppointment(appointmentId: number, userId: number, doctorBran
   return transitionAppointmentStatus(appointmentId, userId, doctorBranchMemberIds, "CALL");
 }
 
+/**
+ * Start consultation: transition to IN_CONSULT and ensure a visit exists so addNote/createFollowUp work.
+ * If the appointment has no linked visit yet, create one (same as queue startService) so the doctor can work
+ * without staff having to start the queue ticket first.
+ */
 async function startConsultAppointment(appointmentId: number, userId: number, doctorBranchMemberIds: number[]) {
-  return transitionAppointmentStatus(appointmentId, userId, doctorBranchMemberIds, "START_CONSULT");
+  const updated = await transitionAppointmentStatus(appointmentId, userId, doctorBranchMemberIds, "START_CONSULT");
+  if (!updated) return null;
+
+  const apt = await prisma.appointment.findFirst({
+    where: { id: appointmentId, doctorId: { in: doctorBranchMemberIds } },
+    include: { visit: { select: { id: true } } },
+  });
+  if (!apt) return null;
+
+  if (!apt.visit && apt.petId != null && apt.patientId != null && apt.doctorId != null && apt.orgId != null && apt.branchId != null) {
+    const emrService = require("../clinic/emr.service");
+    await emrService.createVisit({
+      orgId: apt.orgId,
+      branchId: apt.branchId,
+      petId: apt.petId,
+      patientId: apt.patientId,
+      doctorId: apt.doctorId,
+      appointmentId: appointmentId,
+      status: "IN_PROGRESS",
+      startedAt: new Date(),
+    });
+  }
+
+  return getAppointmentById(appointmentId, doctorBranchMemberIds);
 }
 
 async function completeAppointment(appointmentId: number, userId: number, doctorBranchMemberIds: number[]) {
@@ -517,13 +553,27 @@ async function getVisitById(visitId: number, doctorBranchMemberIds: number[]) {
     },
     include: {
       branch: { select: { id: true, name: true } },
-      pet: { include: { animalType: true, breed: true } },
+      pet: { include: { animalType: true, breed: true, subBreed: true, color: true, size: true } },
       patient: { select: { id: true, profile: { select: { displayName: true } }, auth: { select: { phone: true, email: true } } } },
       doctor: { select: { id: true, user: { select: { profile: { select: { displayName: true } } } } } },
       appointment: { include: { intake: true } },
       vitals: { orderBy: { createdAt: "desc" } },
       notes: { orderBy: { createdAt: "desc" }, include: { createdBy: { select: { id: true, user: { select: { profile: { select: { displayName: true } } } } } } } },
+      labRequisitions: { orderBy: { createdAt: "desc" } },
       attachments: true,
+      prescriptions: { include: { items: true } },
+      injectionTokens: {
+        select: {
+          id: true,
+          tokenCode: true,
+          status: true,
+          expectedDose: true,
+          unit: true,
+          usedAt: true,
+          createdAt: true,
+        },
+      },
+      treatmentCourses: { include: { doses: { take: 20 } } },
     },
   });
   if (!visit) return null;
@@ -536,6 +586,305 @@ async function getVisitById(visitId: number, doctorBranchMemberIds: number[]) {
       })
     : [];
   return { ...visit, previousVisits };
+}
+
+/**
+ * Add a clinical note (SOAP) to a visit. Only for the doctor's own visit.
+ */
+async function addNoteByVisit(visitId: number, doctorBranchMemberIds: number[], body: { noteType?: string; contentJson?: Record<string, unknown> }) {
+  const visit = await prisma.visit.findFirst({
+    where: { id: visitId, doctorId: { in: doctorBranchMemberIds } },
+    select: { id: true, branchId: true, doctorId: true },
+  });
+  if (!visit) return null;
+  const noteType = (body.noteType === "FOLLOW_UP" || body.noteType === "REFERRAL" || body.noteType === "DISCHARGE" ? body.noteType : "SOAP");
+  const contentJson = body.contentJson && typeof body.contentJson === "object" ? body.contentJson : { subjective: "", objective: "", assessment: "", plan: "" };
+  const emrService = require("../clinic/emr.service");
+  return emrService.addClinicalNote(visitId, visit.branchId, {
+    noteType,
+    contentJson,
+    createdById: visit.doctorId,
+  });
+}
+
+/**
+ * Add a vital record to a visit. Only for the doctor's own visit.
+ */
+async function addVitalByVisit(visitId: number, doctorBranchMemberIds: number[], body: { weightKg?: number; tempC?: number; heartRate?: number; respRate?: number; notes?: string }) {
+  const visit = await prisma.visit.findFirst({
+    where: { id: visitId, doctorId: { in: doctorBranchMemberIds } },
+    select: { id: true, branchId: true },
+  });
+  if (!visit) return null;
+  const emrService = require("../clinic/emr.service");
+  return emrService.addVitalRecord(visitId, visit.branchId, {
+    weightKg: body.weightKg,
+    tempC: body.tempC,
+    heartRate: body.heartRate,
+    respRate: body.respRate,
+    notes: body.notes,
+  });
+}
+
+/**
+ * Get billing summary for a visit. Read-only; only for doctor's own visit.
+ */
+async function getBillingSummaryForVisit(visitId: number, doctorBranchMemberIds: number[]) {
+  const visit = await prisma.visit.findFirst({
+    where: { id: visitId, doctorId: { in: doctorBranchMemberIds } },
+    select: { id: true, branchId: true },
+  });
+  if (!visit) return null;
+  const billingService = require("../clinic/billing.service");
+  return billingService.getBillingSummaryForVisit(visitId, visit.branchId);
+}
+
+const visitCompletionPolicy = require("./visitCompletionPolicy");
+
+/**
+ * Get completion eligibility for a visit (for UI checklist). Returns null if visit not found or already completed.
+ */
+async function getCompletionEligibility(visitId: number, doctorBranchMemberIds: number[]) {
+  return visitCompletionPolicy.checkVisitCompletionEligibility(visitId, doctorBranchMemberIds);
+}
+
+/**
+ * Complete a visit — doctor authorization only; delegates to EMR `completeVisitWithPolicy` (same path as staff clinic completion).
+ * Throws { code: "COMPLETION_REQUIREMENTS_NOT_MET", unmet } when policy + override rules fail.
+ */
+async function completeVisit(
+  visitId: number,
+  doctorBranchMemberIds: number[],
+  body?: { overrideReason?: string },
+  completedByUserId?: number
+) {
+  const visit = await prisma.visit.findFirst({
+    where: { id: visitId, doctorId: { in: doctorBranchMemberIds } },
+    select: { id: true, branchId: true },
+  });
+  if (!visit) return null;
+
+  const emrService = require("../clinic/emr.service");
+  const uid = Number.isFinite(completedByUserId as number) ? Number(completedByUserId) : 0;
+
+  const result = await emrService.completeVisitWithPolicy(visit.branchId, visitId, uid, body, {
+    changedByRole: "DOCTOR",
+  });
+
+  if (!result.ok) {
+    if (result.code === "COMPLETION_REQUIREMENTS_NOT_MET") {
+      const err = new Error("Visit completion requirements not met");
+      (err as any).code = "COMPLETION_REQUIREMENTS_NOT_MET";
+      (err as any).unmet = result.unmet || [];
+      throw err;
+    }
+    return null;
+  }
+  return result.visit;
+}
+
+/**
+ * Set follow-up on a visit (and optionally create a follow-up appointment). Only for doctor's own visit.
+ */
+async function createFollowUpByVisit(
+  visitId: number,
+  doctorBranchMemberIds: number[],
+  body: { followUpDate: string; followUpNotes?: string | null; createAppointment?: boolean }
+) {
+  const visit = await prisma.visit.findFirst({
+    where: { id: visitId, doctorId: { in: doctorBranchMemberIds } },
+    include: { appointment: { include: { branch: true, service: true } }, org: { select: { id: true } } },
+  });
+  if (!visit) return null;
+  const followUpDate = body.followUpDate ? new Date(body.followUpDate) : null;
+  if (!followUpDate) return null;
+  await prisma.visit.update({
+    where: { id: visitId },
+    data: { followUpDate, followUpNotes: body.followUpNotes ?? null },
+  });
+  let newAppointment = null;
+  const apt = visit.appointment;
+  if (body.createAppointment && apt && visit.orgId && visit.branchId && visit.patientId && visit.petId && visit.doctorId && apt.serviceId) {
+    const start = new Date(followUpDate);
+    const end = new Date(followUpDate);
+    end.setMinutes(end.getMinutes() + (apt.service?.duration ?? 15));
+    newAppointment = await prisma.appointment.create({
+      data: {
+        orgId: visit.orgId,
+        branchId: visit.branchId,
+        patientId: visit.patientId,
+        petId: visit.petId,
+        doctorId: visit.doctorId,
+        serviceId: apt.serviceId,
+        scheduledStartAt: start,
+        scheduledEndAt: end,
+        status: "BOOKED",
+        source: "STAFF",
+        channel: "REFERRAL",
+        visitType: "SCHEDULED",
+        appointmentMode: "STANDARD",
+      },
+    });
+  }
+  return { visit: { id: visit.id, followUpDate, followUpNotes: body.followUpNotes }, newAppointment };
+}
+
+/**
+ * Create a lab requisition for a visit. Only for doctor's own visit.
+ */
+async function createLabRequisitionByVisit(visitId: number, doctorBranchMemberIds: number[], body: { testsJson: any; notes?: string }) {
+  const visit = await prisma.visit.findFirst({
+    where: { id: visitId, doctorId: { in: doctorBranchMemberIds } },
+    select: { id: true, branchId: true, petId: true },
+  });
+  if (!visit || !visit.petId) return null;
+  if (!body.testsJson) return null;
+  const labService = require("../clinic/lab.service");
+  return labService.createRequisition(visit.branchId, {
+    visitId,
+    petId: visit.petId,
+    testsJson: body.testsJson,
+    notes: body.notes,
+  });
+}
+
+/**
+ * Create a prescription for a visit. Only for doctor's own visit.
+ */
+async function createPrescriptionByVisit(
+  visitId: number,
+  doctorBranchMemberIds: number[],
+  body: {
+    notes?: string;
+    items: {
+      medicineName: string;
+      dosage: string;
+      frequency: string;
+      duration: string;
+      quantity?: number;
+      instructions?: string;
+      productVariantId?: number;
+      clinicalItemVariantId?: number;
+      countryMedicineBrandId?: number | null;
+    }[];
+  }
+) {
+  const visit = await prisma.visit.findFirst({
+    where: { id: visitId, doctorId: { in: doctorBranchMemberIds } },
+    select: { id: true, petId: true, doctorId: true },
+  });
+  if (!visit || !visit.petId) return null;
+  if (!Array.isArray(body.items) || body.items.length === 0) return null;
+  const prescriptionService = require("../clinic/prescription.service");
+  return prescriptionService.createPrescription(visitId, {
+    petId: visit.petId,
+    doctorId: visit.doctorId,
+    notes: body.notes,
+    items: body.items,
+  });
+}
+
+/**
+ * Finalize a prescription. Only if the prescription's doctor is the current doctor.
+ */
+async function finalizePrescriptionByDoctor(prescriptionId: number, doctorBranchMemberIds: number[]) {
+  const p = await prisma.prescription.findUnique({
+    where: { id: prescriptionId },
+    select: { id: true, doctorId: true, status: true },
+  });
+  if (!p || p.status !== "DRAFT") return null;
+  if (!doctorBranchMemberIds.includes(p.doctorId)) return null;
+  const prescriptionService = require("../clinic/prescription.service");
+  return prescriptionService.finalizePrescription(prescriptionId);
+}
+
+/**
+ * Update a DRAFT prescription. Only the prescribing doctor.
+ */
+async function updatePrescriptionByDoctor(
+  prescriptionId: number,
+  doctorBranchMemberIds: number[],
+  body: {
+    notes?: string;
+    items?: {
+      medicineName: string;
+      dosage: string;
+      frequency: string;
+      duration: string;
+      quantity?: number;
+      instructions?: string;
+      productVariantId?: number;
+      clinicalItemVariantId?: number;
+      countryMedicineBrandId?: number | null;
+    }[];
+  }
+) {
+  const p = await prisma.prescription.findUnique({
+    where: { id: prescriptionId },
+    select: { id: true, doctorId: true, status: true },
+  });
+  if (!p || p.status !== "DRAFT") return null;
+  if (!doctorBranchMemberIds.includes(p.doctorId)) return null;
+  const prescriptionService = require("../clinic/prescription.service");
+  return prescriptionService.updatePrescription(prescriptionId, {
+    notes: body.notes,
+    items: Array.isArray(body.items) ? body.items : undefined,
+  });
+}
+
+/**
+ * Add an attachment to a visit (fileUrl from existing upload). Only for doctor's own visit.
+ */
+async function addVisitAttachmentByDoctor(visitId: number, doctorBranchMemberIds: number[], body: { fileUrl: string; fileName?: string; fileType?: string; note?: string }) {
+  const visit = await prisma.visit.findFirst({
+    where: { id: visitId, doctorId: { in: doctorBranchMemberIds } },
+    select: { id: true, branchId: true },
+  });
+  if (!visit || !body.fileUrl) return null;
+  const emrService = require("../clinic/emr.service");
+  return emrService.addVisitAttachment(visitId, visit.branchId, {
+    fileUrl: body.fileUrl,
+    fileName: body.fileName,
+    fileType: body.fileType,
+    note: body.note,
+  });
+}
+
+/**
+ * Productivity summary for the doctor: visits completed, prescriptions, etc. for a given date.
+ */
+async function getProductivity(doctorBranchMemberIds: number[], dateStr: string) {
+  if (doctorBranchMemberIds.length === 0) return null;
+  const dayStart = new Date(dateStr + "T00:00:00.000Z");
+  const dayEnd = new Date(dayStart);
+  dayEnd.setUTCDate(dayEnd.getUTCDate() + 1);
+  const [visitsCompleted, prescriptionsCount, labRequisitionsCount] = await Promise.all([
+    prisma.visit.count({
+      where: {
+        doctorId: { in: doctorBranchMemberIds },
+        status: "COMPLETED",
+        completedAt: { gte: dayStart, lt: dayEnd },
+      },
+    }),
+    prisma.prescription.count({
+      where: {
+        doctorId: { in: doctorBranchMemberIds },
+        createdAt: { gte: dayStart, lt: dayEnd },
+      },
+    }),
+    prisma.labRequisition.count({
+      where: {
+        visit: { doctorId: { in: doctorBranchMemberIds } },
+        createdAt: { gte: dayStart, lt: dayEnd },
+      },
+    }),
+  ]);
+  return {
+    date: dateStr,
+    visitsCompleted,
+    prescriptionsWritten: prescriptionsCount,
+    testOrdersCreated: labRequisitionsCount,
+  };
 }
 
 /**
@@ -838,29 +1187,89 @@ async function completeProfileOnboarding(userId: number) {
 async function getMyServices(userId: number, branchId: number) {
   const ctx = await ensureDoctorMemberAndProfile(userId, branchId);
   if (!ctx) return null;
+  const mappings = await prisma.doctorServiceMapping.findMany({
+    where: { clinicStaffProfileId: ctx.profile.id, branchId },
+    select: { serviceId: true, isAllowed: true, status: true, role: true },
+  });
+  const mapBySvc = new Map(mappings.map((m: { serviceId: number }) => [m.serviceId, m]));
+
   const fees = await prisma.doctorServiceFee.findMany({
     where: { clinicStaffProfileId: ctx.profile.id },
-    include: { service: { select: { id: true, name: true, category: true, price: true, duration: true } } },
+    include: {
+      service: {
+        include: { pricingVariants: true },
+      },
+    },
   });
-  return fees.map((f) => ({
-    id: f.id,
-    serviceId: f.serviceId,
-    species: f.species,
-    fee: Number(f.fee),
-    durationMin: f.durationMin,
-    isActive: f.isActive,
-    notes: f.notes,
-    service: f.service ? { id: f.service.id, name: f.service.name, category: f.service.category, price: Number(f.service.price), duration: f.service.duration } : null,
-  }));
+
+  return fees.map((f: any) => {
+    const svc = f.service;
+    const listPrice = svc ? resolveServiceListPriceFromRows(svc) : 0;
+    const mapping = mapBySvc.get(f.serviceId) as
+      | { isAllowed?: boolean; status?: string; role?: string }
+      | undefined;
+    const assigned = !!(mapping && mapping.isAllowed !== false && String(mapping.status || "ACTIVE") !== "INACTIVE");
+    return {
+      id: f.id,
+      serviceId: f.serviceId,
+      species: f.species,
+      fee: Number(f.fee),
+      feeModel: f.feeModel,
+      feePercent: f.feePercent != null ? Number(f.feePercent) : null,
+      fixedAmount: f.fixedAmount != null ? Number(f.fixedAmount) : null,
+      durationMin: f.durationMin,
+      isActive: f.isActive,
+      notes: f.notes,
+      assigned,
+      assignmentRole: mapping?.role ?? null,
+      listPrice,
+      minSafePrice: svc?.minSafePrice != null ? Number(svc.minSafePrice) : null,
+      pricingExplanation: svc?.pricingExplanation ?? null,
+      resolvedFeeAmount: computeDoctorFeeAmountFromRow(f, listPrice),
+      pendingManagerChangeAt: f.pendingManagerChangeAt,
+      pendingAck: !!(f.pendingManagerChangeAt && !f.doctorAcknowledgedAt),
+      feeLockedByClinic: f.feeLockedByClinic,
+      doctorAcknowledgedAt: f.doctorAcknowledgedAt,
+      revisionNote: f.revisionNote,
+      lastAgreedAt: f.lastAgreedAt,
+      lastAgreedFee: f.lastAgreedFee != null ? Number(f.lastAgreedFee) : null,
+      service: svc
+        ? {
+            id: svc.id,
+            name: svc.name,
+            category: svc.category,
+            price: Number(svc.price),
+            duration: svc.duration,
+            visibleToPublic: svc.visibleToPublic,
+          }
+        : null,
+    };
+  });
+}
+
+function feeRowKey(serviceId: number, species: string | null | undefined) {
+  return `${serviceId}|${species ?? ""}`;
 }
 
 /**
- * PUT my-services: replace all DoctorServiceFee for this doctor. Writes DoctorAuditLog.
+ * PUT my-services: upsert DoctorServiceFee rows. Clinic-locked or pending-ack fee rows cannot be changed by the doctor (metadata only).
  */
 async function putMyServices(
   userId: number,
   branchId: number,
-  body: { services: Array<{ serviceId: number; fee: number; species?: string | null; durationMin?: number | null; isActive?: boolean; notes?: string | null }> }
+  body: {
+    services: Array<{
+      serviceId: number;
+      fee: number;
+      species?: string | null;
+      durationMin?: number | null;
+      isActive?: boolean;
+      notes?: string | null;
+      feeModel?: string;
+      feePercent?: number | null;
+      fixedAmount?: number | null;
+    }>;
+  }
 ) {
   const ctx = await ensureDoctorMemberAndProfile(userId, branchId);
   if (!ctx) return null;
@@ -872,33 +1281,203 @@ async function putMyServices(
     where: { id: { in: serviceIds }, branchId, orgId: branch.orgId },
     select: { id: true },
   });
-  const validIds = new Set(valid.map((s) => s.id));
-  await prisma.doctorServiceFee.deleteMany({ where: { clinicStaffProfileId: ctx.profile.id } });
-  const toCreate = items.filter((r) => validIds.has(r.serviceId));
-  for (const row of toCreate) {
-    await prisma.doctorServiceFee.create({
-      data: {
+  const validIds = new Set(valid.map((s: { id: number }) => s.id));
+
+  const existing = await prisma.doctorServiceFee.findMany({
+    where: { clinicStaffProfileId: ctx.profile.id },
+  });
+
+  const incomingKeys = new Set(items.filter((r) => validIds.has(r.serviceId)).map((r) => feeRowKey(r.serviceId, r.species ?? null)));
+
+  for (const ex of existing) {
+    const k = feeRowKey(ex.serviceId, ex.species);
+    if (!incomingKeys.has(k) && !ex.feeLockedByClinic) {
+      await appendDoctorServiceFeeChangeLog(prisma, {
+        doctorServiceFeeId: ex.id,
+        actorUserId: userId,
+        beforeJson: snapshotDoctorServiceFeeRow(ex as any),
+        afterJson: { removed: true, context: "DOCTOR_MY_SERVICES_SYNC" },
+        changeReason: "DOCTOR_MY_SERVICES_ROW_REMOVED",
+      });
+      await prisma.doctorServiceFee.delete({ where: { id: ex.id } });
+    }
+  }
+
+  for (const row of items) {
+    if (!validIds.has(row.serviceId)) continue;
+    const species = row.species ?? null;
+    const prev = (await prisma.doctorServiceFee.findFirst({
+      where: {
         clinicStaffProfileId: ctx.profile.id,
         serviceId: row.serviceId,
-        species: row.species ?? null,
-        fee: row.fee,
-        durationMin: row.durationMin ?? null,
-        isActive: row.isActive !== false,
-        notes: row.notes ?? null,
+        species,
       },
-    });
+    })) as any;
+
+    if (prev?.feeLockedByClinic) {
+      const beforeLocked = snapshotDoctorServiceFeeRow(prev as any);
+      await prisma.doctorServiceFee.update({
+        where: { id: prev.id },
+        data: {
+          durationMin: row.durationMin !== undefined ? row.durationMin : prev.durationMin,
+          notes: row.notes !== undefined ? row.notes : prev.notes,
+          isActive: row.isActive !== undefined ? row.isActive !== false : prev.isActive,
+        },
+      });
+      const afterLocked = await prisma.doctorServiceFee.findUnique({ where: { id: prev.id } });
+      await appendDoctorServiceFeeChangeLog(prisma, {
+        doctorServiceFeeId: prev.id,
+        actorUserId: userId,
+        beforeJson: beforeLocked,
+        afterJson: snapshotDoctorServiceFeeRow(afterLocked as any),
+        changeReason: "DOCTOR_MY_SERVICES_METADATA_LOCKED",
+      });
+      continue;
+    }
+
+    if (prev?.pendingManagerChangeAt && !prev?.doctorAcknowledgedAt) {
+      const beforePending = snapshotDoctorServiceFeeRow(prev as any);
+      await prisma.doctorServiceFee.update({
+        where: { id: prev.id },
+        data: {
+          durationMin: row.durationMin !== undefined ? row.durationMin : prev.durationMin,
+          notes: row.notes !== undefined ? row.notes : prev.notes,
+          isActive: row.isActive !== undefined ? row.isActive !== false : prev.isActive,
+        },
+      });
+      const afterPending = await prisma.doctorServiceFee.findUnique({ where: { id: prev.id } });
+      await appendDoctorServiceFeeChangeLog(prisma, {
+        doctorServiceFeeId: prev.id,
+        actorUserId: userId,
+        beforeJson: beforePending,
+        afterJson: snapshotDoctorServiceFeeRow(afterPending as any),
+        changeReason: "DOCTOR_MY_SERVICES_METADATA_PENDING_ACK",
+      });
+      continue;
+    }
+
+    const feeModel = (row.feeModel as any) || prev?.feeModel || "FIXED";
+    const feeVal = Number(row.fee);
+    const data: any = {
+      clinicStaffProfileId: ctx.profile.id,
+      serviceId: row.serviceId,
+      species,
+      fee: feeVal,
+      feeModel,
+      feePercent: row.feePercent != null ? row.feePercent : prev?.feePercent ?? null,
+      fixedAmount: row.fixedAmount != null ? row.fixedAmount : prev?.fixedAmount ?? null,
+      durationMin: row.durationMin ?? null,
+      isActive: row.isActive !== false,
+      notes: row.notes ?? null,
+    };
+
+    if (prev) {
+      const beforeUpsert = snapshotDoctorServiceFeeRow(prev as any);
+      await prisma.doctorServiceFee.update({ where: { id: prev.id }, data });
+      const afterUpsert = await prisma.doctorServiceFee.findUnique({ where: { id: prev.id } });
+      await appendDoctorServiceFeeChangeLog(prisma, {
+        doctorServiceFeeId: prev.id,
+        actorUserId: userId,
+        beforeJson: beforeUpsert,
+        afterJson: snapshotDoctorServiceFeeRow(afterUpsert as any),
+        changeReason: "DOCTOR_MY_SERVICES_UPSERT",
+      });
+    } else {
+      const created = await prisma.doctorServiceFee.create({ data });
+      await appendDoctorServiceFeeChangeLog(prisma, {
+        doctorServiceFeeId: created.id,
+        actorUserId: userId,
+        beforeJson: {},
+        afterJson: snapshotDoctorServiceFeeRow(created as any),
+        changeReason: "DOCTOR_MY_SERVICES_CREATE",
+      });
+    }
   }
+
   await prisma.doctorAuditLog.create({
     data: {
       orgId: branch.orgId,
       branchId,
       clinicStaffProfileId: ctx.profile.id,
       action: "SERVICES_UPDATED",
-      newValue: { count: toCreate.length, serviceIds: toCreate.map((s) => s.serviceId) },
+      newValue: { count: items.length, serviceIds: items.map((s) => s.serviceId) },
       changedByUserId: userId,
       changedByRole: "DOCTOR",
     },
   });
+  return getMyServices(userId, branchId);
+}
+
+/**
+ * POST acknowledge: doctor acknowledges a pending manager fee revision for one service row.
+ */
+async function acknowledgeMyServiceFeeChange(
+  userId: number,
+  branchId: number,
+  body: { serviceId: number; species?: string | null }
+) {
+  const ctx = await ensureDoctorMemberAndProfile(userId, branchId);
+  if (!ctx) return null;
+  const serviceId = Number(body?.serviceId);
+  if (!Number.isFinite(serviceId)) {
+    const err = new Error("serviceId required") as Error & { statusCode?: number };
+    err.statusCode = 400;
+    throw err;
+  }
+  const species = body?.species ?? null;
+  const row = await prisma.doctorServiceFee.findFirst({
+    where: { clinicStaffProfileId: ctx.profile.id, serviceId, species },
+    include: { service: { include: { pricingVariants: true } } },
+  });
+  if (!row) {
+    const err = new Error("Fee row not found") as Error & { statusCode?: number };
+    err.statusCode = 404;
+    throw err;
+  }
+  if (!row.pendingManagerChangeAt) {
+    const err = new Error("No pending change to acknowledge") as Error & { statusCode?: number };
+    err.statusCode = 400;
+    throw err;
+  }
+  const listPrice = row.service ? resolveServiceListPriceFromRows(row.service as any) : 0;
+  const resolved = computeDoctorFeeAmountFromRow(row as any, listPrice);
+
+  const beforeAck = snapshotDoctorServiceFeeRow(row as any);
+  await prisma.doctorServiceFee.update({
+    where: { id: row.id },
+    data: {
+      doctorAcknowledgedAt: new Date(),
+      doctorAcknowledgedByUserId: userId,
+      pendingManagerChangeAt: null,
+      pendingManagerChangeByUserId: null,
+      lastAgreedAt: new Date(),
+      lastAgreedFee: resolved,
+    },
+  });
+  const afterAck = await prisma.doctorServiceFee.findUnique({ where: { id: row.id } });
+  await appendDoctorServiceFeeChangeLog(prisma, {
+    doctorServiceFeeId: row.id,
+    actorUserId: userId,
+    beforeJson: beforeAck,
+    afterJson: snapshotDoctorServiceFeeRow(afterAck as any),
+    changeReason: "DOCTOR_SERVICE_FEE_ACKNOWLEDGED",
+  });
+
+  const branch = await prisma.branch.findUnique({ where: { id: branchId }, select: { orgId: true } });
+  if (branch) {
+    await prisma.doctorAuditLog.create({
+      data: {
+        orgId: branch.orgId,
+        branchId,
+        clinicStaffProfileId: ctx.profile.id,
+        action: "SERVICE_FEE_ACKNOWLEDGED",
+        newValue: { serviceId, species, resolvedFee: resolved },
+        changedByUserId: userId,
+        changedByRole: "DOCTOR",
+      },
+    });
+  }
+
   return getMyServices(userId, branchId);
 }
 
@@ -1329,7 +1908,9 @@ async function getDashboardSummary(userId: number, opts?: { branchId?: number; d
   const todaySchedule = todayTemplates.map((t) => ({
     id: t.id,
     branchId: t.branchId,
-    branchName: t.branch?.name ?? (branchMap.get(t.branchId)?.branchName ?? "Clinic"),
+    branchName:
+      (t as any).branch?.name ??
+      ((branchMap.get(t.branchId) as { branchName?: string } | undefined)?.branchName ?? "Clinic"),
     branchMemberId: t.branchMemberId,
     startTime: t.startTime,
     endTime: t.endTime,
@@ -1700,6 +2281,18 @@ module.exports = {
   listVisits,
   getDoctorProfile,
   getVisitById,
+  addNoteByVisit,
+  addVitalByVisit,
+  getBillingSummaryForVisit,
+  getCompletionEligibility,
+  completeVisit,
+  createFollowUpByVisit,
+  createLabRequisitionByVisit,
+  createPrescriptionByVisit,
+  finalizePrescriptionByDoctor,
+  updatePrescriptionByDoctor,
+  addVisitAttachmentByDoctor,
+  getProductivity,
   updateOwnConsultationFee,
   createScheduleProposal,
   listMyScheduleProposals,
@@ -1713,6 +2306,7 @@ module.exports = {
   completeProfileOnboarding,
   getMyServices,
   putMyServices,
+  acknowledgeMyServiceFeeChange,
   getMySchedule,
   putMySchedule,
   getMyExceptions,

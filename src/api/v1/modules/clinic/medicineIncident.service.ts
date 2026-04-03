@@ -32,7 +32,7 @@ export async function assignInvestigator(incidentId: number, userId: number): Pr
   return prisma.medicineIncident.update({
     where: { id: incidentId },
     data: { assignedToUserId: userId, status: "INVESTIGATING" },
-    include: { assignedTo: { select: { id: true }, profile: { select: { displayName: true } } } },
+    include: { assignedTo: { select: { id: true, profile: { select: { displayName: true } } } } },
   });
 }
 
@@ -55,7 +55,7 @@ export async function listIncidents(
       where,
       skip: opts?.skip ?? 0,
       take: Math.min(opts?.take ?? 50, 100),
-      include: { assignedTo: { select: { id: true }, profile: { select: { displayName: true } } } },
+      include: { assignedTo: { select: { id: true, profile: { select: { displayName: true } } } } },
       orderBy: { createdAt: "desc" },
     }),
     prisma.medicineIncident.count({ where }),

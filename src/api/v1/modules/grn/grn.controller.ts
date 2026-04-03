@@ -24,9 +24,24 @@ export async function create(req: any, res: any) {
     const orgIds = await getOrgIds(req);
     if (!orgIds.length) return res.status(403).json({ success: false, message: "No organization access" });
 
-    const { vendorId, locationId, notes, invoiceNo, invoiceDate, lines } = req.body;
-    if (!vendorId || !locationId || !lines?.length) {
-      return res.status(400).json({ success: false, message: "vendorId, locationId, and lines (array) are required" });
+    const {
+      vendorId,
+      purchaseOrderId,
+      inboundShipmentId,
+      locationId,
+      notes,
+      invoiceNo,
+      invoiceDate,
+      lines,
+      receiveIdempotencyKey,
+    } = req.body;
+    const poId = purchaseOrderId != null ? Number(purchaseOrderId) : undefined;
+    const iship = inboundShipmentId != null ? Number(inboundShipmentId) : undefined;
+    if (!locationId || !lines?.length) {
+      return res.status(400).json({ success: false, message: "locationId and lines (array) are required" });
+    }
+    if (!vendorId && !poId) {
+      return res.status(400).json({ success: false, message: "vendorId or purchaseOrderId is required" });
     }
     const location = await prisma.inventoryLocation.findUnique({
       where: { id: Number(locationId) },
@@ -38,11 +53,14 @@ export async function create(req: any, res: any) {
     const orgId = location.branch.orgId;
     const grn = await service.createGrn({
       orgId,
-      vendorId: Number(vendorId),
+      vendorId: vendorId != null ? Number(vendorId) : undefined,
+      purchaseOrderId: poId,
+      inboundShipmentId: iship,
       locationId: Number(locationId),
       invoiceNo: invoiceNo ?? undefined,
       invoiceDate: invoiceDate ?? undefined,
       notes: notes || undefined,
+      receiveIdempotencyKey: receiveIdempotencyKey != null ? String(receiveIdempotencyKey) : undefined,
       lines: lines.map((l: any) => ({
         variantId: Number(l.variantId),
         quantity: Number(l.quantity),
@@ -50,6 +68,14 @@ export async function create(req: any, res: any) {
         lotCode: l.lotCode,
         mfgDate: l.mfgDate,
         expDate: l.expDate,
+        inboundShipmentLineId: l.inboundShipmentLineId != null ? Number(l.inboundShipmentLineId) : undefined,
+        purchaseOrderLineId: l.purchaseOrderLineId != null ? Number(l.purchaseOrderLineId) : undefined,
+        quantityDamaged: l.quantityDamaged != null ? Number(l.quantityDamaged) : undefined,
+        quantityShort: l.quantityShort != null ? Number(l.quantityShort) : undefined,
+        supplierBarcode: l.supplierBarcode,
+        receiveBarcode: l.receiveBarcode,
+        landedUnitCost: l.landedUnitCost != null ? Number(l.landedUnitCost) : undefined,
+        lineRemarks: l.lineRemarks,
       })),
     });
     return res.status(201).json({ success: true, data: grn });
@@ -69,10 +95,23 @@ export async function list(req: any, res: any) {
     const orgId = req.query.orgId ? Number(req.query.orgId) : orgIds[0];
     if (!orgIds.includes(orgId)) return res.status(403).json({ success: false, message: "Organization not accessible" });
 
+    let warehouseId: number | undefined = req.query.warehouseId ? Number(req.query.warehouseId) : undefined;
+    if (warehouseId) {
+      const wh = await prisma.warehouse.findFirst({
+        where: { id: warehouseId, orgId },
+        select: { id: true },
+      });
+      if (!wh) {
+        return res.status(400).json({ success: false, message: "warehouseId not found for this organization" });
+      }
+    }
+
     const result = await service.listGrns({
       orgId,
+      warehouseId,
       locationId: req.query.locationId ? Number(req.query.locationId) : undefined,
       vendorId: req.query.vendorId ? Number(req.query.vendorId) : undefined,
+      purchaseOrderId: req.query.purchaseOrderId ? Number(req.query.purchaseOrderId) : undefined,
       status: req.query.status as string | undefined,
       dateFrom: req.query.dateFrom as string | undefined,
       dateTo: req.query.dateTo as string | undefined,
@@ -121,15 +160,42 @@ export async function update(req: any, res: any) {
       lines: lines?.map((l: any) => ({
         variantId: Number(l.variantId),
         quantity: Number(l.quantity),
+        unitCost: l.unitCost != null ? Number(l.unitCost) : undefined,
         lotCode: l.lotCode,
         mfgDate: l.mfgDate,
         expDate: l.expDate,
+        purchaseOrderLineId: l.purchaseOrderLineId != null ? Number(l.purchaseOrderLineId) : undefined,
+        quantityDamaged: l.quantityDamaged != null ? Number(l.quantityDamaged) : undefined,
+        quantityShort: l.quantityShort != null ? Number(l.quantityShort) : undefined,
+        supplierBarcode: l.supplierBarcode,
+        receiveBarcode: l.receiveBarcode,
+        landedUnitCost: l.landedUnitCost != null ? Number(l.landedUnitCost) : undefined,
+        lineRemarks: l.lineRemarks,
       })),
     });
     return res.status(200).json({ success: true, data: grn });
   } catch (e: any) {
     console.error("grn.update", e);
     return res.status(400).json({ success: false, message: e?.message || "Failed to update GRN" });
+  }
+}
+
+export async function voidGrn(req: any, res: any) {
+  try {
+    const userId = getUserId(req);
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const orgIds = await getOrgIds(req);
+    if (!orgIds.length) return res.status(403).json({ success: false, message: "No organization access" });
+
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ success: false, message: "Invalid id" });
+    const orgId = orgIds[0];
+    const reason = req.body?.reason != null ? String(req.body.reason) : undefined;
+    const grn = await service.voidDraftGrn(id, orgId, userId, reason);
+    return res.status(200).json({ success: true, data: grn, message: "GRN voided" });
+  } catch (e: any) {
+    console.error("grn.void", e);
+    return res.status(400).json({ success: false, message: e?.message || "Failed to void GRN" });
   }
 }
 

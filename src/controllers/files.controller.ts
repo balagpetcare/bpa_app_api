@@ -1,5 +1,4 @@
-const { PrismaClient } = require("@prisma/client");
-const prisma = new PrismaClient();
+const prisma = require("../infrastructure/db/prismaClient");
 
 const s3Client = require("../infrastructure/storage/s3Client");
 const { GetObjectCommand } = require("@aws-sdk/client-s3");

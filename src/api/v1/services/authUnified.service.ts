@@ -222,7 +222,9 @@ async function resolveAuthContexts(userId: number): Promise<AuthContext[]> {
         status = perm.status === "PENDING" ? "PENDING" : "ACTIVE";
       }
     } else {
-      status = "PENDING";
+      // Legacy: No branchAccessPermission record but branch member is ACTIVE
+      // Treat as ACTIVE for backward compatibility
+      status = "ACTIVE";
     }
     contexts.push({ role: "STAFF", scopeType: "BRANCH", scopeId: bm.branchId, status });
   }
@@ -324,6 +326,73 @@ async function getOwnerKycStatus(userId: number): Promise<string | null> {
   return kyc ? String(kyc.verificationStatus || "").toUpperCase() : null;
 }
 
+function normalizeBranchTypeCode(branch: any): string {
+  const codeFromTypes = branch?.types?.[0]?.type?.code;
+  return String(codeFromTypes || branch?.type || "").toUpperCase();
+}
+
+function isWarehouseBranchTypeCode(code: string): boolean {
+  const normalized = String(code || "").toUpperCase();
+  return [
+    "WAREHOUSE",
+    "CENTRAL_WAREHOUSE",
+    "WAREHOUSE_DC",
+    "DISTRIBUTION_CENTER",
+    "DELIVERY_HUB",
+    "HUB",
+    "DELIVERY",
+  ].includes(normalized);
+}
+
+async function resolveStaffBranchRedirect(userId: number, branchId: number): Promise<string> {
+  if (!branchId) return "/staff";
+  try {
+    const branch = await db.branch.findUnique({
+      where: { id: branchId },
+      select: {
+        id: true,
+        types: { select: { type: { select: { code: true } } } },
+        inventoryLocations: {
+          where: { isActive: true },
+          select: { id: true, warehouseId: true },
+        },
+      },
+    });
+    if (!branch) return `/staff/branch/${branchId}`;
+
+    const branchTypeCode = normalizeBranchTypeCode(branch);
+    const hasLinkedWarehouseLocation = Array.isArray(branch.inventoryLocations)
+      ? branch.inventoryLocations.some((x: any) => Number(x?.warehouseId) > 0)
+      : false;
+
+    const wsaAtBranch = await db.warehouseStaffAssignment.findFirst({
+      where: { userId, isActive: true, warehouse: { branchId, isActive: true } },
+      select: { id: true },
+    });
+    if (wsaAtBranch) {
+      return `/staff/branch/${branchId}/warehouse`;
+    }
+
+    const { resolvePermissionsForUser } = require("../utils/permissions");
+    const perms = await resolvePermissionsForUser(userId).catch(() => []);
+    const permSet = new Set(Array.isArray(perms) ? perms : []);
+    const hasWarehousePerm =
+      permSet.has("warehouse.view") ||
+      permSet.has("warehouse.dashboard.view") ||
+      permSet.has("dispatch.view") ||
+      permSet.has("delivery.view") ||
+      permSet.has("inventory.receive") ||
+      permSet.has("warehouse.pick.execute");
+
+    if (isWarehouseBranchTypeCode(branchTypeCode) || hasLinkedWarehouseLocation || hasWarehousePerm) {
+      return `/staff/branch/${branchId}/warehouse`;
+    }
+    return `/staff/branch/${branchId}`;
+  } catch {
+    return `/staff/branch/${branchId}`;
+  }
+}
+
 /**
  * Decide default_redirect based on contexts, KYC, and options.
  * Backend is the single source of truth for redirect.
@@ -349,8 +418,9 @@ async function decideRedirect(
     return "/producer/dashboard";
   }
   if (options?.forceStaffPanel) {
-    const staffBranch = contexts.find((c) => c.role === "STAFF" && c.scopeType === "BRANCH" && c.status === "APPROVED");
-    if (staffBranch?.scopeId) return `/staff/branch/${staffBranch.scopeId}`;
+    // Accept both APPROVED and ACTIVE status for staff branch access
+    const staffBranch = contexts.find((c) => c.role === "STAFF" && c.scopeType === "BRANCH" && (c.status === "APPROVED" || c.status === "ACTIVE"));
+    if (staffBranch?.scopeId) return resolveStaffBranchRedirect(userId, Number(staffBranch.scopeId));
     const pendingBranch = contexts.find((c) => c.role === "STAFF" && c.scopeType === "BRANCH" && c.status === "PENDING");
     if (pendingBranch) return "/staff"; // access-request handled by frontend /staff UX
     return "/staff";
@@ -379,9 +449,9 @@ async function decideRedirect(
     return "/producer";
   }
 
-  // Staff (branch)
-  const approvedBranch = contexts.find((c) => c.role === "STAFF" && c.scopeType === "BRANCH" && c.status === "APPROVED");
-  if (approvedBranch?.scopeId) return `/staff/branch/${approvedBranch.scopeId}`;
+  // Staff (branch) - also accept ACTIVE status for legacy compatibility
+  const approvedBranch = contexts.find((c) => c.role === "STAFF" && c.scopeType === "BRANCH" && (c.status === "APPROVED" || c.status === "ACTIVE"));
+  if (approvedBranch?.scopeId) return resolveStaffBranchRedirect(userId, Number(approvedBranch.scopeId));
   const anyBranch = contexts.find((c) => c.role === "STAFF" && c.scopeType === "BRANCH");
   if (anyBranch?.status === "PENDING") return "/staff"; // access-request
   if (anyBranch) return "/staff";

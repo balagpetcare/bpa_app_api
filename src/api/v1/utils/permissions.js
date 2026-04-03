@@ -91,6 +91,20 @@ const LEGACY_ROLE_PERMS = {
   DELIVERY_STAFF: [
     "orders.read","delivery.read"
   ],
+  WAREHOUSE_MANAGER: [
+    "branches.read","inventory.read","inventory.write",
+    "orders.read","delivery.read","delivery.write",
+    "reports.read","dashboard.view"
+  ],
+  RECEIVING_STAFF: [
+    "branches.read","inventory.read","inventory.write",
+    "dashboard.view"
+  ],
+  DISPATCH_STAFF: [
+    "branches.read","inventory.read",
+    "orders.read","delivery.read","delivery.write",
+    "dashboard.view"
+  ],
 };
 
 /**
@@ -301,6 +315,21 @@ async function resolvePermissionsForUser(userId) {
         ? overridesRaw.filter((k) => typeof k === "string")
         : [];
       for (const p of overrides) out.add(p);
+    }
+
+    // Merge permissions from active warehouse staff assignments (WarehouseStaffRole keys in branchRoles).
+    try {
+      if (prisma.warehouseStaffAssignment) {
+        const wsas = await prisma.warehouseStaffAssignment.findMany({
+          where: { userId: Number(userId), isActive: true },
+          select: { role: true },
+        });
+        for (const w of wsas) {
+          for (const p of (BRANCH_ROLE_PERMISSIONS[w.role] || [])) out.add(p);
+        }
+      }
+    } catch (_e) {
+      // model may not exist
     }
 
     // Fallback: if user has any active branch access or membership but got no permissions, grant minimal so dashboard/reports work

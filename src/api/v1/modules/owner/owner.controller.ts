@@ -5,6 +5,7 @@ const {
   getBranchAccessListForOwner,
   approveBranchAccess,
   revokeBranchAccess,
+  rejectBranchAccessForOwner,
   assignBranchAccessDirect,
   suspendBranchAccess,
   removeBranchAccess,
@@ -293,14 +294,14 @@ exports.getOwnerMe = async (req, res) => {
       select: {
         id: true,
         status: true,
-        role: true,
         createdAt: true,
         ownerProfile: true,
         ownerKyc: { select: { id: true, verificationStatus: true, submittedAt: true, reviewedAt: true, rejectionReason: true, reviewNote: true } },
       }
     });
 
-    res.json({ success: true, data: user });
+    // User model has no `role` column; primary panel role comes from JWT / auth contexts.
+    res.json({ success: true, data: { ...user, role: req.user?.role ?? null } });
   } catch (e) {
     res.status(500).json({ success: false, message: e?.message || 'Server error' });
   }
@@ -314,6 +315,66 @@ exports.getOwnerProfile = async (req, res) => {
 
     const profile = await prisma.ownerProfile.findUnique({ where: { userId: ownerUserId } });
     res.json({ success: true, data: profile });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e?.message || 'Server error' });
+  }
+};
+
+/** Normalize phone to digits-only for matching (auto-link stub). */
+function normalizePhoneDigits(v) {
+  return String(v || '').replace(/\D/g, '');
+}
+
+/**
+ * GET /owner/me/pending-appointments — snapshot-only appointments where mobileSnapshot matches current user phone.
+ * Auto-link foundation: owner can see appointments to "claim" (promote with their userId + pet).
+ */
+exports.getMyPendingAppointments = async (req, res) => {
+  try {
+    const prisma = getPrisma(req);
+    const ownerUserId = asIntId(req.user?.id || req.auth?.userId);
+    if (!ownerUserId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+    const auth = await prisma.userAuth.findFirst({
+      where: { userId: ownerUserId },
+      select: { phone: true },
+    });
+    const userPhone = auth?.phone || null;
+    if (!userPhone) return res.json({ success: true, data: { appointments: [] } });
+
+    const digits = normalizePhoneDigits(userPhone);
+    if (!digits) return res.json({ success: true, data: { appointments: [] } });
+
+    const candidates = await prisma.appointment.findMany({
+      where: {
+        patientId: null,
+        status: { in: ['DRAFT', 'PRE_BOOKED', 'BOOKED'] },
+        mobileSnapshot: { not: null },
+      },
+      select: {
+        id: true,
+        orgId: true,
+        branchId: true,
+        scheduledStartAt: true,
+        ownerNameSnapshot: true,
+        mobileSnapshot: true,
+        petNameSnapshot: true,
+        petTypeSnapshot: true,
+        status: true,
+      },
+      orderBy: { scheduledStartAt: 'desc' },
+      take: 50,
+    });
+
+    const normalizedUser = digits.length >= 10 ? digits.slice(-10) : digits;
+    const appointments = candidates.filter((apt) => {
+      const snap = apt.mobileSnapshot || '';
+      const snapDigits = normalizePhoneDigits(snap);
+      const normalizedSnap = snapDigits.length >= 10 ? snapDigits.slice(-10) : snapDigits;
+      return normalizedSnap === normalizedUser;
+    });
+
+    res.json({ success: true, data: { appointments } });
   } catch (e) {
     res.status(500).json({ success: false, message: e?.message || 'Server error' });
   }
@@ -1377,7 +1438,7 @@ exports.createBranch = async (req, res) => {
       }
     });
 
-    // Link branch types
+    // Link branch types (canonical BranchToType + legacy BranchTypeOnBranch for backward compat)
     if (typeCodes.length) {
       const types = await prisma.branchType.findMany({ where: { code: { in: typeCodes } }, select: { id: true } });
       if (types.length) {
@@ -1385,6 +1446,10 @@ exports.createBranch = async (req, res) => {
           data: types.map((t) => ({ branchId: created.id, typeId: t.id })),
           skipDuplicates: true,
         });
+        await prisma.branchTypeOnBranch.createMany({
+          data: types.map((t) => ({ branchId: created.id, branchTypeId: t.id })),
+          skipDuplicates: true,
+        }).catch(() => null);
       }
     }
 
@@ -1408,6 +1473,19 @@ exports.createBranch = async (req, res) => {
   }
 };
 
+/**
+ * Business-visible status for owner panel: verified branches show ACTIVE, not DRAFT.
+ * BLOCKED and INACTIVE take precedence. Used by owner branch list API and tests.
+ */
+function branchDisplayStatusForOwner(branch) {
+  const status = branch?.status || 'DRAFT';
+  const verificationStatus = branch?.verificationStatus || '';
+  if (verificationStatus === 'VERIFIED' && status !== 'BLOCKED' && status !== 'INACTIVE') {
+    return 'ACTIVE';
+  }
+  return status;
+}
+
 exports.listBranches = async (req, res) => {
   try {
     const prisma = getPrisma(req);
@@ -1424,17 +1502,23 @@ exports.listBranches = async (req, res) => {
       orderBy: { createdAt: 'desc' }
     });
 
-    res.json({ success: true, data: rows });
+    const data = rows.map((row) => ({
+      ...row,
+      displayStatus: branchDisplayStatusForOwner(row),
+    }));
+
+    res.json({ success: true, data });
   } catch (e) {
     res.status(500).json({ success: false, message: e?.message || 'Server error' });
   }
 };
 
-
 // =====================================================
 // GET /api/v1/owner/branches
 // Aggregated branches list for Owner dashboard sidebar & branches page
 // - Returns all branches under organizations owned by the current OWNER user
+// - Each branch includes status, verificationStatus, and displayStatus (computed)
+//   so owner panel shows business-visible status aligned with admin verification
 // =====================================================
 exports.listOwnerBranchesAll = async (req, res) => {
   try {
@@ -1453,7 +1537,12 @@ exports.listOwnerBranchesAll = async (req, res) => {
       },
     });
 
-    return res.json({ success: true, data: rows });
+    const data = rows.map((row) => ({
+      ...row,
+      displayStatus: branchDisplayStatusForOwner(row),
+    }));
+
+    return res.json({ success: true, data });
   } catch (e) {
     return res.status(500).json({ success: false, message: e?.message || 'Server error' });
   }
@@ -1475,6 +1564,7 @@ exports.getBranch = async (req, res) => {
       include: {
         org: true,
         types: { include: { type: true } },
+        typeLinks: { include: { branchType: true } },
         profileDetails: {
           include: {
             documents: {
@@ -1489,7 +1579,17 @@ exports.getBranch = async (req, res) => {
     });
 
     if (!branch) return res.status(404).json({ success: false, message: 'Branch not found' });
-    res.json({ success: true, data: branch });
+
+    // Merge legacy BranchTypeOnBranch entries into the types array so old branches
+    // (created before BranchToType existed) still expose their types to the edit form.
+    const existingTypeIds = new Set((branch.types || []).map((t: any) => t.typeId));
+    const legacyTypes = (branch.typeLinks || [])
+      .filter((tl: any) => !existingTypeIds.has(tl.branchTypeId))
+      .map((tl: any) => ({ branchId: branch.id, typeId: tl.branchTypeId, type: tl.branchType }));
+    const mergedTypes = [...(branch.types || []), ...legacyTypes];
+
+    const branchData = { ...branch, types: mergedTypes };
+    res.json({ success: true, data: branchData });
   } catch (e) {
     res.status(500).json({ success: false, message: e?.message || 'Server error' });
   }
@@ -1574,7 +1674,7 @@ exports.updateBranch = async (req, res) => {
       addressJson: mergedAddress,
     }).catch(() => null);
 
-    // Update branch types links (optional)
+    // Update branch types links (BranchToType — canonical table)
     if (Array.isArray(req.body?.typeCodes)) {
       const typeCodes = req.body.typeCodes.map(String);
       await prisma.branchToType.deleteMany({ where: { branchId: id } });
@@ -1585,7 +1685,16 @@ exports.updateBranch = async (req, res) => {
             data: types.map((t) => ({ branchId: id, typeId: t.id })),
             skipDuplicates: true,
           });
+          // Also sync legacy BranchTypeOnBranch table for backward compat
+          await prisma.branchTypeOnBranch.deleteMany({ where: { branchId: id } }).catch(() => null);
+          await prisma.branchTypeOnBranch.createMany({
+            data: types.map((t) => ({ branchId: id, branchTypeId: t.id })),
+            skipDuplicates: true,
+          }).catch(() => null);
         }
+      } else {
+        // typeCodes is empty array — clear legacy table too
+        await prisma.branchTypeOnBranch.deleteMany({ where: { branchId: id } }).catch(() => null);
       }
     }
 
@@ -2344,10 +2453,16 @@ exports.rejectBranchAccessOwner = async (req, res) => {
     const id = Number(req.params.id);
     if (!id || !Number.isFinite(id)) return res.status(400).json({ success: false, message: 'Invalid id' });
 
-    const permission = await revokeBranchAccess(id, ownerUserId, req.body?.note);
-    notifyStaffOfRevocation(permission.userId, permission.branchId).catch((err) => {
-      console.error('[owner.controller] notifyStaffOfRevocation:', err?.message);
-    });
+    const permission = await rejectBranchAccessForOwner(id, ownerUserId, req.body?.note);
+    const po = permission?.permissionOverrides;
+    const ov = po && typeof po === 'object' && !Array.isArray(po) ? po : {};
+    const skipFullRevokeNotify =
+      permission?.status === 'APPROVED' && ov && ov.warehouseAccessRejection && !ov.pendingWarehouseAccess;
+    if (!skipFullRevokeNotify) {
+      notifyStaffOfRevocation(permission.userId, permission.branchId).catch((err) => {
+        console.error('[owner.controller] notifyStaffOfRevocation:', err?.message);
+      });
+    }
     return res.json({ success: true, data: permission, message: 'Access rejected' });
   } catch (e) {
     return res.status(400).json({ success: false, message: e?.message || 'Failed to reject' });
@@ -2597,6 +2712,117 @@ exports.rejectOwnerInvitation = async (req, res) => {
   }
 };
 
+exports.getOwnerInvitation = async (req, res) => {
+  try {
+    const prisma = getPrisma(req);
+    const ownerUserId = asIntId(req.user?.id || req.auth?.userId);
+    if (!ownerUserId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+    const id = Number(req.params.id);
+    if (!id || !Number.isFinite(id)) return res.status(400).json({ success: false, message: 'Invalid id' });
+
+    const invite = await prisma.staffInvite.findFirst({
+      where: { id, org: { ownerUserId } },
+      include: {
+        org: { select: { id: true, name: true } },
+        branch: { select: { id: true, name: true } },
+        invitedBy: {
+          select: {
+            id: true,
+            profile: { select: { displayName: true, username: true } },
+            auth: { select: { email: true } }
+          }
+        }
+      }
+    });
+
+    if (!invite) return res.status(404).json({ success: false, message: 'Invitation not found' });
+
+    const data = {
+      id: invite.id,
+      status: invite.status,
+      role: invite.role,
+      branchId: invite.branchId,
+      orgId: invite.orgId,
+      branch: invite.branch,
+      org: invite.org,
+      email: invite.email,
+      phone: invite.phone,
+      displayName: invite.displayName,
+      inviteAsDoctor: invite.inviteAsDoctor,
+      expiresAt: invite.expiresAt,
+      createdAt: invite.createdAt,
+      updatedAt: invite.updatedAt,
+      invitedBy: invite.invitedBy,
+    };
+
+    return res.json({ success: true, data });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e?.message || 'Server error' });
+  }
+};
+
+exports.updateOwnerInvitation = async (req, res) => {
+  try {
+    const prisma = getPrisma(req);
+    const ownerUserId = asIntId(req.user?.id || req.auth?.userId);
+    if (!ownerUserId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+    const id = Number(req.params.id);
+    if (!id || !Number.isFinite(id)) return res.status(400).json({ success: false, message: 'Invalid id' });
+
+    const invite = await prisma.staffInvite.findFirst({
+      where: { id, org: { ownerUserId } },
+      select: { id: true, status: true, branchId: true, orgId: true },
+    });
+
+    if (!invite) return res.status(404).json({ success: false, message: 'Invitation not found' });
+    if (invite.status === 'ACCEPTED') {
+      return res.status(400).json({ success: false, message: 'Cannot edit accepted invitation' });
+    }
+
+    const { role, displayName, email, phone, inviteAsDoctor } = req.body;
+    const updateData: any = {};
+
+    if (role !== undefined) updateData.role = String(role);
+    if (displayName !== undefined) updateData.displayName = String(displayName || '').trim();
+    if (email !== undefined) updateData.email = String(email || '').trim();
+    if (phone !== undefined) updateData.phone = String(phone || '').trim();
+    if (inviteAsDoctor !== undefined) updateData.inviteAsDoctor = Boolean(inviteAsDoctor);
+
+    if (!updateData.email && !updateData.phone) {
+      return res.status(400).json({ success: false, message: 'Email or phone required' });
+    }
+
+    const updated = await prisma.staffInvite.update({
+      where: { id },
+      data: updateData,
+      include: {
+        org: { select: { id: true, name: true } },
+        branch: { select: { id: true, name: true } },
+      },
+    });
+
+    // Audit log
+    if (prisma.auditLog) {
+      await prisma.auditLog.create({
+        data: {
+          actorId: ownerUserId,
+          actorRole: 'OWNER',
+          action: 'INVITE_UPDATED',
+          entityType: 'STAFF_INVITE',
+          entityId: String(id),
+          metadata: { changes: updateData },
+        },
+      });
+    }
+
+    return res.json({ success: true, data: updated, message: 'Invitation updated' });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e?.message || 'Server error' });
+  }
+};
+
 exports.resendOwnerInvitation = async (req, res) => {
   try {
     const prisma = getPrisma(req);
@@ -2613,8 +2839,34 @@ exports.resendOwnerInvitation = async (req, res) => {
     if (!invite) return res.status(404).json({ success: false, message: 'Invitation not found or not pending' });
 
     const { resendStaffInviteForBranch } = require('../../services/staffInvite.service');
-    const data = await resendStaffInviteForBranch(prisma, invite.branchId, id, ownerUserId);
+    const data = await resendStaffInviteForBranch(prisma, invite.branchId, id, ownerUserId, 'OWNER');
     return res.json({ success: true, data, message: 'Invitation resent' });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e?.message || 'Server error' });
+  }
+};
+
+exports.reinviteOwnerInvitation = async (req, res) => {
+  try {
+    const prisma = getPrisma(req);
+    const ownerUserId = asIntId(req.user?.id || req.auth?.userId);
+    if (!ownerUserId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+    const id = Number(req.params.id);
+    if (!id || !Number.isFinite(id)) return res.status(400).json({ success: false, message: 'Invalid id' });
+
+    const invite = await prisma.staffInvite.findFirst({
+      where: { id, org: { ownerUserId } },
+      select: { id: true, status: true },
+    });
+    if (!invite) return res.status(404).json({ success: false, message: 'Invitation not found' });
+    if (invite.status === 'ACCEPTED') {
+      return res.status(400).json({ success: false, message: 'Invitation already accepted' });
+    }
+
+    const { reinviteStaffInviteForBranch } = require('../../services/staffInvite.service');
+    const data = await reinviteStaffInviteForBranch(prisma, id, ownerUserId, 'OWNER');
+    return res.json({ success: true, data, message: 'Invitation re-issued' });
   } catch (e) {
     return res.status(500).json({ success: false, message: e?.message || 'Server error' });
   }
@@ -2699,18 +2951,22 @@ exports.inviteBranchMember = async (req, res) => {
     const branchId = Number(req.params.id);
     const { createStaffInvite } = require("../../services/staffInvite.service");
 
-    const { invite, rawToken } = await createStaffInvite(
+    const result = await createStaffInvite(
       prismaClient,
       branchId,
       req.body || {},
       req.user.id,
       "OWNER"
     );
+    const { invite, rawToken, existingPending } = result;
 
     const isProd = String(process.env.NODE_ENV || "").toLowerCase() === "production";
 
-    return res.status(201).json({
+    return res.status(existingPending ? 200 : 201).json({
       success: true,
+      message: existingPending
+        ? "A pending invitation already exists for this person with the same role. Use Resend on the invitation list if they need a new link."
+        : undefined,
       data: {
         inviteId: invite.id,
         orgId: invite.orgId,
@@ -2718,13 +2974,22 @@ exports.inviteBranchMember = async (req, res) => {
         role: invite.role,
         status: invite.status,
         expiresAt: invite.expiresAt,
-        ...(isProd ? {} : { devInviteToken: rawToken }),
+        existingPending: Boolean(existingPending),
+        ...(isProd || !rawToken ? {} : { devInviteToken: rawToken }),
       },
     });
   } catch (e) {
     // eslint-disable-next-line no-console
     console.error(e);
     const isProd = String(process.env.NODE_ENV || "").toLowerCase() === "production";
+    const { isStaffInviteDuplicatePendingError } = require("../../services/staffInvite.errors");
+    if (isStaffInviteDuplicatePendingError(e)) {
+      return res.status(409).json({
+        success: false,
+        message: e.message,
+        error: { code: e.code, meta: e.meta },
+      });
+    }
     if (
       e?.message === "role is required" ||
       e?.message === "phone or email is required" ||
@@ -2890,6 +3155,12 @@ exports.listStaffs = async (req, res) => {
       orgId: { in: orgIds }
     };
 
+    const normalizeMemberStatus = (status) => {
+      const raw = String(status || 'ACTIVE').toUpperCase();
+      if (raw === 'DISABLED' || raw === 'SUSPENDED') return { status: 'INACTIVE', rawStatus: raw };
+      return { status: raw, rawStatus: raw };
+    };
+
     // NOTE: Prisma string search across nested relations is verbose.
     // We do a lightweight in-memory filter if "search" is present.
     const rows = await prisma.branchMember.findMany({
@@ -2909,17 +3180,73 @@ exports.listStaffs = async (req, res) => {
       }
     });
 
+    const invites = await prisma.staffInvite.findMany({
+      where: {
+        orgId: { in: orgIds },
+        status: { in: ['PENDING', 'EXPIRED', 'REVOKED'] }
+      },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        org: { select: { id: true, name: true } },
+        branch: { select: { id: true, name: true } },
+        invitedBy: { select: { id: true, profile: { select: { displayName: true } }, auth: { select: { email: true } } } }
+      }
+    });
+
+    const memberRows = rows.map((row) => {
+      const normalized = normalizeMemberStatus(row?.status);
+      return {
+        ...row,
+        rowType: 'MEMBER',
+        rowKey: `member-${row.id}`,
+        rawStatus: normalized.rawStatus,
+        status: normalized.status,
+      };
+    });
+
+    const inviteRows = invites.map((invite) => {
+      const status = invite.status === 'PENDING' ? 'INVITED' : invite.status;
+      return {
+        rowType: 'INVITE',
+        rowKey: `invite-${invite.id}`,
+        id: `invite-${invite.id}`,
+        inviteId: invite.id,
+        status,
+        rawStatus: invite.status,
+        role: invite.role,
+        branchId: invite.branchId,
+        orgId: invite.orgId,
+        branch: invite.branch,
+        org: invite.org,
+        invitedBy: invite.invitedBy,
+        invitedEmail: invite.email,
+        invitedPhone: invite.phone,
+        invitedDisplayName: invite.displayName,
+        inviteAsDoctor: invite.inviteAsDoctor,
+        expiresAt: invite.expiresAt,
+        createdAt: invite.createdAt,
+        user: null,
+      };
+    });
+
+    const combined = [...memberRows, ...inviteRows].sort((a, b) => {
+      const at = a?.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const bt = b?.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return bt - at;
+    });
+
     const filtered = search
-      ? rows.filter(r => {
-          const dn = String(r?.user?.profile?.displayName || '').toLowerCase();
+      ? combined.filter(r => {
+          const dn = String(r?.user?.profile?.displayName || r?.invitedDisplayName || '').toLowerCase();
           const un = String(r?.user?.profile?.username || '').toLowerCase();
-          const ph = String(r?.user?.auth?.phone || '').toLowerCase();
-          const em = String(r?.user?.auth?.email || '').toLowerCase();
+          const ph = String(r?.user?.auth?.phone || r?.invitedPhone || '').toLowerCase();
+          const em = String(r?.user?.auth?.email || r?.invitedEmail || '').toLowerCase();
           const br = String(r?.branch?.name || '').toLowerCase();
           const og = String(r?.org?.name || '').toLowerCase();
-          return dn.includes(search) || un.includes(search) || ph.includes(search) || em.includes(search) || br.includes(search) || og.includes(search);
+          const st = String(r?.status || r?.rawStatus || '').toLowerCase();
+          return dn.includes(search) || un.includes(search) || ph.includes(search) || em.includes(search) || br.includes(search) || og.includes(search) || st.includes(search);
         })
-      : rows;
+      : combined;
 
     // Keep response shape stable for tables
     res.json({
@@ -2999,8 +3326,6 @@ exports.updateStaff = async (req, res) => {
 
     const id = asIntId(req.params.id);
     if (!id) return res.status(400).json({ success: false, message: 'Invalid id' });
-
-    console.log('[updateStaff] Request:', { id, body: req.body });
 
     const current = await prisma.branchMember.findUnique({
       where: { id },
@@ -3116,8 +3441,6 @@ exports.updateStaff = async (req, res) => {
 
           // Only update if phone is different from current (normalized)
           if (phoneNorm !== currentPhone) {
-            console.log('[updateStaff] Checking phone uniqueness:', { phoneNorm, currentPhone, authId: current.user.auth.id });
-
             // Check for exact match first (fast path)
             const existingPhoneExact = await prisma.userAuth.findFirst({
               where: {
@@ -3126,7 +3449,6 @@ exports.updateStaff = async (req, res) => {
               }
             });
             if (existingPhoneExact) {
-              console.log('[updateStaff] Phone conflict found (exact match):', existingPhoneExact.id);
               return res.status(409).json({ success: false, message: 'Phone number already exists for another user' });
             }
 
@@ -3147,7 +3469,6 @@ exports.updateStaff = async (req, res) => {
                   const normalizedExisting = String(auth.phone).trim().replace(/\D/g, "");
                   // Compare normalized versions
                   if (normalizedExisting === phoneNorm) {
-                    console.log('[updateStaff] Phone conflict found (normalized match):', { existingId: auth.id, existingPhone: auth.phone, normalized: normalizedExisting });
                     return res.status(409).json({ success: false, message: 'Phone number already exists for another user' });
                   }
                 }
@@ -3164,7 +3485,6 @@ exports.updateStaff = async (req, res) => {
             });
 
             if (finalCheck) {
-              console.log('[updateStaff] Final check found phone conflict (exact):', finalCheck.id);
               return res.status(409).json({ success: false, message: 'Phone number already exists for another user' });
             }
 

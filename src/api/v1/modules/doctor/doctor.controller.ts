@@ -6,6 +6,7 @@
 const doctorService = require("./doctor.service");
 const doctorRequestService = require("./doctorRequest.service");
 const appointmentService = require("../clinic/appointment.service");
+const countryMedicineCatalogService = require("../../services/countryMedicineCatalog.service");
 
 function emitDoctorQueueUpdateIfAvailable(userId, payload) {
   try {
@@ -372,6 +373,361 @@ exports.getVisit = async (req, res) => {
   } catch (e) {
     console.error("[doctor.getVisit]", e);
     return res.status(500).json({ success: false, message: e?.message || "Failed to get visit" });
+  }
+};
+
+exports.addVisitNote = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const doctorIds = await doctorService.getDoctorBranchMemberIds(userId);
+    if (doctorIds.length === 0) return res.status(403).json({ success: false, message: "Doctor access required" });
+    const visitId = Number(req.params.id);
+    if (!Number.isFinite(visitId)) return res.status(400).json({ success: false, message: "Invalid visit id" });
+    const note = await doctorService.addNoteByVisit(visitId, doctorIds, req.body || {});
+    if (!note) return res.status(404).json({ success: false, message: "Visit not found" });
+    return res.status(201).json({ success: true, data: note });
+  } catch (e) {
+    console.error("[doctor.addVisitNote]", e);
+    return res.status(500).json({ success: false, message: e?.message || "Failed to add note" });
+  }
+};
+
+exports.addVisitVital = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const doctorIds = await doctorService.getDoctorBranchMemberIds(userId);
+    if (doctorIds.length === 0) return res.status(403).json({ success: false, message: "Doctor access required" });
+    const visitId = Number(req.params.id);
+    if (!Number.isFinite(visitId)) return res.status(400).json({ success: false, message: "Invalid visit id" });
+    const vital = await doctorService.addVitalByVisit(visitId, doctorIds, req.body || {});
+    if (!vital) return res.status(404).json({ success: false, message: "Visit not found" });
+    return res.status(201).json({ success: true, data: vital });
+  } catch (e) {
+    console.error("[doctor.addVisitVital]", e);
+    return res.status(500).json({ success: false, message: e?.message || "Failed to add vital" });
+  }
+};
+
+exports.getVisitBillingSummary = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const doctorIds = await doctorService.getDoctorBranchMemberIds(userId);
+    if (doctorIds.length === 0) return res.status(403).json({ success: false, message: "Doctor access required" });
+    const visitId = Number(req.params.id);
+    if (!Number.isFinite(visitId)) return res.status(400).json({ success: false, message: "Invalid visit id" });
+    const summary = await doctorService.getBillingSummaryForVisit(visitId, doctorIds);
+    if (!summary) return res.status(404).json({ success: false, message: "Visit not found" });
+    return res.status(200).json({ success: true, data: summary });
+  } catch (e) {
+    console.error("[doctor.getVisitBillingSummary]", e);
+    return res.status(500).json({ success: false, message: e?.message || "Failed to get billing summary" });
+  }
+};
+
+exports.getCompletionEligibility = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const doctorIds = await doctorService.getDoctorBranchMemberIds(userId);
+    if (doctorIds.length === 0) return res.status(403).json({ success: false, message: "Doctor access required" });
+    const visitId = Number(req.params.id);
+    if (!Number.isFinite(visitId)) return res.status(400).json({ success: false, message: "Invalid visit id" });
+    const result = await doctorService.getCompletionEligibility(visitId, doctorIds);
+    if (!result) return res.status(404).json({ success: false, message: "Visit not found or already completed" });
+    return res.status(200).json({ success: true, data: result });
+  } catch (e) {
+    console.error("[doctor.getCompletionEligibility]", e);
+    return res.status(500).json({ success: false, message: e?.message || "Failed to get eligibility" });
+  }
+};
+
+exports.completeVisit = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const doctorIds = await doctorService.getDoctorBranchMemberIds(userId);
+    if (doctorIds.length === 0) return res.status(403).json({ success: false, message: "Doctor access required" });
+    const visitId = Number(req.params.id);
+    if (!Number.isFinite(visitId)) return res.status(400).json({ success: false, message: "Invalid visit id" });
+    const body = req.body && typeof req.body === "object" ? req.body : {};
+    const updated = await doctorService.completeVisit(visitId, doctorIds, { overrideReason: body.overrideReason }, userId);
+    if (!updated) return res.status(404).json({ success: false, message: "Visit not found" });
+    return res.status(200).json({ success: true, data: updated });
+  } catch (e) {
+    if (e?.code === "COMPLETION_REQUIREMENTS_NOT_MET") {
+      return res.status(400).json({
+        success: false,
+        message: e.message || "Visit completion requirements not met",
+        code: e.code,
+        unmet: e.unmet || [],
+      });
+    }
+    console.error("[doctor.completeVisit]", e);
+    return res.status(500).json({ success: false, message: e?.message || "Failed to complete visit" });
+  }
+};
+
+exports.createVisitFollowUp = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const doctorIds = await doctorService.getDoctorBranchMemberIds(userId);
+    if (doctorIds.length === 0) return res.status(403).json({ success: false, message: "Doctor access required" });
+    const visitId = Number(req.params.id);
+    if (!Number.isFinite(visitId)) return res.status(400).json({ success: false, message: "Invalid visit id" });
+    const result = await doctorService.createFollowUpByVisit(visitId, doctorIds, req.body || {});
+    if (!result) return res.status(404).json({ success: false, message: "Visit not found" });
+    return res.status(200).json({ success: true, data: result });
+  } catch (e) {
+    console.error("[doctor.createVisitFollowUp]", e);
+    return res.status(500).json({ success: false, message: e?.message || "Failed to set follow-up" });
+  }
+};
+
+exports.createVisitLabRequisition = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const doctorIds = await doctorService.getDoctorBranchMemberIds(userId);
+    if (doctorIds.length === 0) return res.status(403).json({ success: false, message: "Doctor access required" });
+    const visitId = Number(req.params.id);
+    if (!Number.isFinite(visitId)) return res.status(400).json({ success: false, message: "Invalid visit id" });
+    const requisition = await doctorService.createLabRequisitionByVisit(visitId, doctorIds, req.body || {});
+    if (!requisition) return res.status(404).json({ success: false, message: "Visit not found or invalid payload" });
+    return res.status(201).json({ success: true, data: requisition });
+  } catch (e) {
+    console.error("[doctor.createVisitLabRequisition]", e);
+    return res.status(500).json({ success: false, message: e?.message || "Failed to create lab requisition" });
+  }
+};
+
+exports.createVisitPrescription = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const doctorIds = await doctorService.getDoctorBranchMemberIds(userId);
+    if (doctorIds.length === 0) return res.status(403).json({ success: false, message: "Doctor access required" });
+    const visitId = Number(req.params.id);
+    if (!Number.isFinite(visitId)) return res.status(400).json({ success: false, message: "Invalid visit id" });
+    const prescription = await doctorService.createPrescriptionByVisit(visitId, doctorIds, req.body || {});
+    if (!prescription) return res.status(404).json({ success: false, message: "Visit not found or items required" });
+    console.info("[doctor.prescription] create", { visitId, doctorBranchMemberId: prescription?.doctorId, userId });
+    return res.status(201).json({ success: true, data: prescription });
+  } catch (e: any) {
+    if (e?.code === "RX_CATALOG_VALIDATION") {
+      return res.status(400).json({ success: false, message: e.message || "Invalid catalog medicine" });
+    }
+    if (e?.code === "VISIT_NOT_FOUND") {
+      return res.status(404).json({ success: false, message: e.message || "Visit not found" });
+    }
+    console.error("[doctor.createVisitPrescription]", e);
+    return res.status(500).json({ success: false, message: e?.message || "Failed to create prescription" });
+  }
+};
+
+exports.finalizePrescription = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const doctorIds = await doctorService.getDoctorBranchMemberIds(userId);
+    if (doctorIds.length === 0) return res.status(403).json({ success: false, message: "Doctor access required" });
+    const prescriptionId = Number(req.params.prescriptionId);
+    if (!Number.isFinite(prescriptionId)) return res.status(400).json({ success: false, message: "Invalid prescription id" });
+    const prisma = require("../../../../infrastructure/db/prismaClient").default ?? require("../../../../infrastructure/db/prismaClient");
+    const row = await prisma.prescription.findUnique({
+      where: { id: prescriptionId },
+      select: { id: true, doctorId: true, status: true },
+    });
+    if (!row) return res.status(404).json({ success: false, message: "Prescription not found" });
+    if (!doctorIds.includes(row.doctorId)) {
+      return res.status(403).json({ success: false, message: "Not allowed to finalize this prescription" });
+    }
+    if (row.status !== "DRAFT") {
+      return res.status(409).json({
+        success: false,
+        code: "PRESCRIPTION_NOT_EDITABLE",
+        message: "Prescription is not in draft status",
+      });
+    }
+    const prescription = await doctorService.finalizePrescriptionByDoctor(prescriptionId, doctorIds);
+    if (!prescription) {
+      return res.status(409).json({
+        success: false,
+        code: "PRESCRIPTION_NOT_EDITABLE",
+        message: "Prescription is not in draft status",
+      });
+    }
+    console.info("[doctor.prescription] finalize", { prescriptionId, userId });
+    return res.status(200).json({ success: true, data: prescription });
+  } catch (e) {
+    console.error("[doctor.finalizePrescription]", e);
+    return res.status(500).json({ success: false, message: e?.message || "Failed to finalize prescription" });
+  }
+};
+
+exports.updatePrescription = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const doctorIds = await doctorService.getDoctorBranchMemberIds(userId);
+    if (doctorIds.length === 0) return res.status(403).json({ success: false, message: "Doctor access required" });
+    const prescriptionId = Number(req.params.prescriptionId);
+    if (!Number.isFinite(prescriptionId)) return res.status(400).json({ success: false, message: "Invalid prescription id" });
+    const prisma = require("../../../../infrastructure/db/prismaClient").default ?? require("../../../../infrastructure/db/prismaClient");
+    const row = await prisma.prescription.findUnique({
+      where: { id: prescriptionId },
+      select: { id: true, doctorId: true, status: true },
+    });
+    if (!row) return res.status(404).json({ success: false, message: "Prescription not found" });
+    if (!doctorIds.includes(row.doctorId)) {
+      return res.status(403).json({ success: false, message: "Not allowed to edit this prescription" });
+    }
+    if (row.status !== "DRAFT") {
+      return res.status(409).json({
+        success: false,
+        code: "PRESCRIPTION_NOT_EDITABLE",
+        message: "Prescription is finalized or dispensed and cannot be edited",
+      });
+    }
+    const prescription = await doctorService.updatePrescriptionByDoctor(prescriptionId, doctorIds, req.body || {});
+    if (!prescription) {
+      return res.status(409).json({
+        success: false,
+        code: "PRESCRIPTION_NOT_EDITABLE",
+        message: "Prescription is finalized or dispensed and cannot be edited",
+      });
+    }
+    console.info("[doctor.prescription] update", { prescriptionId, userId });
+    return res.status(200).json({ success: true, data: prescription });
+  } catch (e: any) {
+    if (e?.code === "RX_CATALOG_VALIDATION") {
+      return res.status(400).json({ success: false, message: e.message || "Invalid catalog medicine" });
+    }
+    console.error("[doctor.updatePrescription]", e);
+    return res.status(500).json({ success: false, message: e?.message || "Failed to update prescription" });
+  }
+};
+
+exports.searchMedicineCatalog = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const branchId = Number(req.query.branchId);
+    if (!Number.isFinite(branchId)) return res.status(400).json({ success: false, message: "branchId is required" });
+    const allowed = await countryMedicineCatalogService.assertDoctorBranchCatalogAccess(userId, branchId);
+    if (!allowed) return res.status(403).json({ success: false, message: "Not allowed for this branch" });
+    const ctx = await countryMedicineCatalogService.resolveMedicineCatalogContextForBranch(branchId);
+    if (!ctx) return res.status(404).json({ success: false, message: "Branch not found" });
+    if (!ctx.catalogAvailable) {
+      return res.status(200).json({
+        success: true,
+        data: {
+          items: [],
+          pagination: { page: 1, limit: 20, total: 0, totalPages: 0 },
+          notice: ctx.catalogBlockMessage,
+          catalogCountry: { code: null, name: null },
+        },
+      });
+    }
+    const q = String(req.query.q ?? req.query.query ?? "");
+    if (q.trim().length < countryMedicineCatalogService.MIN_QUERY_LEN) {
+      return res.status(400).json({
+        success: false,
+        message: `Enter at least ${countryMedicineCatalogService.MIN_QUERY_LEN} characters to search the national catalog (brand, generic, manufacturer, strength, dosage form, or pack marking).`,
+      });
+    }
+    const page = req.query.page ? Number(req.query.page) : 1;
+    const limit = req.query.limit ? Number(req.query.limit) : 20;
+    const result = await countryMedicineCatalogService.searchCountryMedicineCatalog({
+      countryId: ctx.countryId!,
+      q,
+      genericId: req.query.genericId ? Number(req.query.genericId) : undefined,
+      manufacturerId: req.query.manufacturerId ? Number(req.query.manufacturerId) : undefined,
+      dosageFormId: req.query.dosageFormId ? Number(req.query.dosageFormId) : undefined,
+      strength: req.query.strength ? String(req.query.strength) : undefined,
+      page,
+      limit,
+    });
+    return res.status(200).json({
+      success: true,
+      data: {
+        ...result,
+        catalogCountry: { code: ctx.countryCode, name: ctx.countryName },
+      },
+    });
+  } catch (e: any) {
+    console.error("[doctor.searchMedicineCatalog]", e);
+    return res.status(500).json({ success: false, message: e?.message || "Search failed" });
+  }
+};
+
+exports.getMedicineCatalogBrand = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const branchId = Number(req.query.branchId);
+    if (!Number.isFinite(branchId)) return res.status(400).json({ success: false, message: "branchId is required" });
+    const allowed = await countryMedicineCatalogService.assertDoctorBranchCatalogAccess(userId, branchId);
+    if (!allowed) return res.status(403).json({ success: false, message: "Not allowed for this branch" });
+    const brandListingId = Number(req.params.brandId);
+    if (!Number.isFinite(brandListingId)) return res.status(400).json({ success: false, message: "Invalid brand id" });
+    const ctx = await countryMedicineCatalogService.resolveMedicineCatalogContextForBranch(branchId);
+    if (!ctx) return res.status(404).json({ success: false, message: "Branch not found" });
+    if (!ctx.catalogAvailable || ctx.countryId == null) {
+      return res.status(400).json({
+        success: false,
+        message: ctx.catalogBlockMessage || "National medicine catalog is not available for this branch.",
+      });
+    }
+    const row = await countryMedicineCatalogService.getCountryMedicineBrandDetail(ctx.countryId, brandListingId);
+    if (!row) {
+      return res.status(404).json({
+        success: false,
+        message: "No catalog medicine matches this id for your organization’s country, or the item is inactive.",
+      });
+    }
+    return res.status(200).json({ success: true, data: row });
+  } catch (e: any) {
+    console.error("[doctor.getMedicineCatalogBrand]", e);
+    return res.status(500).json({ success: false, message: e?.message || "Failed" });
+  }
+};
+
+exports.addVisitAttachment = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const doctorIds = await doctorService.getDoctorBranchMemberIds(userId);
+    if (doctorIds.length === 0) return res.status(403).json({ success: false, message: "Doctor access required" });
+    const visitId = Number(req.params.id);
+    if (!Number.isFinite(visitId)) return res.status(400).json({ success: false, message: "Invalid visit id" });
+    const body = req.body || {};
+    if (!body.fileUrl) return res.status(400).json({ success: false, message: "fileUrl is required" });
+    const att = await doctorService.addVisitAttachmentByDoctor(visitId, doctorIds, body);
+    if (!att) return res.status(404).json({ success: false, message: "Visit not found" });
+    return res.status(201).json({ success: true, data: att });
+  } catch (e) {
+    console.error("[doctor.addVisitAttachment]", e);
+    return res.status(500).json({ success: false, message: e?.message || "Failed to add attachment" });
+  }
+};
+
+exports.getProductivity = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const doctorIds = await doctorService.getDoctorBranchMemberIds(userId);
+    if (doctorIds.length === 0) return res.status(403).json({ success: false, message: "Doctor access required" });
+    const dateStr = req.query?.date ? String(req.query.date) : new Date().toISOString().slice(0, 10);
+    const data = await doctorService.getProductivity(doctorIds, dateStr);
+    if (!data) return res.status(200).json({ success: true, data: { date: dateStr, visitsCompleted: 0, prescriptionsWritten: 0, testOrdersCreated: 0 } });
+    return res.status(200).json({ success: true, data });
+  } catch (e) {
+    console.error("[doctor.getProductivity]", e);
+    return res.status(500).json({ success: false, message: e?.message || "Failed to get productivity" });
   }
 };
 
@@ -787,6 +1143,23 @@ exports.putMyServices = async (req, res) => {
   }
 };
 
+exports.postMyServicesAcknowledge = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const branchId = Number(req.params.branchId);
+    if (!Number.isFinite(branchId)) return res.status(400).json({ success: false, message: "Invalid branchId" });
+    const data = await doctorService.acknowledgeMyServiceFeeChange(userId, branchId, req.body || {});
+    if (!data) return res.status(404).json({ success: false, message: "Doctor profile not found" });
+    return res.status(200).json({ success: true, data });
+  } catch (e: any) {
+    if (e?.statusCode === 400) return res.status(400).json({ success: false, message: e?.message || "Bad request" });
+    if (e?.statusCode === 404) return res.status(404).json({ success: false, message: e?.message || "Not found" });
+    console.error("[doctor.postMyServicesAcknowledge]", e);
+    return res.status(500).json({ success: false, message: e?.message || "Failed to acknowledge" });
+  }
+};
+
 // --- My schedule ---
 exports.getMySchedule = async (req, res) => {
   try {
@@ -947,5 +1320,109 @@ exports.getReminders = async (req, res) => {
   } catch (e) {
     console.error("[doctor.getReminders]", e);
     return res.status(500).json({ success: false, message: e?.message || "Failed to get reminders" });
+  }
+};
+
+// --- Enterprise Surgery Module (doctor panel) ---
+const surgeryService = require("../clinic/surgery.service");
+
+exports.listSurgeries = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const doctorIds = await doctorService.getDoctorBranchMemberIds(userId);
+    if (doctorIds.length === 0) {
+      const allowed = await hasDoctorVerification(userId);
+      if (!allowed) return res.status(403).json({ success: false, message: "Doctor access required" });
+      return res.status(200).json({ success: true, data: { items: [], total: 0 } });
+    }
+    const { branchId, dateFrom, dateTo, status, limit, offset } = req.query;
+    const result = await surgeryService.listForDoctor(doctorIds, {
+      branchId: branchId ? Number(branchId) : undefined,
+      dateFrom: dateFrom ? String(dateFrom) : undefined,
+      dateTo: dateTo ? String(dateTo) : undefined,
+      status: status ? String(status) : undefined,
+      limit: limit ? Number(limit) : undefined,
+      offset: offset ? Number(offset) : undefined,
+    });
+    return res.status(200).json({ success: true, data: result });
+  } catch (e) {
+    console.error("[doctor.listSurgeries]", e);
+    return res.status(500).json({ success: false, message: e?.message || "Failed to list surgeries" });
+  }
+};
+
+exports.getSurgeryById = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const doctorIds = await doctorService.getDoctorBranchMemberIds(userId);
+    if (doctorIds.length === 0) return res.status(403).json({ success: false, message: "Doctor access required" });
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ success: false, message: "Invalid surgery id" });
+    const data = await surgeryService.getByIdForDoctor(id, doctorIds);
+    return res.status(200).json({ success: true, data });
+  } catch (e) {
+    if (e?.message === "SURGERY_CASE_NOT_FOUND") return res.status(404).json({ success: false, message: "Surgery not found" });
+    console.error("[doctor.getSurgeryById]", e);
+    return res.status(500).json({ success: false, message: e?.message || "Failed to get surgery" });
+  }
+};
+
+exports.updateSurgeryNotes = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const doctorIds = await doctorService.getDoctorBranchMemberIds(userId);
+    if (doctorIds.length === 0) return res.status(403).json({ success: false, message: "Doctor access required" });
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ success: false, message: "Invalid surgery id" });
+    const { operativeNotes, postopNotes, complicationNotes } = req.body || {};
+    const data = await surgeryService.updateNotesForDoctor(id, doctorIds, {
+      operativeNotes,
+      postopNotes,
+      complicationNotes,
+    });
+    return res.status(200).json({ success: true, data });
+  } catch (e) {
+    if (e?.message === "SURGERY_CASE_NOT_FOUND") return res.status(404).json({ success: false, message: "Surgery not found" });
+    console.error("[doctor.updateSurgeryNotes]", e);
+    return res.status(500).json({ success: false, message: e?.message || "Failed to update notes" });
+  }
+};
+
+exports.surgeryStart = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const doctorIds = await doctorService.getDoctorBranchMemberIds(userId);
+    if (doctorIds.length === 0) return res.status(403).json({ success: false, message: "Doctor access required" });
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ success: false, message: "Invalid surgery id" });
+    const data = await surgeryService.transitionStatusForDoctor(id, "IN_PROGRESS", userId, doctorIds, "Started by doctor");
+    return res.status(200).json({ success: true, data });
+  } catch (e) {
+    if (e?.message === "SURGERY_CASE_NOT_FOUND") return res.status(404).json({ success: false, message: "Surgery not found" });
+    if (e?.message === "INVALID_STATUS_TRANSITION") return res.status(400).json({ success: false, message: "Invalid status transition" });
+    console.error("[doctor.surgeryStart]", e);
+    return res.status(500).json({ success: false, message: e?.message || "Failed to start surgery" });
+  }
+};
+
+exports.surgeryComplete = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const doctorIds = await doctorService.getDoctorBranchMemberIds(userId);
+    if (doctorIds.length === 0) return res.status(403).json({ success: false, message: "Doctor access required" });
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ success: false, message: "Invalid surgery id" });
+    const data = await surgeryService.transitionStatusForDoctor(id, "COMPLETED", userId, doctorIds, "Completed by doctor");
+    return res.status(200).json({ success: true, data });
+  } catch (e) {
+    if (e?.message === "SURGERY_CASE_NOT_FOUND") return res.status(404).json({ success: false, message: "Surgery not found" });
+    if (e?.message === "INVALID_STATUS_TRANSITION") return res.status(400).json({ success: false, message: "Invalid status transition" });
+    console.error("[doctor.surgeryComplete]", e);
+    return res.status(500).json({ success: false, message: e?.message || "Failed to complete surgery" });
   }
 };

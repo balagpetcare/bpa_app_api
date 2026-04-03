@@ -165,6 +165,13 @@ export default async function seedGlobalCountryRoles(prisma: PrismaClient) {
     { key: "admin.support.tickets.respond", label: "Respond to tickets", description: "Post public replies to producer tickets." },
     { key: "admin.support.tickets.assign", label: "Assign tickets", description: "Assign tickets to support agents." },
     { key: "admin.support.tickets.escalate", label: "Escalate to enforcement", description: "Escalate ticket to Trust & Safety case." },
+    { key: "medicine.master.read", label: "View medicine master data", description: "Admin medicine workspace read." },
+    { key: "medicine.master.write", label: "Manage medicine master data", description: "Admin medicine workspace write." },
+    { key: "medicine.catalog.listing.manage", label: "Manage country medicine listings", description: "Country catalog listing CRUD." },
+    { key: "medicine.catalog.import", label: "Medicine catalog import", description: "CSV import pipeline." },
+    { key: "medicine.catalog.export", label: "Export medicine catalog", description: "Listings CSV export." },
+    { key: "medicine.catalog.review", label: "Medicine import review", description: "Review and conflict queues." },
+    { key: "medicine.catalog.governance", label: "Medicine catalog governance", description: "Elevated catalog governance." },
   ];
 
   const COUNTRY_BASE = [
@@ -237,6 +244,13 @@ export default async function seedGlobalCountryRoles(prisma: PrismaClient) {
         "admin.support.tickets.respond",
         "admin.support.tickets.assign",
         "admin.support.tickets.escalate",
+        "medicine.master.read",
+        "medicine.master.write",
+        "medicine.catalog.listing.manage",
+        "medicine.catalog.import",
+        "medicine.catalog.export",
+        "medicine.catalog.review",
+        "medicine.catalog.governance",
       ],
     },
     {

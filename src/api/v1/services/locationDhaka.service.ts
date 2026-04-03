@@ -1,6 +1,4 @@
-
-import { PrismaClient } from "@prisma/client";
-const prisma = new PrismaClient();
+import prisma from "../../../infrastructure/db/prismaClient";
 
 export async function dhakaCityCorps(req, res) {
   const corps = await prisma.bdArea.findMany({

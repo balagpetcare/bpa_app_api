@@ -13,7 +13,7 @@ export type CreateStockCountInput = {
 };
 
 export async function createStockCount(data: CreateStockCountInput) {
-  const location = await prisma.inventoryLocation.findFirst({
+  const location = await prisma.inventoryLocation.findUnique({
     where: { id: data.locationId },
     include: { branch: true },
   });
@@ -40,11 +40,11 @@ export async function createStockCount(data: CreateStockCountInput) {
  * Sets status to FROZEN and creates StockCountLine rows with systemQty, countedQty=0, varianceQty=0.
  */
 export async function freezeStockCount(sessionId: number, orgId: number) {
-  const session = await prisma.stockCountSession.findFirst({
-    where: { id: sessionId, orgId },
+  const session = await prisma.stockCountSession.findUnique({
+    where: { id: sessionId },
     include: { location: true },
   });
-  if (!session) throw new Error("Stock count session not found");
+  if (!session || session.orgId !== orgId) throw new Error("Stock count session not found");
   if (session.status !== "DRAFT") throw new Error(`Session is already ${session.status}`);
 
   const balances = await prisma.stockBalance.findMany({
@@ -102,11 +102,11 @@ export type UpsertLinesInput = Array<{
  * Recomputes varianceQty = countedQty - systemQty per line.
  */
 export async function upsertCountLines(sessionId: number, orgId: number, lines: UpsertLinesInput) {
-  const session = await prisma.stockCountSession.findFirst({
-    where: { id: sessionId, orgId },
+  const session = await prisma.stockCountSession.findUnique({
+    where: { id: sessionId },
     include: { lines: true },
   });
-  if (!session) throw new Error("Stock count session not found");
+  if (!session || session.orgId !== orgId) throw new Error("Stock count session not found");
   if (session.status !== "FROZEN") throw new Error(`Session must be FROZEN to update counts; current: ${session.status}`);
 
   const locationId = session.locationId;
@@ -154,11 +154,11 @@ export async function upsertCountLines(sessionId: number, orgId: number, lines: 
  * Marks session as POSTED. Idempotent: no-op if already POSTED.
  */
 export async function postStockCount(sessionId: number, orgId: number, userId: number) {
-  const session = await prisma.stockCountSession.findFirst({
-    where: { id: sessionId, orgId },
+  const session = await prisma.stockCountSession.findUnique({
+    where: { id: sessionId },
     include: { lines: true, location: true },
   });
-  if (!session) throw new Error("Stock count session not found");
+  if (!session || session.orgId !== orgId) throw new Error("Stock count session not found");
   if (session.status === "POSTED") return prisma.stockCountSession.findUnique({ where: { id: sessionId }, include: { lines: true, location: true } });
   if (session.status !== "FROZEN" && session.status !== "SUBMITTED") {
     throw new Error(`Session must be FROZEN or SUBMITTED to post; current: ${session.status}`);
@@ -167,31 +167,17 @@ export async function postStockCount(sessionId: number, orgId: number, userId: n
   const linesWithVariance = session.lines.filter((l) => l.varianceQty !== 0);
   await prisma.$transaction(async (tx: any) => {
     for (const line of linesWithVariance) {
-      if (line.varianceQty > 0) {
-        await ledgerService.recordLedgerEntryInTx(tx, {
-          orgId,
-          locationId: session.locationId,
-          variantId: line.variantId,
-          lotId: line.lotId ?? undefined,
-          type: "ADJUSTMENT",
-          quantityDelta: line.varianceQty,
-          refType: "STOCK_COUNT",
-          refId: String(sessionId),
-          createdByUserId: userId,
-        });
-      } else {
-        await ledgerService.recordLedgerEntryInTx(tx, {
-          orgId,
-          locationId: session.locationId,
-          variantId: line.variantId,
-          lotId: line.lotId ?? undefined,
-          type: "ADJUSTMENT",
-          quantityDelta: line.varianceQty,
-          refType: "STOCK_COUNT",
-          refId: String(sessionId),
-          createdByUserId: userId,
-        });
-      }
+      await ledgerService.recordLedgerEntryInTx(tx, {
+        orgId,
+        locationId: session.locationId,
+        variantId: line.variantId,
+        lotId: line.lotId ?? undefined,
+        type: "ADJUSTMENT",
+        quantityDelta: line.varianceQty,
+        refType: "STOCK_COUNT",
+        refId: String(sessionId),
+        createdByUserId: userId,
+      });
     }
     await tx.stockCountSession.update({
       where: { id: sessionId },
@@ -225,12 +211,14 @@ export async function listStockCounts(orgId: number, locationId?: number, status
 }
 
 export async function getStockCountById(sessionId: number, orgId: number) {
-  return prisma.stockCountSession.findFirst({
-    where: { id: sessionId, orgId },
+  const row = await prisma.stockCountSession.findUnique({
+    where: { id: sessionId },
     include: {
       location: { select: { id: true, name: true } },
       lines: { include: { variant: { select: { id: true, sku: true, title: true } }, lot: { select: { id: true, lotCode: true } } } },
       createdBy: { select: { id: true, profile: { select: { displayName: true } } } },
     },
   });
+  if (!row || row.orgId !== orgId) return null;
+  return row;
 }

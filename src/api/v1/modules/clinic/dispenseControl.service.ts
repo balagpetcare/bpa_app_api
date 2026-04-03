@@ -11,14 +11,16 @@ export type CreateDispenseRequestInput = {
   requestedByUserId: number;
   patientId?: number | null;
   visitId?: number | null;
+  prescriptionId?: number | null;
   surgeryCaseId?: number | null;
   treatmentCourseId?: number | null;
   requestType?: string | null; // OPEN_NEW_VIAL, ADDITIONAL_VIAL, REPLACEMENT_VIAL, EXPIRED_VIAL_REPLACEMENT, STANDARD
   requestReason?: string | null;
   tokenId?: number | null;
   treatmentDayItemId?: number | null;
+  transactionType?: string | null; // TAKE_HOME | CLINIC_USE | INTERNAL_ORDER
   urgencyLevel?: "NORMAL" | "URGENT" | "EMERGENCY";
-  items: { variantId: number; requestedQty: number; unit?: string | null; reason?: string | null }[];
+  items: { variantId: number; clinicalItemVariantId?: number | null; requestedQty: number; unit?: string | null; reason?: string | null }[];
 };
 
 /**
@@ -32,17 +34,20 @@ export async function createRequest(data: CreateDispenseRequestInput): Promise<a
       requestedByUserId: data.requestedByUserId,
       patientId: data.patientId ?? null,
       visitId: data.visitId ?? null,
+      prescriptionId: data.prescriptionId ?? null,
       surgeryCaseId: data.surgeryCaseId ?? null,
       treatmentCourseId: data.treatmentCourseId ?? null,
       requestType: data.requestType ?? "STANDARD",
       requestReason: data.requestReason ?? null,
       tokenId: data.tokenId ?? null,
       treatmentDayItemId: data.treatmentDayItemId ?? null,
+      transactionType: data.transactionType ?? null,
       status: "PENDING",
       urgencyLevel: data.urgencyLevel ?? "NORMAL",
       items: {
         create: data.items.map((item) => ({
           variantId: item.variantId,
+          clinicalItemVariantId: item.clinicalItemVariantId ?? null,
           requestedQty: item.requestedQty,
           unit: item.unit ?? null,
           reason: item.reason ?? null,
@@ -50,10 +55,16 @@ export async function createRequest(data: CreateDispenseRequestInput): Promise<a
       },
     },
     include: {
-      items: { include: { variant: { select: { id: true, title: true, sku: true } } } },
-      requestedBy: { select: { id: true }, profile: { select: { displayName: true } } },
+      items: {
+        include: {
+          variant: { select: { id: true, title: true, sku: true } },
+          clinicalItemVariant: { select: { id: true, variantName: true, sku: true } },
+        },
+      },
+      requestedBy: { select: { id: true, profile: { select: { displayName: true } } } },
       token: { select: { id: true, tokenCode: true } },
       treatmentDayItem: { select: { id: true, medicineName: true } },
+      prescription: { select: { id: true, qrToken: true, status: true } },
     },
   });
   return request;
@@ -127,7 +138,7 @@ export async function checkExistingActiveVial(branchId: number, variantId: numbe
     orderBy: { openedAt: "desc" },
     include: {
       variant: { select: { id: true, title: true } },
-      openedBy: { select: { id: true }, profile: { select: { displayName: true } } },
+      openedBy: { select: { id: true, profile: { select: { displayName: true } } } },
     },
   });
 }
@@ -185,7 +196,7 @@ export async function issueItems(
         throw new Error(`Issued qty ${issue.issuedQty} exceeds requested ${reqItem.requestedQty}`);
       }
       // Deduct stock
-      await ledger.saleFEFOInTx(tx as any, {
+      await (ledger as any).saleFEFOInTx(tx as any, {
         locationId,
         variantId: reqItem.variantId,
         quantity: issue.issuedQty,
@@ -256,22 +267,30 @@ export async function issueItems(
  */
 export async function listRequests(
   branchId: number,
-  opts?: { status?: string; visitId?: number; requestType?: string; skip?: number; take?: number }
+  opts?: { status?: string; visitId?: number; requestType?: string; transactionType?: string; skip?: number; take?: number }
 ): Promise<{ list: any[]; total: number }> {
   const where: any = { branchId };
   if (opts?.status) where.status = opts.status;
   if (opts?.visitId != null) where.visitId = opts.visitId;
   if (opts?.requestType) where.requestType = opts.requestType;
+  if (opts?.transactionType) where.transactionType = opts.transactionType;
   const [list, total] = await Promise.all([
     prisma.dispenseRequest.findMany({
       where,
       skip: opts?.skip ?? 0,
       take: Math.min(opts?.take ?? 50, 100),
       include: {
-        items: { include: { variant: { select: { id: true, title: true, sku: true } }, vialInstance: true } },
-        requestedBy: { select: { id: true }, profile: { select: { displayName: true } } },
-        receivedBy: { select: { id: true }, profile: { select: { displayName: true } } },
+        items: {
+          include: {
+            variant: { select: { id: true, title: true, sku: true } },
+            clinicalItemVariant: { select: { id: true, variantName: true, sku: true } },
+            vialInstance: true,
+          },
+        },
+        requestedBy: { select: { id: true, profile: { select: { displayName: true } } } },
+        receivedBy: { select: { id: true, profile: { select: { displayName: true } } } },
         visit: { select: { id: true, treatmentCode: true } },
+        prescription: { select: { id: true, qrToken: true, status: true } },
         token: { select: { id: true, tokenCode: true } },
         treatmentDayItem: { select: { id: true, medicineName: true, treatmentDay: { select: { dayNumber: true } } } },
       },
@@ -327,14 +346,42 @@ export async function getRequestById(requestId: number, branchId: number): Promi
   return prisma.dispenseRequest.findFirst({
     where: { id: requestId, branchId },
     include: {
-      items: { include: { variant: true, vialInstance: true } },
-      requestedBy: { select: { id: true }, profile: { select: { displayName: true } } },
-      receivedBy: { select: { id: true }, profile: { select: { displayName: true } } },
+      items: {
+        include: {
+          variant: true,
+          clinicalItemVariant: { select: { id: true, variantName: true, sku: true, item: { select: { name: true, itemCode: true } } } },
+          vialInstance: true,
+        },
+      },
+      requestedBy: { select: { id: true, profile: { select: { displayName: true } } } },
+      receivedBy: { select: { id: true, profile: { select: { displayName: true } } } },
       visit: true,
+      prescription: { select: { id: true, qrToken: true, status: true, visitId: true } },
       token: true,
       treatmentDayItem: { include: { treatmentDay: { select: { dayNumber: true, scheduledDate: true } }, variant: true } },
     },
   });
+}
+
+/**
+ * Enforcement: require that a dispense request has been received (injection room handoff) before vial usage.
+ * Used when opening a vial from a dispense request or recording dose from a session activated from one.
+ */
+export async function requireDispenseRequestReceived(
+  requestId: number,
+  branchId: number
+): Promise<void> {
+  const req = await prisma.dispenseRequest.findFirst({
+    where: { id: requestId, branchId },
+    select: { id: true, status: true, receivedAt: true },
+  });
+  if (!req) throw new Error("Dispense request not found");
+  if (req.status !== "ISSUED" && req.status !== "PARTIALLY_ISSUED") {
+    throw new Error("Dispense request must be issued or partially issued before vial use");
+  }
+  if (!req.receivedAt) {
+    throw new Error("Dispense request must be received by injection room before opening or using this vial");
+  }
 }
 
 /**
@@ -359,8 +406,8 @@ export async function receiveDispenseRequest(
     data: { receivedByUserId, receivedAt: new Date() },
     include: {
       items: { include: { variant: { select: { id: true, title: true, sku: true } } } },
-      requestedBy: { select: { id: true }, profile: { select: { displayName: true } } },
-      receivedBy: { select: { id: true }, profile: { select: { displayName: true } } },
+      requestedBy: { select: { id: true, profile: { select: { displayName: true } } } },
+      receivedBy: { select: { id: true, profile: { select: { displayName: true } } } },
     },
   });
 }

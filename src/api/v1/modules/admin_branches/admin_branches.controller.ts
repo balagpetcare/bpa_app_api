@@ -36,6 +36,8 @@ exports.list = async (req, res) => {
   const statusRaw = req.query?.status;
   const orgId = toInt(req.query?.orgId);
   const q = req.query?.q ? String(req.query.q).trim() : "";
+  const skip = toInt(req.query?.skip) ?? 0;
+  const take = toInt(req.query?.take) ?? 300;
 
   const where: Prisma.BranchWhereInput = {};
 
@@ -50,7 +52,23 @@ exports.list = async (req, res) => {
   if (orgId !== null) where.orgId = orgId;
 
   if (q) {
-    where.OR = [{ name: { contains: q, mode: "insensitive" } }];
+    const orClauses: Prisma.BranchWhereInput[] = [
+      { name: { contains: q, mode: "insensitive" } },
+      { org: { name: { contains: q, mode: "insensitive" } } },
+    ];
+
+    // If code exists and q looks like a code, search by code
+    if (q) {
+      orClauses.push({ code: { contains: q, mode: "insensitive" } });
+    }
+
+    // If q is numeric, also search by id
+    const numericId = toInt(q);
+    if (numericId !== null) {
+      orClauses.push({ id: numericId });
+    }
+
+    where.OR = orClauses;
   }
 
   const rows = await prisma.branch.findMany({
@@ -60,8 +78,13 @@ exports.list = async (req, res) => {
       id: true,
       orgId: true,
       name: true,
+      code: true,
       status: true,
       verificationStatus: true,
+      capabilitiesJson: true,
+      featuresJson: true,
+      location: true,
+      addressJson: true,
       createdAt: true,
       updatedAt: true,
       org: { select: { id: true, name: true, ownerUserId: true, status: true } },
@@ -72,7 +95,8 @@ exports.list = async (req, res) => {
         },
       },
     },
-    take: 300,
+    skip,
+    take: Math.min(take, 500),
   });
 
   return res.json({ success: true, data: rows });
@@ -82,6 +106,7 @@ exports.list = async (req, res) => {
 exports.create = async (req, res) => {
   const orgId = toInt(req.body?.orgId);
   const name = req.body?.name ? String(req.body.name).trim() : "";
+  const code = req.body?.code ? String(req.body.code).trim() : null;
 
   if (orgId === null)
     return res.status(400).json({ success: false, message: "orgId is required" });
@@ -91,44 +116,75 @@ exports.create = async (req, res) => {
   const status = parseBranchStatus(req.body?.status);
   const verificationStatus = parseVerificationStatus(req.body?.verificationStatus);
 
-  const branch = await prisma.branch.create({
-    data: {
-      name,
-      addressJson: req.body?.addressJson ?? null,
-      capabilitiesJson: req.body?.capabilitiesJson ?? {},
-      featuresJson: req.body?.featuresJson ?? {},
-      ...(status ? { status } : {}),
-      ...(verificationStatus ? { verificationStatus } : {}),
-      org: { connect: { id: orgId } }, // ✅ correct relation create
-    },
-  });
-
-  const typeCodes = Array.isArray(req.body?.typeCodes)
-    ? req.body.typeCodes.map((x) => String(x).trim()).filter(Boolean)
-    : [];
-
-  if (typeCodes.length) {
-    const types = await prisma.branchType.findMany({
-      where: { code: { in: typeCodes } },
-      select: { id: true },
-    });
-
-    await prisma.branchTypeOnBranch.createMany({
-      data: types.map((t, idx) => ({
-        branchId: branch.id,
-        branchTypeId: t.id,
-        isPrimary: idx === 0,
-      })),
-      skipDuplicates: true,
-    });
+  // Normalize address: accept either plain string or addressJson
+  let addressJson = req.body?.addressJson ?? null;
+  if (!addressJson && req.body?.address && typeof req.body.address === "string") {
+    addressJson = req.body.address;
   }
 
-  const row = await prisma.branch.findUnique({
-    where: { id: branch.id },
-    include: { org: true, typeLinks: { include: { branchType: true } } },
-  });
+  // Normalize capabilities: accept array of strings or capabilitiesJson object
+  let capabilitiesJson = req.body?.capabilitiesJson ?? {};
+  if (!req.body?.capabilitiesJson && req.body?.capabilities) {
+    if (Array.isArray(req.body.capabilities)) {
+      // Convert array to object map
+      capabilitiesJson = {};
+      req.body.capabilities.forEach((cap: any) => {
+        const key = typeof cap === "string" ? cap : cap?.capability;
+        if (key) capabilitiesJson[key] = true;
+      });
+    }
+  }
 
-  return res.status(201).json({ success: true, data: row });
+  try {
+    const branch = await prisma.branch.create({
+      data: {
+        name,
+        code,
+        addressJson,
+        capabilitiesJson,
+        featuresJson: req.body?.featuresJson ?? {},
+        ...(status ? { status } : {}),
+        ...(verificationStatus ? { verificationStatus } : {}),
+        org: { connect: { id: orgId } },
+      },
+    });
+
+    const typeCodes = Array.isArray(req.body?.typeCodes)
+      ? req.body.typeCodes.map((x) => String(x).trim()).filter(Boolean)
+      : [];
+
+    if (typeCodes.length) {
+      const types = await prisma.branchType.findMany({
+        where: { code: { in: typeCodes } },
+        select: { id: true },
+      });
+
+      await prisma.branchTypeOnBranch.createMany({
+        data: types.map((t, idx) => ({
+          branchId: branch.id,
+          branchTypeId: t.id,
+          isPrimary: idx === 0,
+        })),
+        skipDuplicates: true,
+      });
+    }
+
+    const row = await prisma.branch.findUnique({
+      where: { id: branch.id },
+      include: { org: true, typeLinks: { include: { branchType: true } } },
+    });
+
+    return res.status(201).json({ success: true, data: row });
+  } catch (e: any) {
+    // Handle unique constraint violation for code
+    if (e.code === "P2002" && e.meta?.target?.includes("code")) {
+      return res.status(409).json({
+        success: false,
+        message: "Branch code already exists in this organization"
+      });
+    }
+    throw e;
+  }
 };
 
 // GET /api/v1/admin/branches/:id
@@ -177,6 +233,10 @@ exports.updateById = async (req, res) => {
       return res.status(400).json({ success: false, message: "name cannot be empty" });
   }
 
+  if (req.body?.code !== undefined) {
+    data.code = req.body.code ? String(req.body.code).trim() : null;
+  }
+
   if (req.body?.status !== undefined) {
     const st = parseBranchStatus(req.body.status);
     if (!st)
@@ -191,16 +251,44 @@ exports.updateById = async (req, res) => {
     data.verificationStatus = vs;
   }
 
-  if (req.body?.addressJson !== undefined) data.addressJson = req.body.addressJson;
-  if (req.body?.capabilitiesJson !== undefined) data.capabilitiesJson = req.body.capabilitiesJson;
+  // Normalize address
+  if (req.body?.addressJson !== undefined) {
+    data.addressJson = req.body.addressJson;
+  } else if (req.body?.address !== undefined && typeof req.body.address === "string") {
+    data.addressJson = req.body.address;
+  }
+
+  // Normalize capabilities
+  if (req.body?.capabilitiesJson !== undefined) {
+    data.capabilitiesJson = req.body.capabilitiesJson;
+  } else if (req.body?.capabilities !== undefined && Array.isArray(req.body.capabilities)) {
+    const capabilitiesJson: Record<string, boolean> = {};
+    req.body.capabilities.forEach((cap: any) => {
+      const key = typeof cap === "string" ? cap : cap?.capability;
+      if (key) capabilitiesJson[key] = true;
+    });
+    data.capabilitiesJson = capabilitiesJson;
+  }
+
   if (req.body?.featuresJson !== undefined) data.featuresJson = req.body.featuresJson;
 
-  await prisma.branch.update({ where: { id }, data });
+  try {
+    await prisma.branch.update({ where: { id }, data });
 
-  const row = await prisma.branch.findUnique({
-    where: { id },
-    include: { org: true, typeLinks: { include: { branchType: true } } },
-  });
+    const row = await prisma.branch.findUnique({
+      where: { id },
+      include: { org: true, typeLinks: { include: { branchType: true } } },
+    });
 
-  return res.json({ success: true, data: row });
+    return res.json({ success: true, data: row });
+  } catch (e: any) {
+    // Handle unique constraint violation for code
+    if (e.code === "P2002" && e.meta?.target?.includes("code")) {
+      return res.status(409).json({
+        success: false,
+        message: "Branch code already exists in this organization"
+      });
+    }
+    throw e;
+  }
 };

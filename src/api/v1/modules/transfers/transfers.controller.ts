@@ -1,6 +1,9 @@
 const service = require("./transfers.service");
 const prisma = require("../../../../infrastructure/db/prismaClient");
 const { INVENTORY_ERROR_CODES } = require("../../constants/inventoryErrors");
+const {
+  getAllowedBranchIdsForInboundReceive,
+} = require("../../services/inboundReceiveBranchAccess.service");
 
 /**
  * POST /api/v1/transfers
@@ -118,6 +121,30 @@ exports.receiveTransfer = async (req, res) => {
     const transferId = parseInt(req.params.id);
     if (!transferId) {
       return res.status(400).json({ success: false, message: "Invalid transfer ID" });
+    }
+
+    const transfer = await prisma.stockTransfer.findUnique({
+      where: { id: transferId },
+      include: { toLocation: { select: { branchId: true } } },
+    });
+    if (!transfer) {
+      return res.status(404).json({ success: false, message: "Transfer not found" });
+    }
+
+    const userPerms = req.user?.permissions || [];
+    const canWriteOrg = userPerms.some((p: string) => p === "inventory.update" || p === "org.write");
+    if (!canWriteOrg) {
+      if (!userPerms.includes("inventory.receive")) {
+        return res.status(403).json({ success: false, message: "Forbidden" });
+      }
+      const allowed = await getAllowedBranchIdsForInboundReceive(userId);
+      const toBranchId = transfer.toLocation?.branchId;
+      if (toBranchId == null || !allowed.includes(toBranchId)) {
+        return res.status(403).json({
+          success: false,
+          message: "Only branch staff at the destination branch can receive this transfer",
+        });
+      }
     }
 
     const { items } = req.body;

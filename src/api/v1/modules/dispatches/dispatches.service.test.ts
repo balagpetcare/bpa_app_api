@@ -18,6 +18,10 @@ jest.mock("../inventory/ledger.service", () => ({
   recordLedgerEntryInTx: jest.fn().mockResolvedValue(undefined),
 }));
 
+jest.mock("../fulfillment/reservation.service", () => ({
+  isFulfillmentReservationEnabled: jest.fn(() => false),
+}));
+
 const prismaMock = require("../../../../infrastructure/db/prismaClient").default;
 const { sendDispatch, receiveDispatch } = require("./dispatches.service");
 
@@ -318,6 +322,7 @@ describe("dispatches.service", () => {
           },
           grn: { create: jest.fn().mockResolvedValue({ id: 1, lines: [] }) },
           stockRequest: { findUnique: jest.fn().mockResolvedValue(null), update: jest.fn() },
+          medicineRequisition: { findFirst: jest.fn().mockResolvedValue(null), update: jest.fn() },
         };
         return cb(tx);
       });
@@ -387,6 +392,7 @@ describe("dispatches.service", () => {
           },
           grn: { create: jest.fn().mockResolvedValue({ id: 1, lines: [] }) },
           stockRequest: { findUnique: jest.fn().mockResolvedValue(null), update: jest.fn() },
+          medicineRequisition: { findFirst: jest.fn().mockResolvedValue(null), update: jest.fn() },
         };
         return cb(tx);
       });
@@ -413,7 +419,7 @@ describe("dispatches.service", () => {
       );
     });
 
-    it("updates StockRequest only to PARTIALLY_RECEIVED or RECEIVED", async () => {
+    it("updates StockRequest only to PARTIALLY_RECEIVED or RECEIVED_FULL", async () => {
       const stockRequestUpdate = jest.fn().mockResolvedValue({});
       prismaMock.$transaction.mockImplementation(async (cb: (tx: any) => Promise<any>) => {
         const tx = {
@@ -450,6 +456,7 @@ describe("dispatches.service", () => {
             findUnique: jest.fn().mockResolvedValue({ id: 100, items: [] }),
             update: stockRequestUpdate,
           },
+          medicineRequisition: { findFirst: jest.fn().mockResolvedValue(null), update: jest.fn() },
         };
         return cb(tx);
       });
@@ -463,7 +470,7 @@ describe("dispatches.service", () => {
         expect.objectContaining({
           where: { id: 100 },
           data: expect.objectContaining({
-            status: expect.stringMatching(/^(PARTIALLY_RECEIVED|RECEIVED)$/),
+            status: expect.stringMatching(/^(PARTIALLY_RECEIVED|RECEIVED_FULL)$/),
           }),
         })
       );

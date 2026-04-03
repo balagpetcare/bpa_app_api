@@ -88,7 +88,7 @@ export async function getPolicyWithDefaults(variantId: number): Promise<Record<s
  */
 export async function listPolicies(
   orgId: number,
-  opts?: { variantId?: number; highRiskOnly?: boolean; skip?: number; take?: number }
+  opts?: { variantId?: number; highRiskOnly?: boolean; skip?: number; take?: number; branchId?: number }
 ): Promise<{ list: any[]; total: number }> {
   const where: any = { orgId };
   if (opts?.variantId != null) where.variantId = opts.variantId;
@@ -98,12 +98,59 @@ export async function listPolicies(
       where,
       skip: opts?.skip ?? 0,
       take: Math.min(opts?.take ?? 50, 100),
-      include: { variant: { select: { id: true, title: true, sku: true } } },
+      include: {
+        variant: {
+          select: {
+            id: true,
+            title: true,
+            sku: true,
+            attributes: true,
+            unit: { select: { code: true, name: true } },
+          },
+        },
+      },
       orderBy: { updatedAt: "desc" },
     }),
     prisma.medicinePolicy.count({ where }),
   ]);
-  return { list, total };
+
+  let enriched: any[] = list;
+  const branchId = opts?.branchId != null && Number.isFinite(Number(opts.branchId)) ? Number(opts.branchId) : null;
+  if (branchId && list.length > 0) {
+    const variantIds = [...new Set(list.map((p: any) => Number(p.variantId)).filter((id) => id > 0))];
+    const locations = await prisma.inventoryLocation.findMany({
+      where: { branchId, isActive: true },
+      select: { id: true },
+      take: 50,
+    });
+    const locIds = locations.map((l) => l.id);
+    const priceByVariant = new Map<number, number>();
+    if (locIds.length > 0 && variantIds.length > 0) {
+      const now = new Date();
+      const prices = await prisma.locationPrice.findMany({
+        where: {
+          variantId: { in: variantIds },
+          locationId: { in: locIds },
+          effectiveFrom: { lte: now },
+          OR: [{ effectiveTo: null }, { effectiveTo: { gte: now } }],
+        },
+        select: { variantId: true, price: true },
+      });
+      for (const row of prices) {
+        const vId = row.variantId;
+        const n = Number(row.price);
+        if (!Number.isFinite(n) || n < 0) continue;
+        const prev = priceByVariant.get(vId);
+        if (prev == null || n < prev) priceByVariant.set(vId, n);
+      }
+    }
+    enriched = list.map((p: any) => ({
+      ...p,
+      branchSellingPrice: priceByVariant.has(Number(p.variantId)) ? priceByVariant.get(Number(p.variantId))! : null,
+    }));
+  }
+
+  return { list: enriched, total };
 }
 
 /**

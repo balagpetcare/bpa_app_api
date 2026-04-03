@@ -9,8 +9,78 @@ import {
   BRANCH_DEFAULT_ROLE,
   BRANCH_DEFAULT_PERMISSIONS,
 } from "../constants/branchRoles";
-
 const prisma = require("../../../infrastructure/db/prismaClient").default;
+
+function parsePermissionOverrides(raw: unknown): Record<string, unknown> {
+  if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return {};
+  return raw as Record<string, unknown>;
+}
+
+function getPendingWarehousePayload(overrides: Record<string, unknown>): Record<string, unknown> | null {
+  const p = overrides.pendingWarehouseAccess;
+  if (!p || typeof p !== "object" || Array.isArray(p)) return null;
+  return p as Record<string, unknown>;
+}
+
+function warehouseIdsEquivalent(a: number | null, b: unknown): boolean {
+  const na = a == null || !Number.isFinite(Number(a)) ? null : Number(a);
+  const nb = b == null || b === "" || !Number.isFinite(Number(b)) ? null : Number(b);
+  return na === nb;
+}
+
+const VALID_WAREHOUSE_STAFF_ROLES = new Set([
+  "WAREHOUSE_MANAGER",
+  "RECEIVING_STAFF",
+  "DISPATCH_STAFF",
+  "INVENTORY_CONTROLLER",
+  "QC_OFFICER",
+  "AUDIT_OFFICER",
+]);
+
+function normalizeWarehouseStaffRole(input: string): string {
+  const u = String(input || "WAREHOUSE_MANAGER").toUpperCase();
+  return VALID_WAREHOUSE_STAFF_ROLES.has(u) ? u : "WAREHOUSE_MANAGER";
+}
+
+function warehouseStaffRoleToMemberRole(
+  wsa: string
+): "WAREHOUSE_MANAGER" | "RECEIVING_STAFF" | "DISPATCH_STAFF" | null {
+  const u = String(wsa || "").toUpperCase();
+  if (u === "WAREHOUSE_MANAGER" || u === "RECEIVING_STAFF" || u === "DISPATCH_STAFF") {
+    return u as "WAREHOUSE_MANAGER" | "RECEIVING_STAFF" | "DISPATCH_STAFF";
+  }
+  return null;
+}
+
+function queueSortTimeMs(row: { requestedAt: Date | null; permissionOverrides: unknown }): number {
+  const overrides = parsePermissionOverrides(row.permissionOverrides);
+  const pend = getPendingWarehousePayload(overrides);
+  const iso = pend?.requestedAt != null ? String(pend.requestedAt) : row.requestedAt;
+  const t = iso ? new Date(iso as string | Date).getTime() : 0;
+  return Number.isFinite(t) ? t : 0;
+}
+
+function decorateOwnerQueueRow<T extends { status: string; permissionOverrides: unknown; requestedAt: Date | null }>(
+  row: T
+) {
+  const overrides = parsePermissionOverrides(row.permissionOverrides);
+  const pend = getPendingWarehousePayload(overrides);
+  const isWhQueue = row.status === "APPROVED" && pend != null;
+  return {
+    ...row,
+    accessRequestKind: isWhQueue ? ("WAREHOUSE_EXTENSION" as const) : ("BRANCH" as const),
+    ownerQueueStatus: row.status === "PENDING" || isWhQueue ? "PENDING" : row.status,
+    queueRequestedAt: isWhQueue && pend?.requestedAt ? String(pend.requestedAt) : row.requestedAt,
+    pendingWarehouseMeta: isWhQueue ? pend : null,
+  };
+}
+
+export type RequestBranchAccessOptions = {
+  requestScope?: "BRANCH" | "WAREHOUSE";
+  warehouseId?: number | null;
+  requestedRole?: string;
+  requestedPermissionKeys?: string[];
+};
 
 export type BranchAccessProfile = {
   status: string;
@@ -21,9 +91,15 @@ export type BranchAccessProfile = {
 };
 
 /**
- * Request branch access for a staff member
+ * Request branch access for a staff member.
+ * For APPROVED users, use options.requestScope === "WAREHOUSE" to queue a warehouse extension (owner queue via permissionOverrides).
  */
-export async function requestBranchAccess(userId: number, branchId: number, role?: string) {
+export async function requestBranchAccess(
+  userId: number,
+  branchId: number,
+  role?: string,
+  options?: RequestBranchAccessOptions
+) {
   try {
     // Check if Prisma Client has the model (safety check using 'in' operator)
     if (!prisma || !('branchAccessPermission' in prisma)) {
@@ -81,6 +157,81 @@ export async function requestBranchAccess(userId: number, branchId: number, role
             },
           });
         }
+        if (options?.requestScope === "WAREHOUSE") {
+          let resolvedWhId: number | null = null;
+          if (options.warehouseId != null && Number.isFinite(Number(options.warehouseId))) {
+            const wh = await prisma.warehouse.findFirst({
+              where: {
+                id: Number(options.warehouseId),
+                branchId,
+                isActive: true,
+              },
+              select: { id: true },
+            });
+            resolvedWhId = wh?.id ?? null;
+          }
+          if (resolvedWhId == null) {
+            const linked = await prisma.warehouse.findFirst({
+              where: { branchId, isActive: true },
+              orderBy: { id: "asc" },
+              select: { id: true },
+            });
+            resolvedWhId = linked?.id ?? null;
+          }
+          if (resolvedWhId == null) {
+            throw new Error("No warehouse is linked to this branch. Contact your administrator.");
+          }
+
+          const prev = parsePermissionOverrides(existing.permissionOverrides);
+          const pend = getPendingWarehousePayload(prev);
+          const sameWh =
+            pend != null &&
+            warehouseIdsEquivalent(resolvedWhId, pend.warehouseId);
+
+          if (pend != null && sameWh) {
+            const nextOverrides = {
+              ...prev,
+              pendingWarehouseAccess: {
+                ...pend,
+                requestedAt: new Date().toISOString(),
+                requestedByUserId: userId,
+              },
+            };
+            return prisma.branchAccessPermission.update({
+              where: { id: existing.id },
+              data: {
+                permissionOverrides: nextOverrides as object,
+                updatedAt: new Date(),
+              },
+            });
+          }
+
+          const roleReq = String(options.requestedRole || "WAREHOUSE_MANAGER").toUpperCase();
+          const nextOverrides: Record<string, unknown> = {
+            ...prev,
+            pendingWarehouseAccess: {
+              requestScope: "WAREHOUSE",
+              warehouseId: resolvedWhId,
+              requestedAt: new Date().toISOString(),
+              requestedByUserId: userId,
+              requestedRole: roleReq,
+              requestedPermissionKeys:
+                options.requestedPermissionKeys && options.requestedPermissionKeys.length > 0
+                  ? options.requestedPermissionKeys
+                  : ["warehouse.view", "warehouse.dashboard.view", "warehouse.operations"],
+            },
+          };
+          delete nextOverrides.warehouseAccessRejection;
+
+          return prisma.branchAccessPermission.update({
+            where: { id: existing.id },
+            data: {
+              permissionOverrides: nextOverrides as object,
+              note: existing.note || "Warehouse access requested",
+              updatedAt: new Date(),
+            },
+          });
+        }
         return existing; // Already approved and active
       }
       // If REVOKED/EXPIRED/SUSPENDED, reset to pending
@@ -124,8 +275,95 @@ export async function requestBranchAccess(userId: number, branchId: number, role
   }
 }
 
+async function fulfillWarehouseAccessApproval(
+  permission: {
+    id: number;
+    branchId: number;
+    userId: number;
+    permissionOverrides: unknown;
+  },
+  approvedByUserId: number
+) {
+  const overrides = parsePermissionOverrides(permission.permissionOverrides);
+  const pend = getPendingWarehousePayload(overrides);
+  if (!pend) {
+    throw new Error("No pending warehouse request");
+  }
+
+  const warehouseId = pend.warehouseId != null ? Number(pend.warehouseId) : null;
+  if (!warehouseId || !Number.isFinite(warehouseId)) {
+    throw new Error("Invalid warehouse in request");
+  }
+
+  const wh = await prisma.warehouse.findFirst({
+    where: { id: warehouseId, branchId: permission.branchId, isActive: true },
+    select: { id: true, orgId: true },
+  });
+  if (!wh) {
+    throw new Error("Warehouse not found for this branch");
+  }
+
+  const roleStr = String(pend.requestedRole || "WAREHOUSE_MANAGER").toUpperCase();
+  const wsaRole = normalizeWarehouseStaffRole(roleStr);
+
+  await prisma.$transaction(async (tx: any) => {
+    const existingAssignment = await tx.warehouseStaffAssignment.findFirst({
+      where: {
+        warehouseId,
+        userId: permission.userId,
+        role: wsaRole,
+      },
+    });
+    if (existingAssignment) {
+      await tx.warehouseStaffAssignment.update({
+        where: { id: existingAssignment.id },
+        data: { isActive: true, removedAt: null },
+      });
+    } else {
+      await tx.warehouseStaffAssignment.create({
+        data: {
+          warehouseId,
+          userId: permission.userId,
+          role: wsaRole,
+          isActive: true,
+        },
+      });
+    }
+
+    const memberRole = warehouseStaffRoleToMemberRole(wsaRole);
+    if (memberRole) {
+      await tx.branchMember.updateMany({
+        where: { branchId: permission.branchId, userId: permission.userId },
+        data: { role: memberRole },
+      });
+    }
+
+    const nextOverrides: Record<string, unknown> = { ...overrides };
+    delete nextOverrides.pendingWarehouseAccess;
+    delete nextOverrides.warehouseAccessRejection;
+    nextOverrides.warehouseAccessGranted = {
+      grantedAt: new Date().toISOString(),
+      grantedByUserId: approvedByUserId,
+      warehouseId,
+      role: wsaRole,
+    };
+
+    await tx.branchAccessPermission.update({
+      where: { id: permission.id },
+      data: {
+        permissionOverrides: nextOverrides as object,
+        updatedAt: new Date(),
+      },
+    });
+  });
+
+  return prisma.branchAccessPermission.findUnique({
+    where: { id: permission.id },
+  });
+}
+
 /**
- * Approve branch access for a staff member
+ * Approve branch access for a staff member (or fulfill a pending warehouse extension on an APPROVED row).
  */
 export async function approveBranchAccess(
   permissionId: number,
@@ -168,6 +406,16 @@ export async function approveBranchAccess(
     }
   }
 
+  const overrides = parsePermissionOverrides(permission.permissionOverrides);
+  const pend = getPendingWarehousePayload(overrides);
+  if (permission.status === "APPROVED" && pend) {
+    return fulfillWarehouseAccessApproval(permission, managerId);
+  }
+
+  if (permission.status !== "PENDING") {
+    throw new Error("Permission request is not pending approval");
+  }
+
   // Validate expiresAt is in the future if provided
   if (expiresAt && new Date(expiresAt) <= new Date()) {
     throw new Error("Expiration date must be in the future");
@@ -185,6 +433,48 @@ export async function approveBranchAccess(
       updatedAt: new Date(),
     },
   });
+}
+
+/**
+ * Owner/manager reject: full branch revoke, or warehouse-only rejection when a pending warehouse extension exists.
+ */
+export async function rejectBranchAccessForOwner(
+  permissionId: number,
+  ownerUserId: number,
+  note?: string
+) {
+  const permission = await prisma.branchAccessPermission.findFirst({
+    where: {
+      id: permissionId,
+      branch: { org: { ownerUserId } },
+    },
+  });
+
+  if (!permission) {
+    throw new Error("Permission not found");
+  }
+
+  const overrides = parsePermissionOverrides(permission.permissionOverrides);
+  const pend = getPendingWarehousePayload(overrides);
+
+  if (permission.status === "APPROVED" && pend) {
+    const next: Record<string, unknown> = { ...overrides };
+    delete next.pendingWarehouseAccess;
+    next.warehouseAccessRejection = {
+      rejectedAt: new Date().toISOString(),
+      rejectedByUserId: ownerUserId,
+      reason: note ?? null,
+    };
+    return prisma.branchAccessPermission.update({
+      where: { id: permissionId },
+      data: {
+        permissionOverrides: next as object,
+        updatedAt: new Date(),
+      },
+    });
+  }
+
+  return revokeBranchAccess(permissionId, ownerUserId, note);
 }
 
 /**
@@ -772,6 +1062,7 @@ export async function getPermissionsForBranch(branchId: number) {
 /**
  * Get branch access list for owner (only branches under orgs owned by ownerUserId).
  * Optional status filter: PENDING | APPROVED | REVOKED | EXPIRED.
+ * PENDING queue includes APPROVED rows with permissionOverrides.pendingWarehouseAccess (warehouse extension).
  */
 export async function getBranchAccessListForOwner(
   ownerUserId: number,
@@ -790,43 +1081,71 @@ export async function getBranchAccessListForOwner(
   }).then((rows) => rows.map((r) => r.id));
   if (branchIds.length === 0) return [];
 
-  const where: { branchId: { in: number[] }; status?: string } = {
-    branchId: { in: branchIds },
-  };
-  if (status) where.status = status;
-
-  const rows = await prisma.branchAccessPermission.findMany({
-    where,
-    include: {
-      user: {
-        select: {
-          id: true,
-          profile: {
-            select: {
-              displayName: true,
-              username: true,
-            },
-          },
-          auth: {
-            select: {
-              email: true,
-              phone: true,
-            },
+  const include = {
+    user: {
+      select: {
+        id: true,
+        profile: {
+          select: {
+            displayName: true,
+            username: true,
           },
         },
-      },
-      branch: {
-        select: {
-          id: true,
-          name: true,
-          org: { select: { id: true, name: true } },
+        auth: {
+          select: {
+            email: true,
+            phone: true,
+          },
         },
       },
     },
-    orderBy: { requestedAt: "desc" },
-  });
+    branch: {
+      select: {
+        id: true,
+        name: true,
+        org: { select: { id: true, name: true } },
+      },
+    },
+  };
 
-  // Attach role from BranchMember for each row
+  let rows: Awaited<ReturnType<typeof prisma.branchAccessPermission.findMany>>;
+
+  if (status === "PENDING") {
+    const pendingRows = await prisma.branchAccessPermission.findMany({
+      where: { branchId: { in: branchIds }, status: "PENDING" },
+      include,
+      orderBy: { requestedAt: "desc" },
+    });
+    const approvedRows = await prisma.branchAccessPermission.findMany({
+      where: { branchId: { in: branchIds }, status: "APPROVED" },
+      include,
+      orderBy: { requestedAt: "desc" },
+    });
+    const whPending = approvedRows.filter(
+      (row) => getPendingWarehousePayload(parsePermissionOverrides(row.permissionOverrides)) != null
+    );
+    const merged = [...pendingRows, ...whPending];
+    merged.sort((a, b) => queueSortTimeMs(b) - queueSortTimeMs(a));
+    rows = merged;
+  } else {
+    const where: { branchId: { in: number[] }; status?: string } = {
+      branchId: { in: branchIds },
+    };
+    if (status) where.status = status;
+
+    rows = await prisma.branchAccessPermission.findMany({
+      where,
+      include,
+      orderBy: { requestedAt: "desc" },
+    });
+
+    if (status === "APPROVED") {
+      rows = rows.filter(
+        (row) => !getPendingWarehousePayload(parsePermissionOverrides(row.permissionOverrides))
+      );
+    }
+  }
+
   const withRole = await Promise.all(
     rows.map(async (row) => {
       const member = await prisma.branchMember.findUnique({
@@ -838,7 +1157,7 @@ export async function getBranchAccessListForOwner(
       return { ...row, role: member?.role ?? "STAFF" };
     })
   );
-  return withRole;
+  return withRole.map((row) => decorateOwnerQueueRow(row));
 }
 
 async function ensureOwnerOwnsBranch(ownerUserId: number, branchId: number) {

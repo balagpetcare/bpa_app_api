@@ -29,6 +29,7 @@ router.use(auth);
 router.get('/me', ctrl.getOwnerMe);
 router.get('/me/pets', ctrl.listMyPets);
 router.get('/me/pets/:petId', ctrl.getMyPet);
+router.get('/me/pending-appointments', ctrl.getMyPendingAppointments);
 router.get('/profile', ctrl.getOwnerProfile);
 router.put('/profile', ctrl.upsertOwnerProfile);
 router.get('/kyc', ctrl.getOwnerKyc);
@@ -373,9 +374,12 @@ router.get('/branch-access/:id', ctrl.getBranchAccessRequestDetail);
 
 // Staff invitations (Owner list / approve / reject / resend / cancel)
 router.get('/invitations', ctrl.listOwnerInvitations);
+router.get('/invitations/:id', ctrl.getOwnerInvitation);
+router.patch('/invitations/:id', ctrl.updateOwnerInvitation);
 router.post('/invitations/:id/approve', ctrl.approveOwnerInvitation);
 router.post('/invitations/:id/reject', ctrl.rejectOwnerInvitation);
 router.post('/invitations/:id/resend', ctrl.resendOwnerInvitation);
+router.post('/invitations/:id/reinvite', ctrl.reinviteOwnerInvitation);
 router.post('/invitations/:id/cancel', ctrl.cancelOwnerInvitation);
 
 router.get('/staff-access/staff', ctrl.listOwnerStaffAccess);
@@ -475,6 +479,16 @@ router.get('/overview/logs', delegationCtrl.getOverviewLogs);
 const onboardingCtrl = require('./onboarding.controller');
 router.get('/onboarding/status', onboardingCtrl.getOnboardingStatus);
 router.post('/onboarding/start', ensureOwnerKyc, onboardingCtrl.startOnboarding);
+
+// V2 Owner Onboarding: Step Wizard with Draft Persistence
+const onboardingV2Ctrl = require('./ownerOnboarding.controller');
+router.get('/onboarding/state', onboardingV2Ctrl.getState);
+router.post('/onboarding/path', onboardingV2Ctrl.savePath);
+router.post('/onboarding/draft', onboardingV2Ctrl.saveDraft);
+router.get('/onboarding/organizations/options', onboardingV2Ctrl.getOrganizationOptions);
+router.post('/onboarding/complete', ensureOwnerKyc, onboardingV2Ctrl.complete);
+router.post('/onboarding/join-existing', onboardingV2Ctrl.joinExisting);
+router.post('/onboarding/reset', onboardingV2Ctrl.reset);
 
 // Branch Manager Control: policy and escalations (owner only)
 const ownerPolicyCtrl = require('./ownerPolicy.controller');

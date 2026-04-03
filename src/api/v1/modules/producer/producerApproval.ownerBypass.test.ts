@@ -105,6 +105,7 @@ describe("producer approval owner bypass", () => {
     const authProductFindFirst = jest.fn().mockResolvedValue({ id: productId });
     const producerApprovalUpsert = jest.fn().mockResolvedValue(approvalRow);
     const mockPrisma = {
+      producerOrg: { findUnique: jest.fn().mockResolvedValue({ status: "VERIFIED" }) },
       authProduct: { findFirst: authProductFindFirst },
       producerApproval: { upsert: producerApprovalUpsert },
     };

@@ -180,7 +180,11 @@ export async function previewImport(
       const bySlug = itemBySlug.get(slug);
       const existing = byCode ?? bySlug;
       if (existing) {
-        duplicates.push({ rowIndex: i, matchType: row.itemCode ? "itemCode" : "slug", existingId: existing.id });
+        duplicates.push({
+          rowIndex: i,
+          matchType: row.itemCode ? "itemCode" : "slug",
+          existingId: (existing as { id: number }).id,
+        });
         proposedActions.push(action === "create" ? "skip" : action === "update" ? "update" : "update");
       } else {
         proposedActions.push("create");

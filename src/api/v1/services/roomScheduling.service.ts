@@ -108,7 +108,7 @@ export async function getScheduleBoard(
 
   const conflicts: { appointmentId: number; roomId: number; overlapsWith: number[] }[] = [];
   for (const [rid, list] of byRoom) {
-    const bufferMin = bufferByRoomId.get(rid) ?? 0;
+    const bufferMin = Number(bufferByRoomId.get(rid) ?? 0);
     const sorted = [...list].sort(
       (x: any, y: any) => new Date(x.scheduledStartAt).getTime() - new Date(y.scheduledStartAt).getTime()
     );

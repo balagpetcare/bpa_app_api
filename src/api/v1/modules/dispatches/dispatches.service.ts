@@ -4,10 +4,15 @@
  */
 import prisma from "../../../../infrastructure/db/prismaClient";
 const ledgerService = require("../inventory/ledger.service");
+const { isFulfillmentReservationEnabled } = require("../fulfillment/reservation.service");
+const stockRequestsService = require("../stock_requests/stock_requests.service");
 
 export type CreateDispatchInput = {
   orgId: number;
-  stockRequestId: number;
+  /** Stock-request path (legacy challan flow). */
+  stockRequestId?: number | null;
+  /** Medicine requisition pick handoff; mutually exclusive with stockRequestId. */
+  medicineRequisitionId?: number | null;
   fromLocationId: number;
   toLocationId: number;
   items: Array<{ variantId: number; lotId: number; quantity: number }>;
@@ -22,6 +27,8 @@ export type CreateDispatchInput = {
     note?: string;
   };
   createdByUserId?: number;
+  /** When set, validates completed pick list matches this dispatch (enterprise path). */
+  pickListId?: number;
 };
 
 export type ListDispatchesFilter = {
@@ -104,34 +111,120 @@ export async function getDispatchById(id: number) {
           lot: { select: { id: true, lotCode: true, expDate: true } },
         },
       },
+      proofOfDelivery: true,
+      pickList: {
+        include: {
+          allocationPlan: { select: { id: true, stockRequestId: true, medicineRequisitionId: true } },
+        },
+      },
     },
   });
 }
 
 export async function createDispatch(data: CreateDispatchInput) {
-  const request = await prisma.stockRequest.findUnique({
-    where: { id: data.stockRequestId },
-    include: { items: true },
-  });
-  if (!request) throw new Error("Stock request not found");
-  if (request.orgId !== data.orgId) throw new Error("Stock request does not belong to organization");
-  if (!["SUBMITTED", "OWNER_REVIEW", "APPROVED", "FULFILLED_PARTIAL", "FULFILLED_FULL"].includes(request.status)) {
-    throw new Error(`Request cannot be dispatched in status ${request.status}`);
+  const hasSr = data.stockRequestId != null && data.stockRequestId !== undefined;
+  const hasMr = data.medicineRequisitionId != null && data.medicineRequisitionId !== undefined;
+  if (hasSr === hasMr) {
+    throw new Error("Provide exactly one of stockRequestId or medicineRequisitionId");
   }
   if (!data.items?.length) throw new Error("At least one item is required");
+
+  let branchIdForToLocation: number;
+
+  if (hasSr) {
+    const request = await prisma.stockRequest.findUnique({
+      where: { id: data.stockRequestId! },
+      include: { items: true },
+    });
+    if (!request) throw new Error("Stock request not found");
+    if (request.orgId !== data.orgId) throw new Error("Stock request does not belong to organization");
+    if (
+      ![
+        "SUBMITTED",
+        "OWNER_REVIEW",
+        "APPROVED",
+        "FULFILLED_PARTIAL",
+        "FULFILLED_FULL",
+        "PARTIALLY_DISPATCHED",
+      ].includes(request.status)
+    ) {
+      throw new Error(`Request cannot be dispatched in status ${request.status}`);
+    }
+    branchIdForToLocation = request.branchId;
+  } else {
+    const mr = await prisma.medicineRequisition.findUnique({
+      where: { id: data.medicineRequisitionId! },
+      select: {
+        orgId: true,
+        branchId: true,
+        status: true,
+        stockDispatchId: true,
+      },
+    });
+    if (!mr) throw new Error("Medicine requisition not found");
+    if (mr.orgId !== data.orgId) throw new Error("Medicine requisition does not belong to organization");
+    if (mr.stockDispatchId != null) {
+      throw new Error("Medicine requisition already linked to a dispatch");
+    }
+    if (!["APPROVED", "PARTIALLY_APPROVED", "READY_TO_DISPATCH"].includes(mr.status)) {
+      throw new Error(`Medicine requisition cannot be dispatched in status ${mr.status}`);
+    }
+    branchIdForToLocation = mr.branchId;
+  }
+
+  if (data.pickListId != null) {
+    const pl = await prisma.pickList.findFirst({
+      where: { id: data.pickListId, orgId: data.orgId, status: "COMPLETED" },
+      include: {
+        lines: true,
+        allocationPlan: { select: { stockRequestId: true, medicineRequisitionId: true } },
+      },
+    });
+    if (!pl) throw new Error("Completed pick list not found for organization");
+    if (hasSr) {
+      if (pl.allocationPlan.stockRequestId !== data.stockRequestId) {
+        throw new Error("Pick list does not belong to this stock request");
+      }
+    } else {
+      if (pl.allocationPlan.medicineRequisitionId !== data.medicineRequisitionId) {
+        throw new Error("Pick list does not belong to this medicine requisition");
+      }
+    }
+    if (pl.fromLocationId !== data.fromLocationId) {
+      throw new Error("Pick list fromLocation does not match dispatch fromLocation");
+    }
+    const activeLines = pl.lines.filter((l) => l.quantityPicked > 0);
+    const pickSlices = activeLines
+      .map((l) => ({
+        k: `${l.variantId}:${l.lotId}`,
+        qty: l.quantityPicked,
+      }))
+      .sort((a, b) => a.k.localeCompare(b.k));
+    const bodySlices = data.items
+      .map((i) => ({ k: `${i.variantId}:${i.lotId}`, qty: i.quantity }))
+      .sort((a, b) => a.k.localeCompare(b.k));
+    if (pickSlices.length !== bodySlices.length) {
+      throw new Error("Dispatch items do not match picked lines (partial pick: only lines with quantity > 0)");
+    }
+    for (let i = 0; i < pickSlices.length; i++) {
+      if (pickSlices[i].k !== bodySlices[i].k || pickSlices[i].qty !== bodySlices[i].qty) {
+        throw new Error("Dispatch items do not match pick list lines");
+      }
+    }
+  }
 
   const toLocation = await prisma.inventoryLocation.findUnique({
     where: { id: data.toLocationId },
     select: { branchId: true },
   });
-  if (!toLocation || toLocation.branchId !== request.branchId) {
+  if (!toLocation || toLocation.branchId !== branchIdForToLocation) {
     throw new Error("To location must belong to request branch");
   }
 
   const dispatch = await prisma.stockDispatch.create({
     data: {
       orgId: data.orgId,
-      stockRequestId: data.stockRequestId,
+      stockRequestId: hasSr ? data.stockRequestId! : null,
       fromLocationId: data.fromLocationId,
       toLocationId: data.toLocationId,
       status: "CREATED",
@@ -167,6 +260,13 @@ export async function createDispatch(data: CreateDispatchInput) {
     },
   });
 
+  if (hasMr) {
+    await prisma.medicineRequisition.update({
+      where: { id: data.medicineRequisitionId! },
+      data: { stockDispatchId: dispatch.id },
+    });
+  }
+
   return dispatch;
 }
 
@@ -189,11 +289,28 @@ export async function sendDispatch(dispatchId: number, createdByUserId?: number)
           locationId_lotId: { locationId: dispatch.fromLocationId, lotId: item.lotId },
         },
       });
-      const available = lotBalance?.onHandQty ?? 0;
-      if (available < item.quantityDispatched) {
+      const onHand = lotBalance?.onHandQty ?? 0;
+      const reserved = lotBalance?.reservedQty ?? 0;
+      // Unreserved + reserved must cover dispatch (release then OUT consumes unreserved).
+      if (onHand + reserved < item.quantityDispatched) {
         throw new Error(
-          `Insufficient lot stock for variant ${item.variantId} lot ${item.lotId}. Available: ${available}, Required: ${item.quantityDispatched}`
+          `Insufficient lot stock for variant ${item.variantId} lot ${item.lotId}. Available (unreserved+reserved): ${onHand + reserved}, Required: ${item.quantityDispatched}`
         );
+      }
+      const releaseQty =
+        isFulfillmentReservationEnabled() ? Math.min(item.quantityDispatched, reserved) : 0;
+      if (releaseQty > 0) {
+        await ledgerService.recordLedgerEntryInTx(tx, {
+          orgId,
+          locationId: dispatch.fromLocationId,
+          variantId: item.variantId,
+          lotId: item.lotId,
+          type: "RELEASE_FULFILLMENT_RESERVE",
+          quantityDelta: -releaseQty,
+          refType: "DISPATCH",
+          refId: String(dispatchId),
+          createdByUserId: createdByUserId ?? undefined,
+        });
       }
       await ledgerService.recordLedgerEntryInTx(tx, {
         orgId,
@@ -226,10 +343,13 @@ export async function sendDispatch(dispatchId: number, createdByUserId?: number)
       },
     });
 
-    const request = await tx.stockRequest.findUnique({
-      where: { id: dispatch.stockRequestId },
-      include: { items: true, dispatches: { select: { id: true }, where: { status: { not: "CREATED" } } } },
-    });
+    const request =
+      dispatch.stockRequestId != null
+        ? await tx.stockRequest.findUnique({
+            where: { id: dispatch.stockRequestId },
+            include: { items: true, dispatches: { select: { id: true }, where: { status: { not: "CREATED" } } } },
+          })
+        : null;
     if (request) {
       const totalRequested = request.items.reduce((s: number, i: any) => s + i.requestedQty, 0);
       const totalDispatched = await tx.stockDispatchItem.aggregate({
@@ -241,6 +361,16 @@ export async function sendDispatch(dispatchId: number, createdByUserId?: number)
       await tx.stockRequest.update({
         where: { id: request.id },
         data: { status: newStatus },
+      });
+    }
+
+    const linkedMr = await tx.medicineRequisition.findFirst({
+      where: { stockDispatchId: dispatchId },
+    });
+    if (linkedMr && ["APPROVED", "PARTIALLY_APPROVED", "READY_TO_DISPATCH"].includes(linkedMr.status)) {
+      await tx.medicineRequisition.update({
+        where: { id: linkedMr.id },
+        data: { status: "DISPATCHED" },
       });
     }
 
@@ -441,17 +571,18 @@ export async function receiveDispatch(
       },
     })!;
 
-    const stockRequest = await tx.stockRequest.findUnique({
-      where: { id: dispatch.stockRequestId },
-      include: { items: true, dispatches: { select: { id: true, status: true } } },
-    });
-    if (stockRequest) {
-      const dispatches = await tx.stockDispatch.findMany({ where: { stockRequestId: stockRequest.id }, select: { id: true, status: true } });
-      const allDispatchesDelivered = dispatches.every((d: any) => d.status === "DELIVERED");
-      const newRequestStatus = allDispatchesDelivered ? "RECEIVED" : "PARTIALLY_RECEIVED";
-      await tx.stockRequest.update({
-        where: { id: stockRequest.id },
-        data: { status: newRequestStatus },
+    if (dispatch.stockRequestId != null) {
+      await stockRequestsService.markStockRequestStatusFromDispatchReceive(tx, dispatch.stockRequestId);
+    }
+
+    const mrLinked = await tx.medicineRequisition.findFirst({ where: { stockDispatchId: dispatchId } });
+    if (mrLinked) {
+      await tx.medicineRequisition.update({
+        where: { id: mrLinked.id },
+        data: {
+          status: allReceived ? "RECEIVED" : "PARTIALLY_RECEIVED",
+          ...(allReceived ? { completedAt: new Date() } : {}),
+        },
       });
     }
 
@@ -460,6 +591,65 @@ export async function receiveDispatch(
 }
 
 /** Incoming dispatches for a branch (toLocation.branchId = branchId), status IN_TRANSIT. */
+export async function createDispatchDiscrepancy(data: {
+  orgId: number;
+  stockDispatchId: number;
+  variantId: number;
+  lotId?: number | null;
+  reasonCode: string;
+  quantity: number;
+  notes?: string | null;
+}) {
+  const dispatch = await prisma.stockDispatch.findFirst({
+    where: { id: data.stockDispatchId, orgId: data.orgId },
+    select: { id: true },
+  });
+  if (!dispatch) throw new Error("Dispatch not found for organization");
+
+  return prisma.stockDispatchDiscrepancy.create({
+    data: {
+      orgId: data.orgId,
+      stockDispatchId: data.stockDispatchId,
+      variantId: data.variantId,
+      lotId: data.lotId ?? null,
+      reasonCode: data.reasonCode,
+      quantity: data.quantity,
+      notes: data.notes ?? null,
+    },
+  });
+}
+
+export async function listDispatchDiscrepancies(stockDispatchId: number, orgId: number) {
+  return prisma.stockDispatchDiscrepancy.findMany({
+    where: { stockDispatchId, orgId },
+    orderBy: { id: "desc" },
+    include: {
+      variant: { select: { id: true, sku: true, title: true } },
+      lot: { select: { id: true, lotCode: true } },
+    },
+  });
+}
+
+export async function resolveDispatchDiscrepancy(
+  discrepancyId: number,
+  orgId: number,
+  data: { resolutionNote?: string | null; resolvedByUserId: number }
+) {
+  const row = await prisma.stockDispatchDiscrepancy.findFirst({
+    where: { id: discrepancyId, orgId },
+  });
+  if (!row) throw new Error("Discrepancy not found");
+  return prisma.stockDispatchDiscrepancy.update({
+    where: { id: discrepancyId },
+    data: {
+      status: "RESOLVED",
+      resolvedAt: new Date(),
+      resolvedByUserId: data.resolvedByUserId,
+      resolutionNote: data.resolutionNote ?? null,
+    },
+  });
+}
+
 export async function getIncomingDispatchesForBranch(branchId: number, orgId?: number) {
   const where: any = {
     toLocation: { branchId },

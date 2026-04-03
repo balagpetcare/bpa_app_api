@@ -69,7 +69,7 @@ All clinic routes are under `/api/v1/clinic/branches/:branchId/...` and require 
 | clinic.emr.read | — | list/get visits | list/get | — | summary, orders | list requisitions | dashboard |
 | clinic.emr.write | — | create/update, vitals, notes, attachments, discharge | apply | — | create invoice | — | — |
 | clinic.prescription.read | — | — | — | list/get/verify | order-lines | — | — |
-| clinic.prescription.write | — | — | — | create, finalize, dispense | — | — | — |
+| clinic.prescription.write [RETIRED] | — | — | — | **Not used by clinic Rx routes** — registry/seed only; use `create`/`edit`/`finalize` + DOCTOR middleware for authoring; dispense: `medicine.dispense.issue` | — | — | — |
 | clinic.lab.read | — | — | — | — | — | list by visit | — |
 | clinic.lab.write | — | — | — | — | — | create requisition, add report | — |
 | clinic.overview.read | — | — | — | — | — | — | dashboard |

@@ -2,6 +2,7 @@
  * Treatment Course Service (CCMLPA) — multi-day injection courses and dose tracking.
  * Extended for Internal Order + Vial Activation Workflow: day-wise schedule, revisions, hold/stop.
  */
+import type { Prisma } from "@prisma/client";
 import prisma from "../../../../infrastructure/db/prismaClient";
 
 export type CreateCourseInput = {
@@ -210,7 +211,7 @@ export async function addRevision(
       revisionNumber: count + 1,
       changedByUserId,
       changeType,
-      changeDetails: changeDetails ?? undefined,
+      changeDetails: (changeDetails ?? undefined) as Prisma.InputJsonValue | undefined,
     },
   });
 }

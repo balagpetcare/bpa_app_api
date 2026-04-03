@@ -287,6 +287,126 @@ async function getDoctorContributionReport(branchId, dateFrom, dateTo) {
   };
 }
 
+/** Max date range (days) for visit completion audit to avoid heavy queries. See Phase 6 doc for indexing. */
+const VISIT_COMPLETION_AUDIT_MAX_DAYS = 365;
+/** Default and max limit for recentOverrides in one response. */
+const VISIT_COMPLETION_AUDIT_RECENT_LIMIT_DEFAULT = 20;
+const VISIT_COMPLETION_AUDIT_RECENT_LIMIT_MAX = 100;
+
+/**
+ * Visit completion audit: completed with override count, recent overrides, most common unmet.
+ * Reads from doctor_audit_logs (VISIT_COMPLETED, VISIT_COMPLETED_OVERRIDE). Branch-scoped for manager visibility.
+ * Supports maskOverrideReason (privacy), date-range guardrails, and pagination cap on recentOverrides.
+ */
+async function getVisitCompletionAuditSummary(
+  branchId,
+  dateFrom,
+  dateTo,
+  opts: { maskOverrideReason?: boolean; recentLimit?: number } = {}
+) {
+  const { maskOverrideReason = false, recentLimit = VISIT_COMPLETION_AUDIT_RECENT_LIMIT_DEFAULT } = opts;
+  const start = new Date(dateFrom + "T00:00:00.000Z");
+  const end = new Date(dateTo + "T23:59:59.999Z");
+
+  const limit = Math.min(
+    Math.max(1, Number(recentLimit) || VISIT_COMPLETION_AUDIT_RECENT_LIMIT_DEFAULT),
+    VISIT_COMPLETION_AUDIT_RECENT_LIMIT_MAX
+  );
+
+  const logs = await prisma.doctorAuditLog.findMany({
+    where: {
+      branchId: Number(branchId),
+      action: { in: ["VISIT_COMPLETED", "VISIT_COMPLETED_OVERRIDE"] },
+      createdAt: { gte: start, lte: end },
+    },
+    orderBy: { createdAt: "desc" },
+    select: { id: true, action: true, newValue: true, changedByUserId: true, createdAt: true },
+  });
+
+  const totalCompleted = logs.length;
+  const overrideLogs = logs.filter((l) => l.action === "VISIT_COMPLETED_OVERRIDE");
+  const completedWithOverride = overrideLogs.length;
+
+  const recentOverrides = overrideLogs.slice(0, limit).map((l) => {
+    const v = l.newValue && typeof l.newValue === "object" ? l.newValue : {};
+    return {
+      visitId: v.visitId,
+      appointmentId: v.appointmentId,
+      completedAt: v.completedAt,
+      completedByUserId: v.completedByUserId,
+      overrideReason: maskOverrideReason && v.overrideReason ? "[REDACTED]" : v.overrideReason,
+      unmet: v.unmet,
+      visitContext: v.visitContext,
+      createdAt: l.createdAt,
+    };
+  });
+
+  const unmetCounts = new Map();
+  for (const l of overrideLogs) {
+    const v = l.newValue && typeof l.newValue === "object" ? l.newValue : {};
+    const unmet = Array.isArray(v.unmet) ? v.unmet : [];
+    for (const u of unmet) {
+      const key = String(u).trim();
+      if (key) unmetCounts.set(key, (unmetCounts.get(key) || 0) + 1);
+    }
+  }
+  const mostCommonUnmet = Array.from(unmetCounts.entries())
+    .map(([label, count]) => ({ label, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 10);
+
+  return {
+    branchId: Number(branchId),
+    period: { from: dateFrom, to: dateTo },
+    totalCompleted,
+    completedWithOverride,
+    overrideRate: totalCompleted > 0 ? Math.round((completedWithOverride / totalCompleted) * 100) : 0,
+    recentOverrides,
+    mostCommonUnmet,
+  };
+}
+
+/** Surgery revenue: surgeries in period with invoice totals (Phase 3). */
+async function getSurgeryRevenueReport(branchId, dateFrom, dateTo) {
+  const start = new Date(dateFrom);
+  const end = new Date(dateTo);
+  end.setHours(23, 59, 59, 999);
+
+  const cases = await prisma.surgeryCase.findMany({
+    where: {
+      branchId: Number(branchId),
+      status: { notIn: ["CANCELLED"] },
+      scheduledStartAt: { gte: start, lte: end },
+    },
+    include: {
+      service: { select: { id: true, name: true } },
+      primaryDoctor: { select: { id: true, user: { select: { profile: { select: { displayName: true } } } } } },
+      clinicInvoices: {
+        take: 1,
+        orderBy: { id: "desc" },
+        include: { order: { select: { totalAmount: true, paymentStatus: true } } },
+      },
+    },
+    orderBy: { scheduledStartAt: "asc" },
+  });
+
+  const items = cases.map((c) => {
+    const inv = c.clinicInvoices?.[0];
+    return {
+      id: c.id,
+      caseNumber: c.caseNumber,
+      status: c.status,
+      scheduledStartAt: c.scheduledStartAt,
+      service: c.service,
+      primaryDoctor: c.primaryDoctor?.user?.profile?.displayName,
+      totalAmount: inv?.order ? Number(inv.order.totalAmount ?? 0) : null,
+      paymentStatus: inv?.order?.paymentStatus ?? null,
+    };
+  });
+  const totalRevenue = items.reduce((s, i) => s + (i.totalAmount ?? 0), 0);
+  return { branchId: Number(branchId), period: { from: start, to: end }, items, totalRevenue, count: items.length };
+}
+
 module.exports = {
   getDashboardSummary,
   getProfitabilityReport,
@@ -294,4 +414,6 @@ module.exports = {
   getDiscountAnalysisReport,
   getInventoryVarianceReport,
   getDoctorContributionReport,
+  getVisitCompletionAuditSummary,
+  getSurgeryRevenueReport,
 };

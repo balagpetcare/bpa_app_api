@@ -35,7 +35,8 @@ export async function listTickets(prisma: PrismaClient, params: ListTicketsParam
   if (params.category) where.category = params.category;
   if (params.producerOrgId != null) where.producerOrgId = params.producerOrgId;
   if (params.assignedToUserId !== undefined) {
-    where.assignedToUserId = params.assignedToUserId === null || params.assignedToUserId === "" ? null : Number(params.assignedToUserId);
+    const raw = params.assignedToUserId as unknown;
+    where.assignedToUserId = raw === null || raw === "" ? null : Number(raw);
   }
   if (params.dateFrom) {
     where.createdAt = { ...((where.createdAt as object) || {}), gte: new Date(params.dateFrom as string) };

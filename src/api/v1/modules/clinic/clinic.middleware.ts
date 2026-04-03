@@ -82,6 +82,38 @@ function requireClinicPermission(...requiredPerms: string[]) {
 }
 
 /**
+ * After requireClinicPermission: only veterinarians (ClinicStaffProfile.staffType === DOCTOR) may mutate prescriptions.
+ * Sets req.clinicDoctorBranchMemberId to BranchMember.id for the current user on this branch.
+ */
+function requireClinicDoctorStaffForPrescriptionAuthoring() {
+  return async (req: any, res: any, next: any) => {
+    const userId = req.user?.id;
+    const branchId = req.clinicBranchId;
+    if (!userId || branchId == null) {
+      return sendClinicError(res, 401, "Unauthorized", CLINIC_ERROR_CODES.UNAUTHORIZED);
+    }
+
+    const member = await prisma.branchMember.findFirst({
+      where: { branchId: Number(branchId), userId: Number(userId), status: "ACTIVE" },
+      include: { clinicStaffProfile: { select: { staffType: true } } },
+    });
+
+    const isDoctor = member?.clinicStaffProfile?.staffType === "DOCTOR";
+    if (!member || !isDoctor) {
+      return sendClinicError(
+        res,
+        403,
+        "Only veterinarians may create or modify prescriptions",
+        CLINIC_ERROR_CODES.PRESCRIPTION_FORBIDDEN
+      );
+    }
+
+    req.clinicDoctorBranchMemberId = member.id;
+    next();
+  };
+}
+
+/**
  * Optional: validate kiosk/screen read-only token for waiting screen (branch-scoped).
  * For now returns 401 if no valid token; can be extended to accept a short-lived token in header or query.
  */
@@ -121,6 +153,7 @@ function requireClinicKioskToken() {
 
 module.exports = {
   requireClinicPermission,
+  requireClinicDoctorStaffForPrescriptionAuthoring,
   requireClinicKioskToken,
   getBranchIdFromRequest,
   CLINIC_TYPE_CODE,

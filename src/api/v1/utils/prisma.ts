@@ -1,7 +1,7 @@
-const { PrismaClient } = require('@prisma/client');
-
-// Use a single Prisma client instance
-const prisma = new PrismaClient();
+/**
+ * Shared Prisma instance for modules that require this path.
+ */
+const prisma = require("../../../infrastructure/db/prismaClient");
 
 module.exports = { prisma };
 

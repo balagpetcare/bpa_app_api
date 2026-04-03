@@ -49,23 +49,53 @@ export async function requestAccess(req: Request, res: Response, next: NextFunct
       return res.status(401).json({ success: false, message: "Unauthorized" });
     }
 
-    const { branchId, role: requestedRole } = req.body;
+    const { branchId, role: requestedRole, requestScope, warehouseId, requestedPermissionKeys } = req.body;
     if (!branchId || !Number.isFinite(Number(branchId))) {
       return res.status(400).json({ success: false, message: "Invalid branchId" });
     }
 
     const normalizedRole = requestedRole ? String(requestedRole).toUpperCase() : undefined;
-    const permission = await requestBranchAccess(userId, Number(branchId), normalizedRole);
+    const scopeRaw = requestScope != null ? String(requestScope).toUpperCase() : "";
+    const isWarehouseScope = scopeRaw === "WAREHOUSE";
+    const whId =
+      warehouseId != null && Number.isFinite(Number(warehouseId)) ? Number(warehouseId) : undefined;
+    const permKeys = Array.isArray(requestedPermissionKeys)
+      ? requestedPermissionKeys.map((k: unknown) => String(k))
+      : undefined;
 
-    // If this is a new pending request, notify manager, owner, and send staff confirmation
-    if (permission.status === "PENDING" && permission.requestedAt) {
-      // Check if this was just created (not updated from another status)
-      const isNewRequest = new Date(permission.requestedAt).getTime() > Date.now() - 5000;
-      if (isNewRequest) {
+    const permission = await requestBranchAccess(userId, Number(branchId), normalizedRole, {
+      requestScope: isWarehouseScope ? "WAREHOUSE" : "BRANCH",
+      warehouseId: whId,
+      requestedRole: normalizedRole,
+      requestedPermissionKeys: permKeys,
+    });
+
+    const overrides = permission?.permissionOverrides;
+    const ov =
+      overrides && typeof overrides === "object" && !Array.isArray(overrides)
+        ? (overrides as Record<string, unknown>)
+        : {};
+    const pendingWh = ov.pendingWarehouseAccess && typeof ov.pendingWarehouseAccess === "object";
+
+    const updatedMs = permission.updatedAt ? new Date(permission.updatedAt as Date).getTime() : 0;
+    const isRecentUpdate = updatedMs > Date.now() - 10000;
+    const notifyInbox =
+      isRecentUpdate &&
+      (permission.status === "PENDING" ||
+        (permission.status === "APPROVED" && pendingWh));
+
+    if (notifyInbox) {
+      const isNewRequest =
+        permission.status === "PENDING" &&
+        new Date(permission.requestedAt as Date).getTime() > Date.now() - 5000;
+      const isNewWarehouseQueue = permission.status === "APPROVED" && pendingWh;
+      if (isNewRequest || isNewWarehouseQueue) {
         notifyManagerOfAccessRequest(Number(branchId), userId).catch((err) => {
           console.error("[CONTROLLER] Failed to notify manager:", err);
         });
-        notifyOwnerOfAccessRequest(Number(branchId), userId, permission.id).catch((err) => {
+        notifyOwnerOfAccessRequest(Number(branchId), userId, permission.id, {
+          requestKind: isWarehouseScope || pendingWh ? "WAREHOUSE" : "BRANCH",
+        }).catch((err) => {
           console.error("[CONTROLLER] Failed to notify owner:", err);
         });
         notifyStaffOfRequestSubmitted(userId, Number(branchId)).catch((err) => {
@@ -74,15 +104,19 @@ export async function requestAccess(req: Request, res: Response, next: NextFunct
       }
     }
 
+    let message = "Access request updated.";
+    if (permission.status === "PENDING") {
+      message = "Access request submitted. Waiting for manager approval.";
+    } else if (permission.status === "APPROVED" && pendingWh) {
+      message = "Warehouse access request submitted. Waiting for owner or manager approval.";
+    } else if (permission.status === "APPROVED") {
+      message = "You already have access to this branch.";
+    }
+
     return res.status(200).json({
       success: true,
       data: permission,
-      message:
-        permission.status === "PENDING"
-          ? "Access request submitted. Waiting for manager approval."
-          : permission.status === "APPROVED"
-            ? "You already have access to this branch."
-            : "Access request updated.",
+      message,
     });
   } catch (error: any) {
     return res.status(400).json({

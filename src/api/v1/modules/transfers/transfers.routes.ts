@@ -45,7 +45,7 @@ router.post(
 // POST /api/v1/transfers/:id/receive - Receive transfer (TRANSFER_IN + optional DAMAGE/EXPIRED)
 router.post(
   "/:id/receive",
-  requirePermission("inventory.update", "org.write"),
+  requirePermission("inventory.update", "org.write", "inventory.receive"),
   controller.receiveTransfer
 );
 

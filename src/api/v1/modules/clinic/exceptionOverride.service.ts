@@ -125,7 +125,7 @@ export async function requestSupervisorOverride(
       status: "PENDING",
     },
     include: {
-      requestedBy: { select: { id: true }, profile: { select: { displayName: true } } },
+      requestedBy: { select: { id: true, profile: { select: { displayName: true } } } },
     },
   });
 }
@@ -154,8 +154,8 @@ export async function approveOverride(
       approvedAt: new Date(),
     },
     include: {
-      requestedBy: { select: { id: true }, profile: { select: { displayName: true } } },
-      approvedBy: { select: { id: true }, profile: { select: { displayName: true } } },
+      requestedBy: { select: { id: true, profile: { select: { displayName: true } } } },
+      approvedBy: { select: { id: true, profile: { select: { displayName: true } } } },
     },
   });
   const todayStart = new Date();

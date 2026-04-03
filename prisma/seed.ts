@@ -1,4 +1,5 @@
-import { PrismaClient } from "@prisma/client";
+import "dotenv/config";
+import prisma from "../src/infrastructure/db/prismaClient";
 import seedBaseBdLocations from "./seeders/seedBaseBdLocations";
 import { runDhakaCitySeed } from "./seeders";
 import seedFundraisingPayoutCatalog from "./seeders/seedFundraisingPayoutCatalog";
@@ -22,8 +23,9 @@ import seedVetRegulatoryBodies from "./seeders/seedVetRegulatoryBodies";
 import seedClinicalItemCategories from "./seeders/seedClinicalItemCategories";
 import seedMasterClinicalCatalog from "./seeders/seedMasterClinicalCatalog";
 import seedMasterCatalog from "./seeds/seed-master-catalog";
-
-const prisma = new PrismaClient();
+import seedAnimalTaxonomy from "./seeders/seedAnimalTaxonomy";
+import seedInboundReceiveQaFixtures from "./seeders/seedInboundReceiveQaFixtures";
+import seedWarehousePhase1Minimal from "./seeders/seedWarehousePhase1Minimal";
 
 async function main() {
   // 1) Base Bangladesh: divisions, districts, upazilas, legacy areas
@@ -37,6 +39,9 @@ async function main() {
   await seedFundraisingPayoutCatalog(prisma);
   // 4) Branch types master (clinic/shop/hub/warehouse/etc)
   await seedBranchTypes(prisma);
+
+  // 4.1) Enterprise animal taxonomy (categories, types, breeds, sub-breeds, colors, coat patterns, sizes)
+  await seedAnimalTaxonomy(prisma);
 
   // 5) Organization types master (used by dropdowns)
   await seedOrganizationTypes(prisma);
@@ -91,6 +96,14 @@ async function main() {
 
   // 19) Master Clinical Catalog (global categories, items, templates for clinic catalog installer)
   await seedMasterClinicalCatalog(prisma);
+
+  // Optional: Receive Center / inbound-unified QA diagnostics (no writes; SEED_INBOUND_RECEIVE_QA=true)
+  await seedInboundReceiveQaFixtures(prisma);
+
+  // Optional: warehouse rack/bin demo rows (SEED_WAREHOUSE_PHASE1=true)
+  if (process.env.SEED_WAREHOUSE_PHASE1 === "true") {
+    await seedWarehousePhase1Minimal(prisma);
+  }
 }
 
 main()

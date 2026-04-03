@@ -263,7 +263,12 @@ export async function notifyManagerOfAccessRequest(branchId: number, staffUserId
   }
 }
 
-export async function notifyOwnerOfAccessRequest(branchId: number, staffUserId: number, permissionId: number) {
+export async function notifyOwnerOfAccessRequest(
+  branchId: number,
+  staffUserId: number,
+  permissionId: number,
+  options?: { requestKind?: "BRANCH" | "WAREHOUSE" }
+) {
   try {
     const branch = await prisma.branch.findUnique({
       where: { id: branchId },
@@ -300,6 +305,7 @@ export async function notifyOwnerOfAccessRequest(branchId: number, staffUserId: 
     const staffName = staff?.profile?.displayName || staff?.auth?.email || staff?.auth?.phone || "Staff Member";
     const requesterEmail = staff?.auth?.email || staff?.auth?.phone || "";
 
+    const requestKind = options?.requestKind === "WAREHOUSE" ? "WAREHOUSE" : "BRANCH";
     const meta = {
       branchId,
       branchName: branch.name,
@@ -308,17 +314,32 @@ export async function notifyOwnerOfAccessRequest(branchId: number, staffUserId: 
       requesterEmail,
       role: roleRequested,
       permissionId,
+      requestKind,
+      requestScope: requestKind,
     };
+
+    const title =
+      requestKind === "WAREHOUSE"
+        ? "Warehouse access approval needed"
+        : "Branch access approval needed";
+    const message =
+      requestKind === "WAREHOUSE"
+        ? `${staffName} has requested warehouse access at ${branch.name}`
+        : `${staffName} has requested access to ${branch.name}`;
+    const dedupeKey =
+      requestKind === "WAREHOUSE"
+        ? `access_request_owner:${branchId}:${staffUserId}:wh:${permissionId}`
+        : `access_request_owner:${branchId}:${staffUserId}`;
 
     await createNotification({
       userId: branch.org.ownerUserId,
       type: "STAFF_BRANCH_ACCESS_REQUEST",
-      title: "Branch access approval needed",
-      message: `${staffName} has requested access to ${branch.name}`,
+      title,
+      message,
       meta,
       priority: "P1",
       actionUrl: "/owner/access/requests",
-      dedupeKey: `access_request_owner:${branchId}:${staffUserId}`,
+      dedupeKey,
       orgId: branch.org.id,
       branchId,
       severity: "info",
@@ -345,7 +366,10 @@ export async function notifyOwnerOfAccessRequest(branchId: number, staffUserId: 
         try {
           await sendMail({
             to: ownerEmail,
-            subject: `Branch Access Request: ${staffName} - ${branch.name}`,
+            subject:
+              requestKind === "WAREHOUSE"
+                ? `Warehouse Access Request: ${staffName} - ${branch.name}`
+                : `Branch Access Request: ${staffName} - ${branch.name}`,
             html,
           });
         } catch (error) {

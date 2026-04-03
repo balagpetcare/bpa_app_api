@@ -359,7 +359,7 @@ async function listProducts(producerOrgId) {
  * @param {{ q?: string, page?: number, limit?: number, onlyApproved?: boolean, onlyActive?: boolean }} opts
  * @returns {{ items: Array<{ id, name, sku, isActive, approvalStatus }>, page, limit, total }}
  */
-async function listProductsPick(producerOrgId, opts = {}) {
+async function listProductsPick(producerOrgId, opts: Record<string, any> = {}) {
   if (!producerOrgId) return { items: [], page: 1, limit: 20, total: 0 };
   const page = Math.max(1, Number(opts.page) || 1);
   const limit = Math.min(50, Math.max(1, Number(opts.limit) || 20));
@@ -367,7 +367,7 @@ async function listProductsPick(producerOrgId, opts = {}) {
   const onlyActive = opts.onlyActive === true;
   const q = typeof opts.q === "string" ? opts.q.trim() : "";
 
-  const where = { producerOrgId: Number(producerOrgId) };
+  const where: any = { producerOrgId: Number(producerOrgId) };
   if (onlyApproved) {
     where.status = onlyActive ? "ACTIVE" : { in: ["APPROVED", "ACTIVE"] };
   }
@@ -2040,7 +2040,7 @@ async function removeStaff(producerOrgId, staffId) {
  * Trust & Safety: return active enforcement holds for producer org (and optionally product/batch).
  * Used by producer UI to show hold banners.
  */
-async function getEnforcementHolds(prisma, producerOrgId, opts = {}) {
+async function getEnforcementHolds(prisma, producerOrgId, opts: { productId?: number; batchId?: number } = {}) {
   if (!producerOrgId) return { orgHold: null, productHold: null, batchHold: null };
   const where = {
     status: "APPLIED",
