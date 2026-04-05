@@ -1,11 +1,6 @@
 node_modules
+.env
 dist
-.next
-build
-coverage
-.env*
-!.env.example
-*.zip
-prisma/migrations/*/migration_lock.toml
+prisma/migrations
 prisma/.prisma
 **/.prisma

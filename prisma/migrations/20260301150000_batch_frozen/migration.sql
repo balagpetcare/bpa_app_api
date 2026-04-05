@@ -1,1 +1,0 @@
-ALTER TABLE "auth_batches" ADD COLUMN IF NOT EXISTS "frozenAt" TIMESTAMP(3);

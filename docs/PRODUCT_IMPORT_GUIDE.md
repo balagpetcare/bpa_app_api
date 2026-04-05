@@ -1,7 +1,5 @@
 # Universal Product Import – User Guide
 
-**Related:** For the **global admin** medicine reference import (country-scoped national catalog, staging → preview → apply; not org storefront products), see [ADMIN_MEDICINE_CATALOG_IMPORT_SYSTEM.md](./ADMIN_MEDICINE_CATALOG_IMPORT_SYSTEM.md).
-
 ## Overview
 
 The Product Import flow lets you bring products from CSV, Excel, or (later) API sources into your organization safely. Categories, subcategories, and brands are **fixed**: they must map to existing values. Products that fail mapping or validation stay in a staging state and do not appear on the storefront until you fix issues and publish.
@@ -17,8 +15,8 @@ The Product Import flow lets you bring products from CSV, Excel, or (later) API 
 
 A product is visible on the storefront only if:
 
-- `approvalStatus = PUBLISHED` (existing flow), and
-- `publishStatus` is null (legacy) or `PUBLISHED`, and
+- `approvalStatus = PUBLISHED` (existing flow), and  
+- `publishStatus` is null (legacy) or `PUBLISHED`, and  
 - `validationIssues` is null or empty.
 
 Import-created products start with `publishStatus=DRAFT`. After you click **Publish** on a batch, their `publishStatus` is set to `PUBLISHED` and `validationIssues` is cleared.
@@ -72,18 +70,18 @@ Add a sidebar link under Products (e.g. "Product Import") pointing to `/owner/in
 
 ## API endpoints (Owner panel)
 
-- `POST /api/v1/owner/imports/products/upload` – multipart file → batchId
-- `GET /api/v1/owner/imports/products` – list batches
-- `GET /api/v1/owner/imports/products/:batchId` – batch summary + totals
-- `GET /api/v1/owner/imports/products/:batchId/rows?status=NEEDS_FIX` – paginated rows
-- `POST /api/v1/owner/imports/products/:batchId/revalidate` – rerun mapping/validation
-- `POST /api/v1/owner/imports/mappings` – create/update mapping (provider, type, externalValue, internalId)
-- `GET /api/v1/owner/imports/mappings?type=BRAND&provider=csv` – list mappings
-- `POST /api/v1/owner/imports/products/:batchId/publish` – publish READY rows
-- `POST /api/v1/owner/imports/products/rows/:rowId/fix` – apply fix (mapping or setFields) and revalidate row
-- `GET /api/v1/owner/imports/products/:batchId/unmapped?type=BRAND|CATEGORY|SUBCATEGORY` – unmapped values with counts
-- `POST /api/v1/owner/imports/products/:batchId/bulk-fix` – bulk mapping + setFields
-- `POST /api/v1/owner/imports/products/unpublish` – set product publishStatus to DRAFT
+- `POST /api/v1/owner/imports/products/upload` – multipart file → batchId  
+- `GET /api/v1/owner/imports/products` – list batches  
+- `GET /api/v1/owner/imports/products/:batchId` – batch summary + totals  
+- `GET /api/v1/owner/imports/products/:batchId/rows?status=NEEDS_FIX` – paginated rows  
+- `POST /api/v1/owner/imports/products/:batchId/revalidate` – rerun mapping/validation  
+- `POST /api/v1/owner/imports/mappings` – create/update mapping (provider, type, externalValue, internalId)  
+- `GET /api/v1/owner/imports/mappings?type=BRAND&provider=csv` – list mappings  
+- `POST /api/v1/owner/imports/products/:batchId/publish` – publish READY rows  
+- `POST /api/v1/owner/imports/products/rows/:rowId/fix` – apply fix (mapping or setFields) and revalidate row  
+- `GET /api/v1/owner/imports/products/:batchId/unmapped?type=BRAND|CATEGORY|SUBCATEGORY` – unmapped values with counts  
+- `POST /api/v1/owner/imports/products/:batchId/bulk-fix` – bulk mapping + setFields  
+- `POST /api/v1/owner/imports/products/unpublish` – set product publishStatus to DRAFT  
 
 ## Queue, progress, and limits
 

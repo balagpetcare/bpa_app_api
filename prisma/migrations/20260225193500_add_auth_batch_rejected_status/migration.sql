@@ -1,7 +1,0 @@
-DO $$
-BEGIN
-  ALTER TYPE "AuthBatchStatus" ADD VALUE IF NOT EXISTS 'REJECTED';
-EXCEPTION
-  WHEN duplicate_object THEN NULL;
-END $$;
-

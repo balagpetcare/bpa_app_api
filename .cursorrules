@@ -5,5 +5,3 @@ Never overwrite existing code without merging; avoid deletions.
 Prefer update-only patches and include exact apply steps.
 Confirm affected files (touch points) before implementing changes.
 Put all new .md files in docs/ (root only: README.md).
-
-Prisma (production-like DB): never `migrate reset` or `db push` on this database; never edit applied migrations; new migration + review SQL + `migrate deploy`; run `node scripts/check-migration-integrity.js` before/after; on drift stop and plan (see docs/PRISMA_MIGRATION_NON_DESTRUCTIVE_POLICY.md).
