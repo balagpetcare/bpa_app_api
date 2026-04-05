@@ -1,5 +1,32 @@
 import prisma from "../../../../infrastructure/db/prismaClient";
 
+/**
+ * @deprecated WAREHOUSE TRANSFER ORDER MODULE
+ *
+ * ===============================================================================
+ * DEPRECATION NOTICE: WarehouseTransferOrder is superseded by StockDispatch flow.
+ * ===============================================================================
+ *
+ * CANONICAL FLOW (use this instead):
+ *   StockRequest → AllocationPlan → PickList → StockDispatch
+ *   → sendDispatch (TRANSFER_OUT) → Branch Receive Session → Manager Confirm → Ledger
+ *
+ * WHY DEPRECATED:
+ *   - StockDispatch integrates with controlled receiving (manager confirmation gate)
+ *   - StockDispatch supports transport/challan metadata, proof of delivery
+ *   - StockDispatch has full discrepancy tracking via DispatchReceiveSession
+ *   - StockDispatch integrates with allocation plans, pick lists, and stock requests
+ *
+ * MIGRATION:
+ *   - For inter-warehouse transfers: create StockRequest, then use dispatch flow
+ *   - For admin overrides: use direct dispatch createDispatch with appropriate permissions
+ *
+ * DO NOT CREATE NEW INTEGRATIONS WITH THIS MODULE.
+ * Existing WTO records remain readable; new transfers should use StockDispatch.
+ *
+ * See: docs/VENDOR_RECEIVE_BRANCH_CONFIRMATION_PRICING_GOVERNANCE_PLAN.md
+ */
+
 const _includeList = {
   fromLocation: { select: { id: true, name: true, type: true } },
   toLocation: { select: { id: true, name: true, type: true } },
@@ -22,6 +49,7 @@ const _includeDetail = {
   },
 } as const;
 
+/** @deprecated Use StockDispatch flow instead. */
 export async function createWTO(data: {
   orgId: number;
   fromLocationId: number;
@@ -30,6 +58,7 @@ export async function createWTO(data: {
   lines: Array<{ variantId: number; lotId?: number; requestedQty: number; note?: string }>;
   createdByUserId: number;
 }) {
+  console.warn("[DEPRECATED] createWTO called. Use StockDispatch flow instead.");
   if (data.fromLocationId === data.toLocationId) {
     throw new Error("Source and destination locations must be different");
   }

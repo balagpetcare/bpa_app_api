@@ -101,4 +101,45 @@ try {
   console.warn("[Socket.IO] Attach failed", e?.message || e);
 }
 
+/**
+ * ✅ Graceful shutdown to prevent EADDRINUSE on restart
+ */
+function gracefulShutdown(signal: string) {
+  console.log(`\n[${signal}] Gracefully shutting down server...`);
+
+  server.close((err) => {
+    if (err) {
+      console.error(`[${signal}] Error closing server:`, err);
+      process.exit(1);
+    }
+
+    console.log(`[${signal}] Server closed successfully`);
+
+    // Close database connections
+    try {
+      const prisma = require("./infrastructure/db/prismaClient").default;
+      prisma.$disconnect().then(() => {
+        console.log(`[${signal}] Database disconnected`);
+        process.exit(0);
+      }).catch((dbErr: any) => {
+        console.error(`[${signal}] Error disconnecting database:`, dbErr);
+        process.exit(1);
+      });
+    } catch (e) {
+      console.log(`[${signal}] No database connection to close`);
+      process.exit(0);
+    }
+  });
+
+  // Force exit after 10 seconds if graceful shutdown fails
+  setTimeout(() => {
+    console.error(`[${signal}] Force exit after 10s timeout`);
+    process.exit(1);
+  }, 10000);
+}
+
+// Handle shutdown signals
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+
 export {};

@@ -35,6 +35,24 @@ router.get("/", controller.getInventory);
 // GET /api/v1/inventory/alerts - Low stock alerts (v2 ledger-based)
 router.get("/alerts", controller.getLowStockAlerts);
 
+// GET /api/v1/inventory/operations/exception-summary — operational queues (confirmations, discrepancies)
+router.get(
+  "/operations/exception-summary",
+  requirePermission("inventory.read", "org.read"),
+  controller.getOperationsExceptionSummary
+);
+router.get(
+  "/operations/pending-confirmations",
+  requirePermission("inventory.read", "org.read"),
+  controller.getOperationsPendingDetails
+);
+
+router.get(
+  "/lookup/variant-by-barcode",
+  requirePermission("inventory.read", "org.read"),
+  controller.lookupVariantByBarcode
+);
+
 // GET /api/v1/inventory/expiring - Expiring items (v2 lot-based)
 router.get("/expiring", controller.getExpiringItems);
 
@@ -319,46 +337,60 @@ router.post(
 );
 
 // ============================
-// Warehouse Transfer Orders (Phase 5)
+// Warehouse Transfer Orders — DEPRECATED
 // ============================
+// @deprecated Use StockDispatch flow instead (dispatches.routes.ts)
+// See: docs/VENDOR_RECEIVE_BRANCH_CONFIRMATION_PRICING_GOVERNANCE_PLAN.md
 const wtoController = require("./warehouseTransferOrder.controller");
+const wtoDeprecationMiddleware = (req: any, _res: any, next: any) => {
+  console.warn(`[DEPRECATED] WarehouseTransferOrder API called: ${req.method} ${req.originalUrl}. Use StockDispatch flow instead.`);
+  next();
+};
 router.post(
   "/warehouse-transfer-orders",
+  wtoDeprecationMiddleware,
   requirePermission("inventory.update", "org.write"),
   wtoController.createWTO
 );
 router.get(
   "/warehouse-transfer-orders",
+  wtoDeprecationMiddleware,
   requirePermission("inventory.read", "org.read"),
   wtoController.listWTO
 );
 router.get(
   "/warehouse-transfer-orders/:id",
+  wtoDeprecationMiddleware,
   requirePermission("inventory.read", "org.read"),
   wtoController.getWTO
 );
 router.post(
   "/warehouse-transfer-orders/:id/approve",
+  wtoDeprecationMiddleware,
   requirePermission("inventory.update", "org.write"),
   wtoController.approveWTO
 );
 router.post(
   "/warehouse-transfer-orders/:id/pick",
+  wtoDeprecationMiddleware,
   requirePermission("inventory.update", "org.write"),
   wtoController.pickWTO
 );
 router.post(
   "/warehouse-transfer-orders/:id/dispatch",
+  wtoDeprecationMiddleware,
   requirePermission("inventory.update", "org.write"),
   wtoController.dispatchWTO
 );
 router.post(
   "/warehouse-transfer-orders/:id/receive",
+  wtoDeprecationMiddleware,
   requirePermission("inventory.update", "org.write"),
   wtoController.receiveWTO
 );
 router.post(
   "/warehouse-transfer-orders/:id/close",
+  wtoDeprecationMiddleware,
   requirePermission("inventory.update", "org.write"),
   wtoController.closeWTO
 );
@@ -440,10 +472,22 @@ router.post(
   controller.createDirectDispatch
 );
 // POST /api/v1/inventory/receipts/bulk - Bulk purchase receive (create GRN + receive atomically)
+// Phase 2: Warehouse-only permissions - removed inventory.update/org.write to enforce warehouse authority
 router.post(
   "/receipts/bulk",
-  requirePermission("inventory.update", "org.write"),
+  requirePermission(
+    "purchase.receive",
+    "grn.post",
+    "grn.create",
+    "inbound.grn"
+  ),
   controller.createBulkReceipt
+);
+// POST /api/v1/inventory/receipts/bulk-override - Emergency owner override for bulk receive
+router.post(
+  "/receipts/bulk-override",
+  requirePermission("inventory.emergency.override", "org.write"),
+  controller.createBulkReceiptOverride
 );
 // GET /api/v1/inventory/receipts/incoming - Incoming dispatches for branch (alias for GET /dispatches/incoming?branchId=)
 router.get("/receipts/incoming", requirePermission("inventory.read", "org.read"), require("../dispatches/dispatches.controller").getIncomingDispatches);
@@ -452,6 +496,12 @@ router.get(
   "/receipts/incoming-unified",
   requirePermission("inventory.read", "org.read"),
   require("../dispatches/dispatches.controller").getIncomingInboundUnified
+);
+// GET /api/v1/inventory/receipts/pending-po-receipts - Approved/partially-received POs awaiting GRN at branch warehouse
+router.get(
+  "/receipts/pending-po-receipts",
+  requirePermission("inventory.receive", "inbound.grn", "purchase.receive", "procurement.po.view"),
+  require("../dispatches/dispatches.controller").listPendingPoReceipts
 );
 
 // ============================

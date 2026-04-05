@@ -55,7 +55,9 @@ export async function releaseAllocationPlanLinesInTx(
   const refId = String(params.allocationPlanId);
   for (const line of params.lines) {
     if (line.quantityAllocated <= 0) continue;
-    if (line.locationId !== params.fromLocationId) continue;
+    if (line.locationId !== params.fromLocationId) {
+      throw new Error("ALLOCATION_LINE_LOCATION_MISMATCH: cannot release reserve; line location must match plan fromLocation");
+    }
     await ledgerService.recordLedgerEntryInTx(tx, {
       orgId: params.orgId,
       locationId: line.locationId,

@@ -1,5 +1,20 @@
 const service = require("./pricing.service");
 const prisma = require("../../../../infrastructure/db/prismaClient");
+const {
+  validateCentralPricingBand,
+  assertBranchOverrideWithinPolicy,
+  logPricingAudit,
+} = require("./pricingGovernance.service");
+
+function pricingPermSet(req: any): Set<string> {
+  const raw = req.user?.permissions || req.user?.perms || [];
+  return new Set(Array.isArray(raw) ? raw.map((p: any) => String(p)) : []);
+}
+
+function canPrice(req: any, ...keys: string[]): boolean {
+  const s = pricingPermSet(req);
+  return keys.some((k) => s.has(k) || s.has("global.admin"));
+}
 
 /**
  * POST /api/v1/pricing
@@ -206,15 +221,43 @@ exports.setOrgPricing = async (req, res) => {
       });
     }
 
-    const pricing = await service.setOrgPricing({
-      orgId: parseInt(orgId),
-      variantId: parseInt(variantId),
+    if (!canPrice(req, "pricing.central.write")) {
+      return res.status(403).json({
+        success: false,
+        message: "pricing.central.write required to edit central catalog pricing",
+      });
+    }
+
+    const oid = parseInt(orgId);
+    const vid = parseInt(variantId);
+    const payload = {
       basePrice: basePrice != null ? parseFloat(basePrice) : null,
       markupPercent: markupPercent != null ? parseFloat(markupPercent) : null,
       minPrice: minPrice != null ? parseFloat(minPrice) : null,
       maxPrice: maxPrice != null ? parseFloat(maxPrice) : null,
+    };
+    validateCentralPricingBand(payload);
+
+    const before = await prisma.productPricing.findUnique({
+      where: { orgId_variantId: { orgId: oid, variantId: vid } },
+    });
+
+    const pricing = await service.setOrgPricing({
+      orgId: oid,
+      variantId: vid,
+      ...payload,
       effectiveFrom: effectiveFrom ? new Date(effectiveFrom) : undefined,
       effectiveTo: effectiveTo ? new Date(effectiveTo) : null,
+    });
+
+    await logPricingAudit({
+      orgId: oid,
+      entityType: "PRODUCT_PRICING",
+      entityKey: `org:${oid}:variant:${vid}`,
+      action: "UPSERT",
+      actorUserId: userId,
+      payloadBefore: before,
+      payloadAfter: pricing,
     });
 
     return res.status(200).json({
@@ -301,12 +344,45 @@ exports.setBranchPricing = async (req, res) => {
       });
     }
 
+    if (!canPrice(req, "pricing.branch.override")) {
+      return res.status(403).json({
+        success: false,
+        message: "pricing.branch.override required for branch price overrides",
+      });
+    }
+
+    const bid = parseInt(branchId);
+    const vid = parseInt(variantId);
+    const ov = parseFloat(overridePrice);
+    const branch = await prisma.branch.findUnique({
+      where: { id: bid },
+      select: { orgId: true },
+    });
+    if (!branch) {
+      return res.status(400).json({ success: false, message: "Branch not found" });
+    }
+    await assertBranchOverrideWithinPolicy(branch.orgId, vid, ov);
+
+    const before = await prisma.branchPricing.findUnique({
+      where: { branchId_variantId: { branchId: bid, variantId: vid } },
+    });
+
     const pricing = await service.setBranchPricing({
-      branchId: parseInt(branchId),
-      variantId: parseInt(variantId),
-      overridePrice: parseFloat(overridePrice),
+      branchId: bid,
+      variantId: vid,
+      overridePrice: ov,
       effectiveFrom: effectiveFrom ? new Date(effectiveFrom) : undefined,
       effectiveTo: effectiveTo ? new Date(effectiveTo) : null,
+    });
+
+    await logPricingAudit({
+      orgId: branch.orgId,
+      entityType: "BRANCH_PRICING",
+      entityKey: `branch:${bid}:variant:${vid}`,
+      action: "UPSERT",
+      actorUserId: userId,
+      payloadBefore: before,
+      payloadAfter: pricing,
     });
 
     return res.status(200).json({

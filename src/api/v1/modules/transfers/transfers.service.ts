@@ -2,6 +2,37 @@ import prisma from "../../../../infrastructure/db/prismaClient";
 const ledgerService = require("../inventory/ledger.service");
 
 /**
+ * @deprecated LEGACY TRANSFER MODULE
+ *
+ * ===============================================================================
+ * DEPRECATION NOTICE: This StockTransfer module is superseded by StockDispatch.
+ * ===============================================================================
+ *
+ * CANONICAL FLOW (use this instead):
+ *   StockRequest → AllocationPlan → PickList → StockDispatch
+ *   → sendDispatch (TRANSFER_OUT) → Branch Receive Session → Manager Confirm → Ledger Update
+ *
+ * WHY DEPRECATED:
+ *   - StockDispatch integrates with controlled receiving (manager confirmation)
+ *   - StockDispatch supports transport/challan metadata and proof of delivery
+ *   - StockDispatch has full audit trail via DispatchReceiveSession
+ *   - StockDispatch integrates with allocation plans and pick lists
+ *
+ * MIGRATION PATH:
+ *   - Create a StockRequest (or use direct dispatch for admin override)
+ *   - Use fulfillment module to create AllocationPlan + PickList
+ *   - Create StockDispatch via pick handoff or direct createDispatch
+ *   - Use sendDispatch for TRANSFER_OUT
+ *   - Destination receives via receiveDispatch with controlled session
+ *
+ * DO NOT CREATE NEW INTEGRATIONS WITH THIS MODULE.
+ * Existing data remains readable; new transfers should use StockDispatch.
+ *
+ * See: docs/VENDOR_RECEIVE_BRANCH_CONFIRMATION_PRICING_GOVERNANCE_PLAN.md
+ */
+
+/**
+ * @deprecated Use StockDispatch flow instead.
  * Create a stock transfer (draft).
  * Items may be lot-backed (lotId set) or non-lot aggregate (lotId null) when policy allows.
  */
@@ -62,9 +93,11 @@ async function createTransfer(data: {
 }
 
 /**
+ * @deprecated Use sendDispatch from dispatches.service instead.
  * Send transfer (TRANSFER_OUT ledger entries, status IN_TRANSIT)
  */
 async function sendTransfer(transferId: number, createdByUserId?: number) {
+  console.warn("[DEPRECATED] sendTransfer called. Use StockDispatch flow instead. Transfer ID:", transferId);
   return await prisma.$transaction(async (tx) => {
     const transfer = await tx.stockTransfer.findUnique({
       where: { id: transferId },
@@ -187,6 +220,7 @@ async function sendTransfer(transferId: number, createdByUserId?: number) {
 }
 
 /**
+ * @deprecated Use receiveDispatch from dispatches.service with controlled receive session.
  * Receive transfer (TRANSFER_IN ledger entries).
  * On mismatch: create StockDiscrepancy, set status DISPUTED.
  * Accepts SENT or IN_TRANSIT for backward compatibility.

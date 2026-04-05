@@ -23,18 +23,23 @@ export async function startFromStockRequest(req: any, res: any) {
     const ctx = await resolveOrg(req);
     if (!ctx) return res.status(403).json({ success: false, message: "No organization access" });
     const stockRequestId = Number(req.params.id);
-    const { fromLocationId, warehouseId } = req.body || {};
+    const { fromLocationId, warehouseId, skipAutoAllocation } = req.body || {};
     if (!fromLocationId) {
       return res.status(400).json({ success: false, message: "fromLocationId required" });
     }
-    const plan = await service.startStockRequestFulfillment({
+    const { plan, isExisting } = await service.startStockRequestFulfillment({
       orgId: ctx.orgId,
       stockRequestId,
       fromLocationId: Number(fromLocationId),
       warehouseId: warehouseId != null ? Number(warehouseId) : undefined,
       createdByUserId: ctx.userId,
+      skipAutoAllocation: Boolean(skipAutoAllocation),
     });
-    return res.status(201).json({ success: true, data: plan });
+    return res.status(isExisting ? 200 : 201).json({
+      success: true,
+      data: plan,
+      meta: { existingPlan: isExisting },
+    });
   } catch (e: any) {
     console.error("fulfillment.startFromStockRequest", e);
     return res.status(400).json({ success: false, message: e?.message || "Failed" });

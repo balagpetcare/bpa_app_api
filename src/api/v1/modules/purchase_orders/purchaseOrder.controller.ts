@@ -27,16 +27,20 @@ export async function create(req: any, res: any) {
     const ctx = await resolveOrgId(req, req.body);
     if (!ctx) return res.status(403).json({ success: false, message: "No organization access" });
 
-    const { vendorId, warehouseId, purchaseRequisitionId, lines, expectedDeliveryDate, notes, internalNote, currency } =
+    const { vendorId, warehouseId, branchId, purchaseRequisitionId, lines, expectedDeliveryDate, notes, internalNote, currency } =
       req.body || {};
     if (!vendorId || !lines?.length) {
       return res.status(400).json({ success: false, message: "vendorId and lines[] are required" });
     }
 
+    // Normalize warehouse/branch ID - prefer warehouseId, fallback to branchId
+    const normalizedWarehouseId = warehouseId != null ? Number(warehouseId) :
+                                  branchId != null ? Number(branchId) : undefined;
+
     const po = await service.createPurchaseOrder({
       orgId: ctx.orgId,
       vendorId: Number(vendorId),
-      warehouseId: warehouseId != null ? Number(warehouseId) : undefined,
+      warehouseId: normalizedWarehouseId,
       purchaseRequisitionId: purchaseRequisitionId != null ? Number(purchaseRequisitionId) : undefined,
       lines: lines.map((l: any) => ({
         variantId: Number(l.variantId),
@@ -130,6 +134,67 @@ export async function reject(req: any, res: any) {
   } catch (e: any) {
     console.error("purchaseOrder.reject", e);
     if (tryRespondPrismaSchemaDrift(res, e)) return;
+    return res.status(400).json({ success: false, message: e?.message || "Failed" });
+  }
+}
+
+/**
+ * POST /api/v1/purchase-orders/from-request/:requestId — Create PO from procurement stock request.
+ */
+export async function createFromRequest(req: any, res: any) {
+  try {
+    const ctx = await resolveOrgId(req, req.body);
+    if (!ctx) return res.status(403).json({ success: false, message: "No organization access" });
+
+    const requestId = Number(req.params.requestId);
+    if (!requestId) return res.status(400).json({ success: false, message: "Invalid requestId" });
+
+    const { vendorId, warehouseId, expectedDeliveryDate, notes, currency } = req.body || {};
+    if (!vendorId) {
+      return res.status(400).json({ success: false, message: "vendorId is required" });
+    }
+
+    const po = await service.createPurchaseOrderFromStockRequest({
+      stockRequestId: requestId,
+      vendorId: Number(vendorId),
+      orgId: ctx.orgId,
+      createdByUserId: ctx.userId,
+      warehouseId: warehouseId != null ? Number(warehouseId) : undefined,
+      expectedDeliveryDate: expectedDeliveryDate ? new Date(expectedDeliveryDate) : undefined,
+      notes,
+      currency,
+    });
+    return res.status(201).json({ success: true, data: po, message: "Purchase order created from request" });
+  } catch (e: any) {
+    console.error("purchaseOrder.createFromRequest", e);
+    return res.status(400).json({ success: false, message: e?.message || "Failed to create PO from request" });
+  }
+}
+
+export async function printHtml(req: any, res: any) {
+  try {
+    const ctx = await resolveOrgId(req);
+    if (!ctx) return res.status(403).json({ success: false, message: "No organization access" });
+    const id = Number(req.params.id);
+    const { renderPurchaseOrderPrintHtml } = await import("../inventory/printDocuments.service");
+    const html = await renderPurchaseOrderPrintHtml(id, ctx.orgId);
+    return res.type("html").send(html);
+  } catch (e: any) {
+    console.error("purchaseOrder.printHtml", e);
+    return res.status(400).json({ success: false, message: e?.message || "Failed" });
+  }
+}
+
+export async function printWorksheet(req: any, res: any) {
+  try {
+    const ctx = await resolveOrgId(req);
+    if (!ctx) return res.status(403).json({ success: false, message: "No organization access" });
+    const id = Number(req.params.id);
+    const { renderSupplierReceiveWorksheetHtml } = await import("../inventory/printDocuments.service");
+    const html = await renderSupplierReceiveWorksheetHtml(id, ctx.orgId);
+    return res.type("html").send(html);
+  } catch (e: any) {
+    console.error("purchaseOrder.printWorksheet", e);
     return res.status(400).json({ success: false, message: e?.message || "Failed" });
   }
 }

@@ -10,14 +10,27 @@ export async function startStockRequestFulfillment(data: {
   fromLocationId: number;
   warehouseId?: number | null;
   createdByUserId?: number | null;
-}) {
-  return allocationPlanService.createFromStockRequest({
+  /** When true, only create draft plan header (no FEFO). Default false = auto-allocate lines. */
+  skipAutoAllocation?: boolean;
+}): Promise<{ plan: Awaited<ReturnType<typeof allocationPlanService.getPlanById>>; isExisting: boolean }> {
+  const existing = await prisma.allocationPlan.findFirst({
+    where: { stockRequestId: data.stockRequestId, orgId: data.orgId },
+    select: { id: true },
+  });
+  if (existing) {
+    const plan = await allocationPlanService.getPlanById(existing.id, data.orgId);
+    if (!plan) throw new Error("Existing allocation plan not found for this stock request");
+    return { plan, isExisting: true };
+  }
+  const plan = await allocationPlanService.createFromStockRequest({
     orgId: data.orgId,
     stockRequestId: data.stockRequestId,
     fromLocationId: data.fromLocationId,
     warehouseId: data.warehouseId,
     createdByUserId: data.createdByUserId,
+    skipAutoAllocation: data.skipAutoAllocation,
   });
+  return { plan, isExisting: false };
 }
 
 export async function getStockRequestFulfillmentStatus(stockRequestId: number, orgId: number) {
@@ -66,6 +79,10 @@ export async function getStockRequestFulfillmentStatus(stockRequestId: number, o
           id: plan.id,
           status: plan.status,
           lineCount: plan.lines.length,
+          totalDemandQty: plan.totalDemandQty ?? null,
+          totalAllocatedQty: plan.totalAllocatedQty ?? null,
+          shortageQty: plan.shortageQty ?? null,
+          version: plan.version,
           pickList: plan.pickList,
         }
       : null,

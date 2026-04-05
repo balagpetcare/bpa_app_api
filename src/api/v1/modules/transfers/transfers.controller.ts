@@ -6,11 +6,35 @@ const {
 } = require("../../services/inboundReceiveBranchAccess.service");
 
 /**
+ * Check if legacy transfers are blocked. Returns true if new transfers should be rejected.
+ * Set process.env.BLOCK_LEGACY_TRANSFERS=true to block new StockTransfer creation.
+ */
+function isLegacyTransferBlocked(): boolean {
+  return process.env.BLOCK_LEGACY_TRANSFERS === "true";
+}
+
+/**
+ * @deprecated Use StockDispatch flow instead.
  * POST /api/v1/transfers
  * Create transfer (draft). Lot-backed only: allocations[] with lotId, variantId, quantity.
+ *
+ * MIGRATION: Use StockRequest → AllocationPlan → PickList → StockDispatch flow.
  */
 exports.createTransfer = async (req, res) => {
   try {
+    // Block new transfers if env flag is set
+    if (isLegacyTransferBlocked()) {
+      console.warn("[BLOCKED] StockTransfer creation blocked. Use StockDispatch flow instead.");
+      return res.status(400).json({
+        success: false,
+        message: "Legacy StockTransfer creation is disabled. Please use the Stock Request → Dispatch flow instead.",
+        code: "LEGACY_TRANSFER_BLOCKED",
+        migrationHint: "Create a Stock Request, then use Allocation → Pick → Dispatch flow.",
+      });
+    }
+
+    console.warn("[DEPRECATED] createTransfer called. Use StockDispatch flow instead. User:", req.user?.id);
+
     const userId = req.user?.id;
     if (!userId) {
       return res.status(401).json({ success: false, message: "Unauthorized" });

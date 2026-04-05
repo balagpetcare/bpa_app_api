@@ -174,6 +174,7 @@ async function upsertInventory(data: {
 
 /**
  * Adjust stock (add or remove)
+ * @param tx Optional transaction client (e.g. POS sale legacy path atomic with order).
  */
 async function adjustStock(
   inventoryId: number,
@@ -183,10 +184,12 @@ async function adjustStock(
     reason?: string;
     createdByUserId?: number;
   },
-  branchId?: number
+  branchId?: number,
+  tx?: any
 ) {
+  const db = tx || prisma;
   // Verify inventory exists
-  const inventory = await prisma.inventory.findUnique({ where: { id: inventoryId } });
+  const inventory = await db.inventory.findUnique({ where: { id: inventoryId } });
   if (!inventory) {
     throw new Error("Inventory item not found");
   }
@@ -208,13 +211,13 @@ async function adjustStock(
   }
 
   // Update inventory
-  const updated = await prisma.inventory.update({
+  const updated = await db.inventory.update({
     where: { id: inventoryId },
     data: { quantity: newQuantity },
   });
 
   // Create transaction record
-  await prisma.stockTransaction.create({
+  await db.stockTransaction.create({
     data: {
       inventoryId: inventoryId,
       type: data.type,
@@ -680,7 +683,21 @@ async function getInventoryLocations(
     }
     return prisma.inventoryLocation.findMany({
       where: whereLoc as any,
-      include: { branch: { select: { id: true, name: true, orgId: true } } },
+      include: {
+        branch: {
+          select: {
+            id: true,
+            name: true,
+            orgId: true,
+            typeLinks: {
+              select: {
+                isPrimary: true,
+                branchType: { select: { code: true, nameEn: true } },
+              },
+            },
+          },
+        },
+      },
       orderBy: INVENTORY_LOCATION_ORDER_BY as unknown as Record<string, string>[],
     });
   }
@@ -716,7 +733,21 @@ async function getInventoryLocations(
 
   return prisma.inventoryLocation.findMany({
     where: whereFallback as any,
-    include: { branch: { select: { id: true, name: true, orgId: true } } },
+    include: {
+      branch: {
+        select: {
+          id: true,
+          name: true,
+          orgId: true,
+          typeLinks: {
+            select: {
+              isPrimary: true,
+              branchType: { select: { code: true, nameEn: true } },
+            },
+          },
+        },
+      },
+    },
     orderBy: INVENTORY_LOCATION_ORDER_BY as unknown as Record<string, string>[],
   });
 }

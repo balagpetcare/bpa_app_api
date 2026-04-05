@@ -198,23 +198,28 @@ async function getDefaultFulfilmentLocationForBranch(
 /**
  * Create new order
  */
-async function createOrder(data: {
-  branchId: number;
-  customerId?: number;
-  items: Array<{
-    productId?: number | null;
-    variantId?: number | null;
-    serviceId?: number | null;
-    quantity: number;
-    price: number;
-  }>;
-  paymentMethod?: string;
-  notes?: string;
-  createdByUserId?: number;
-  fulfilmentInventoryLocationId?: number | null;
-  orderSource?: string | null;
-  visitId?: number | null;
-}) {
+async function createOrder(
+  data: {
+    branchId: number;
+    customerId?: number;
+    items: Array<{
+      productId?: number | null;
+      variantId?: number | null;
+      serviceId?: number | null;
+      quantity: number;
+      price: number;
+      retailDiscountApprovalRequestId?: number | null;
+    }>;
+    paymentMethod?: string;
+    notes?: string;
+    createdByUserId?: number;
+    fulfilmentInventoryLocationId?: number | null;
+    orderSource?: string | null;
+    visitId?: number | null;
+  },
+  tx?: any
+) {
+  const db = tx || prisma;
   // Each item must have either productId or serviceId
   const totalAmount = data.items.reduce((sum, item) => {
     return sum + item.price * item.quantity;
@@ -240,6 +245,7 @@ async function createOrder(data: {
         quantity: item.quantity,
         price: item.price,
         total: item.price * item.quantity,
+        retailDiscountApprovalRequestId: item.retailDiscountApprovalRequestId ?? undefined,
       })),
     },
   };
@@ -254,7 +260,7 @@ async function createOrder(data: {
   }
 
   // Create order with items
-  const order = await prisma.order.create({
+  const order = await db.order.create({
     data: orderData,
     include: {
       branch: true,
@@ -283,23 +289,26 @@ async function createOrder(data: {
 
 /**
  * Update order status
+ * @param tx Optional transaction client (atomic POS / checkout flows).
  */
 async function updateOrderStatus(
   orderId: number,
   status: string,
-  branchId?: number
+  branchId?: number,
+  tx?: any
 ) {
+  const db = tx || prisma;
   const where: any = { id: orderId };
   if (branchId) {
     where.branchId = branchId;
   }
 
-  const existing = await prisma.order.findFirst({ where });
+  const existing = await db.order.findFirst({ where });
   if (!existing) {
     throw new Error("Order not found");
   }
 
-  const order = await prisma.order.update({
+  const order = await db.order.update({
     where: { id: orderId },
     data: { status: status },
     include: {
@@ -319,6 +328,7 @@ async function updateOrderStatus(
 
 /**
  * Process payment for order
+ * @param tx Optional transaction client — when set, clinic settlement hook is skipped (caller runs after commit).
  */
 async function processPayment(
   orderId: number,
@@ -326,19 +336,21 @@ async function processPayment(
     paymentMethod: string;
     paymentStatus: string;
   },
-  branchId?: number
+  branchId?: number,
+  tx?: any
 ) {
+  const db = tx || prisma;
   const where: any = { id: orderId };
   if (branchId) {
     where.branchId = branchId;
   }
 
-  const existing = await prisma.order.findFirst({ where });
+  const existing = await db.order.findFirst({ where });
   if (!existing) {
     throw new Error("Order not found");
   }
 
-  const order = await prisma.order.update({
+  const order = await db.order.update({
     where: { id: orderId },
     data: {
       paymentMethod: data.paymentMethod,
@@ -358,7 +370,7 @@ async function processPayment(
     },
   });
 
-  if (data.paymentStatus === "COMPLETED" && order.visitId) {
+  if (!tx && data.paymentStatus === "COMPLETED" && order.visitId) {
     try {
       const { createSettlementLedgerForOrder } = require("../clinic/doctorSettlement.service");
       createSettlementLedgerForOrder(orderId).catch(() => {});

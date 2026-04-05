@@ -1,8 +1,35 @@
 import { Request, Response } from "express";
 import * as service from "./warehouseTransferOrder.service";
 
+/**
+ * Check if legacy WTO creation is blocked.
+ * Set process.env.BLOCK_LEGACY_TRANSFERS=true to block new WarehouseTransferOrder creation.
+ */
+function isLegacyWTOBlocked(): boolean {
+  return process.env.BLOCK_LEGACY_TRANSFERS === "true";
+}
+
+/**
+ * @deprecated Use StockDispatch flow instead.
+ * Create warehouse transfer order.
+ *
+ * MIGRATION: Use StockRequest → AllocationPlan → PickList → StockDispatch flow.
+ */
 export const createWTO = async (req: Request, res: Response) => {
   try {
+    // Block new WTO creation if env flag is set
+    if (isLegacyWTOBlocked()) {
+      console.warn("[BLOCKED] WarehouseTransferOrder creation blocked. Use StockDispatch flow instead.");
+      return res.status(400).json({
+        success: false,
+        message: "Legacy WarehouseTransferOrder creation is disabled. Please use the Stock Request → Dispatch flow instead.",
+        code: "LEGACY_TRANSFER_BLOCKED",
+        migrationHint: "Create a Stock Request, then use Allocation → Pick → Dispatch flow.",
+      });
+    }
+
+    console.warn("[DEPRECATED] createWTO called. Use StockDispatch flow instead. User:", (req as any).user?.id);
+
     const userId = (req as any).user?.id;
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
     const { orgId, fromLocationId, toLocationId, note, lines } = req.body;

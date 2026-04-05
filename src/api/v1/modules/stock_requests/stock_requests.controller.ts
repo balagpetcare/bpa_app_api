@@ -22,7 +22,8 @@ async function create(req: any, res: any) {
     if (!userId) {
       return res.status(401).json({ success: false, message: "Unauthorized" });
     }
-    const { branchId, items, orgId: bodyOrgId, requesterStaffId: _requesterStaffId } = req.body;
+    const { branchId, items, orgId: bodyOrgId, requesterStaffId: _requesterStaffId,
+            requestIntent, procurementNote, preferredVendorId, urgency } = req.body;
     if (!branchId || !items?.length) {
       return res.status(400).json({
         success: false,
@@ -64,6 +65,10 @@ async function create(req: any, res: any) {
         requestedQty: Number(i.requestedQty),
         note: i.note,
       })),
+      requestIntent: requestIntent || undefined,
+      procurementNote: procurementNote || undefined,
+      preferredVendorId: preferredVendorId != null ? Number(preferredVendorId) : undefined,
+      urgency: urgency || undefined,
     });
     return res.status(201).json({ success: true, data: request });
   } catch (e: any) {
@@ -85,6 +90,7 @@ async function list(req: any, res: any) {
     const branchId = req.query.branchId ? Number(req.query.branchId) : undefined;
     const orgId = req.query.orgId ? Number(req.query.orgId) : undefined;
     const status = req.query.status as string | undefined;
+    const requestIntent = req.query.requestIntent as string | undefined;
     const dateFrom = req.query.dateFrom as string | undefined;
     const dateTo = req.query.dateTo as string | undefined;
     const page = req.query.page ? Number(req.query.page) : 1;
@@ -111,6 +117,7 @@ async function list(req: any, res: any) {
       branchIds: filterOrgId ? undefined : branchIds,
       orgId: filterOrgId,
       status,
+      requestIntent,
       dateFrom,
       dateTo,
       page,

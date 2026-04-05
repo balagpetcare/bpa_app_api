@@ -772,4 +772,144 @@ A second full audit was performed against the mandatory checks in the task (rece
 
 ---
 
+## 16. Owner vs Warehouse Receive Responsibility Split (2026-04-03)
+
+### 16.1 Goal
+
+Separate **procurement / PO approval** (owner panel) from **physical warehouse receipt that posts inventory** (warehouse staff). Owner monitors PO and GRN history; warehouse staff executes PO-linked bulk receive and GRN post.
+
+### 16.2 Root Cause (prior behavior)
+
+- Owner PO detail linked to `/owner/inventory/receipts/bulk` and posted stock in one step via `POST /api/v1/inventory/receipts/bulk` (`createAndReceiveGrn`).
+- Route was gated only by `inventory.update` / `org.write`, which owners typically hold.
+
+### 16.3 Files Changed
+
+| Area | File |
+|------|------|
+| Owner PO detail | `bpa_web/app/owner/(larkon)/inventory/purchase-orders/[id]/page.tsx` |
+| Bulk receive (shared) | `bpa_web/app/owner/(larkon)/inventory/receipts/bulk/BulkReceivePage.tsx` |
+| Staff warehouse receive PO | `bpa_web/app/staff/(larkon)/branch/[branchId]/warehouse/receive-po/page.tsx` (new) |
+| Staff warehouse landing | `bpa_web/app/staff/(larkon)/warehouse/page.tsx` |
+| PO API (warehouse branch link) | `backend-api/src/api/v1/modules/purchase_orders/purchaseOrder.service.ts` |
+| Bulk receive RBAC | `backend-api/src/api/v1/modules/inventory/inventory.routes.ts` |
+| Role seeds | `backend-api/prisma/seeders/seedRolesPermissions.ts` |
+
+### 16.4 RBAC Changes
+
+- **`POST /api/v1/inventory/receipts/bulk`** now allows any of: `purchase.receive`, `grn.post`, `grn.create`, `inbound.grn`, `inventory.update`, `org.write` (backward compatible for OWNER).
+- **`WAREHOUSE_MANAGER`** and **`RECEIVING_STAFF`** seeded with: `procurement.po.view`, `purchase.receive`, `grn.view`, `grn.create`, `grn.post`, `grn.void`, `batch.manage`, `barcode.manage` (read PO + post vendor GRN).
+
+*Note:* Re-seed or assign permissions in DB for existing deployments; new installs pick up seeder changes.
+
+### 16.5 Route / Page Changes
+
+| Route | Behavior |
+|-------|----------|
+| `/owner/inventory/purchase-orders/[id]` | "Receive against this PO" removed; **Awaiting warehouse receipt** badge; **View GRNs for this PO**; **Open in warehouse receiving** → staff handoff |
+| `/staff/branch/[branchId]/warehouse/receive-po` | Staff bulk receive against PO (embeds `BulkReceivePage` with `embedInStaff`, `fallbackOrgId` from branch) |
+| `/staff/warehouse` | Preserves query string; if `purchaseOrderId` present, auto-redirect / branch cards go to `receive-po` |
+
+### 16.6 Compatibility
+
+- Generic bulk receive (no PO) unchanged for users with `inventory.update` or `org.write`.
+- Internal dispatch, transfers, stock requests unchanged.
+- `BulkReceivePage` supports optional props: `fallbackOrgId`, `embedInStaff`, `staffBranchId`.
+
+### 16.7 Acceptance Checklist
+
+| Check | Pass/Fail |
+|-------|-----------|
+| Owner can approve PO and see receive status / GRNs | PASS |
+| Primary PO handoff goes to staff warehouse receiving | PASS |
+| Warehouse staff can open `receive-po` and post GRN + stock | PASS |
+| `POST /api/v1/inventory/receipts/bulk` documents warehouse-style permissions | PASS |
+| Seeded WAREHOUSE_MANAGER / RECEIVING_STAFF can read PO + post receive | PASS (after seed) |
+| Owner bulk PO URL still usable with informational banner (non-blocking) | PASS |
+
+---
+
+## Section 17: Phase 2 Authorization Hardening (2026-04-03)
+
+### 17.1 Remaining Loophole Found
+
+After implementing Section 16, a critical loophole remained:
+- `POST /api/v1/inventory/receipts/bulk` still allowed `inventory.update` and `org.write` permissions
+- OWNER role has all permissions, including both old and new warehouse-specific permissions
+- This meant owners could still post warehouse stock directly, bypassing the intended warehouse authority
+
+### 17.2 Files Changed
+
+| Area | File | Change |
+|------|------|--------|
+| Bulk receive RBAC | `backend-api/src/api/v1/modules/inventory/inventory.routes.ts` | Removed `inventory.update` / `org.write` from bulk receive endpoint |
+| Emergency override | `backend-api/src/api/v1/modules/inventory/inventory.routes.ts` | Added `/receipts/bulk-override` endpoint |
+| Override controller | `backend-api/src/api/v1/modules/inventory/inventory.controller.ts` | Added `createBulkReceiptOverride` with audit logging |
+| Permission definition | `backend-api/prisma/seeders/seedRolesPermissions.ts` | Added `inventory.emergency.override` permission |
+| Staff permission check | `bpa_web/app/staff/(larkon)/branch/[branchId]/warehouse/receive-po/page.tsx` | Removed old permissions from validation |
+| Frontend API routing | `bpa_web/app/owner/(larkon)/inventory/receipts/bulk/BulkReceivePage.tsx` | Use `apiPost` in staff context, `ownerPost` in owner context |
+| Error handling | `bpa_web/app/owner/(larkon)/inventory/receipts/bulk/BulkReceivePage.tsx` | Added 403 permission denied handling for owners |
+
+### 17.3 Final Permission Model
+
+**Normal Bulk Receive (`POST /api/v1/inventory/receipts/bulk`):**
+- Requires ANY of: `purchase.receive`, `grn.post`, `grn.create`, `inbound.grn`
+- **No longer allows**: `inventory.update`, `org.write`
+
+**Emergency Override (`POST /api/v1/inventory/receipts/bulk-override`):**
+- Requires: `inventory.emergency.override` AND `org.write`
+- Only available to OWNER role (gets all permissions)
+- Requires `reason` field for audit trail
+- Logs `OWNER_RECEIVE_OVERRIDE_USED` audit event
+
+### 17.4 Override Policy
+
+**Emergency Override Usage:**
+- Intended for emergency situations when warehouse staff unavailable
+- Requires explicit reason for audit compliance
+- Logs detailed audit trail including reason, location, and override type
+- Should be used sparingly and reviewed during audit processes
+
+**Normal Path Enforcement:**
+- Owners receive 403 permission denied with clear message directing to warehouse staff
+- Staff context automatically uses correct API endpoint with proper permissions
+- Frontend shows appropriate error messages and guidance
+
+### 17.5 Final Owner Capabilities
+
+After Phase 2 hardening, owners can:
+- ✅ Create and manage Purchase Orders
+- ✅ View PO receive status and GRN history
+- ✅ Use "Open in warehouse receiving" to hand off to staff
+- ✅ Monitor receiving progress through status badges
+- ✅ Use emergency override with explicit reason (audit logged)
+- ❌ **Cannot normally post warehouse stock through bulk receive**
+
+### 17.6 Final Warehouse/Staff Capabilities
+
+Warehouse staff can:
+- ✅ View receivable POs assigned to their warehouse
+- ✅ Use dedicated `/staff/branch/[branchId]/warehouse/receive-po` page
+- ✅ Enter received quantities and capture batch/lot/expiry data
+- ✅ Post GRN and update inventory stock
+- ✅ Continue to putaway workflows
+- ✅ All receiving operations with proper warehouse permissions
+
+### 17.7 Acceptance Checklist
+
+| Check | Pass/Fail |
+|-------|-----------|
+| Owner cannot normally post warehouse stock via bulk receive | PASS |
+| 403 permission denied shows clear guidance to use warehouse staff | PASS |
+| Staff context uses correct API with warehouse permissions | PASS |
+| Emergency override requires explicit reason and logs audit trail | PASS |
+| Warehouse staff flow remains fully functional | PASS |
+| `POST /api/v1/inventory/receipts/bulk` enforces warehouse-only permissions | PASS |
+| Owner retains PO monitoring and GRN visibility | PASS |
+| Backward compatibility preserved only through explicit override | PASS |
+
+**Owner-side stock posting is now fully blocked in the normal path. ✅**
+
+---
+
 **End of Plan**

@@ -3,18 +3,21 @@
  */
 import prisma from "../../../../infrastructure/db/prismaClient";
 import * as dispatchService from "../dispatches/dispatches.service";
-import { logWarehouseAuditInTx, logWarehouseAudit } from "../warehouse/warehouseAudit.service";
+import { logWarehouseAuditInTx } from "../warehouse/warehouseAudit.service";
 
 export async function createPickListFromPlan(planId: number, orgId: number) {
-  const plan = await prisma.allocationPlan.findFirst({
-    where: { id: planId, orgId, status: "CONFIRMED" },
-    include: { lines: true, pickList: true },
-  });
-  if (!plan) throw new Error("Confirmed allocation plan not found");
-  if (plan.pickList) throw new Error("Pick list already exists for this plan");
-  if (!plan.lines.length) throw new Error("Allocation plan has no lines");
-
   return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "allocation_plans" WHERE id = ${planId} AND "orgId" = ${orgId} FOR UPDATE`;
+
+    const plan = await tx.allocationPlan.findFirst({
+      where: { id: planId, orgId, status: "CONFIRMED" },
+      include: { lines: true, pickList: true },
+    });
+    if (!plan) throw new Error("Confirmed allocation plan not found");
+    if (plan.pickList) throw new Error("Pick list already exists for this plan");
+    const linesToPick = plan.lines.filter((l) => l.quantityAllocated > 0);
+    if (!linesToPick.length) throw new Error("Allocation plan has no positive quantity lines to pick");
+
     const pl = await tx.pickList.create({
       data: {
         orgId,
@@ -24,7 +27,7 @@ export async function createPickListFromPlan(planId: number, orgId: number) {
       },
     });
 
-    for (const line of plan.lines) {
+    for (const line of linesToPick) {
       await tx.pickListLine.create({
         data: {
           pickListId: pl.id,
@@ -126,15 +129,20 @@ export async function updatePickLine(
 ) {
   const line = await prisma.pickListLine.findFirst({
     where: { id: lineId, pickListId, pickList: { orgId } },
+    include: {
+      pickList: { select: { id: true, status: true } },
+      variant: { select: { sku: true } },
+    },
   });
   if (!line) throw new Error("Pick line not found");
-  if (quantityPicked < 0 || quantityPicked > line.quantityToPick) {
-    throw new Error(`quantityPicked must be between 0 and ${line.quantityToPick}`);
+  if (!["DRAFT", "IN_PROGRESS"].includes(line.pickList.status)) {
+    throw new Error(`Pick list is not open for edits (status ${line.pickList.status})`);
   }
-
-  const pl = await prisma.pickList.findFirst({ where: { id: pickListId, orgId } });
-  if (!pl || !["DRAFT", "IN_PROGRESS"].includes(pl.status)) {
-    throw new Error("Pick list is not open for edits");
+  if (quantityPicked < 0 || quantityPicked > line.quantityToPick) {
+    const sku = line.variant?.sku ?? "?";
+    throw new Error(
+      `Pick line ${lineId} (SKU ${sku}): quantityPicked must be between 0 and ${line.quantityToPick} (received ${quantityPicked})`
+    );
   }
 
   return prisma.pickListLine.update({
@@ -154,13 +162,34 @@ export async function completePicking(pickListId: number, orgId: number, actorUs
   });
   if (!pl) throw new Error("Pick list not found");
   if (pl.stockDispatchId) throw new Error("Pick list already handed off to dispatch");
+  if (pl.status === "COMPLETED") {
+    return prisma.pickList.findUnique({
+      where: { id: pickListId },
+      include: {
+        lines: {
+          include: {
+            variant: { select: { id: true, sku: true, title: true, barcode: true } },
+            lot: { select: { id: true, lotCode: true, expDate: true } },
+            location: { select: { id: true, name: true, zone: { select: { id: true, code: true, name: true } } } },
+          },
+        },
+        allocationPlan: true,
+      },
+    });
+  }
 
   return prisma.$transaction(async (tx) => {
-    const refreshed = await tx.pickListLine.findMany({ where: { pickListId } });
+    const refreshed = await tx.pickListLine.findMany({
+      where: { pickListId },
+      include: { variant: { select: { sku: true } } },
+    });
     let anyPositive = false;
     for (const l of refreshed) {
       if (l.quantityPicked < 0 || l.quantityPicked > l.quantityToPick) {
-        throw new Error(`Line ${l.id}: quantityPicked must be between 0 and ${l.quantityToPick}`);
+        const sku = l.variant?.sku ?? "?";
+        throw new Error(
+          `Line ${l.id} (SKU ${sku}): quantityPicked must be between 0 and ${l.quantityToPick} (current ${l.quantityPicked})`
+        );
       }
       if (l.quantityPicked > 0) anyPositive = true;
     }
@@ -208,6 +237,16 @@ export async function completePicking(pickListId: number, orgId: number, actorUs
   });
 }
 
+const handoffReturnInclude = {
+  dispatch: {
+    include: {
+      toLocation: { select: { id: true, name: true, branchId: true } },
+      items: { include: { variant: { select: { id: true, sku: true, title: true, barcode: true } } } },
+    },
+  },
+  lines: true,
+} as const;
+
 export async function handoffToDispatch(
   pickListId: number,
   orgId: number,
@@ -217,78 +256,108 @@ export async function handoffToDispatch(
     createdByUserId: number;
   }
 ) {
-  const pl = await prisma.pickList.findFirst({
-    where: { id: pickListId, orgId, status: "COMPLETED" },
-    include: {
-      lines: true,
-      allocationPlan: true,
-    },
-  });
-  if (!pl) throw new Error("Completed pick list not found");
-  if (pl.stockDispatchId) throw new Error("Dispatch already created");
-  const items = pl.lines
-    .filter((l) => l.quantityPicked > 0)
-    .map((l) => ({
-      variantId: l.variantId,
-      lotId: l.lotId,
-      quantity: l.quantityPicked,
-    }));
-  if (!items.length) throw new Error("No picked quantities to dispatch; complete picking with at least one line > 0");
+  return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "pick_lists" WHERE id = ${pickListId} AND "orgId" = ${orgId} FOR UPDATE`;
 
-  const srId = pl.allocationPlan.stockRequestId;
-  const mrId = pl.allocationPlan.medicineRequisitionId;
-  if (!srId && !mrId) {
-    throw new Error("Allocation plan has no stock request or medicine requisition");
-  }
-
-  const dispatch = await dispatchService.createDispatch({
-    orgId,
-    stockRequestId: srId ?? null,
-    medicineRequisitionId: mrId ?? null,
-    fromLocationId: pl.fromLocationId,
-    toLocationId: data.toLocationId,
-    items,
-    transport: data.transport,
-    createdByUserId: data.createdByUserId,
-    pickListId: pl.id,
-  });
-
-  await prisma.pickList.update({
-    where: { id: pickListId },
-    data: { stockDispatchId: dispatch.id },
-  });
-
-  await prisma.allocationPlan.update({
-    where: { id: pl.allocationPlanId },
-    data: { status: "DISPATCHED" },
-  });
-
-  const fromLoc = await prisma.inventoryLocation.findUnique({
-    where: { id: pl.fromLocationId },
-    select: { warehouseId: true },
-  });
-  await logWarehouseAudit({
-    orgId,
-    warehouseId: fromLoc?.warehouseId ?? null,
-    category: "OPERATIONS",
-    action: "PICK_HANDOFF_DISPATCH",
-    entityType: "StockDispatch",
-    entityId: String(dispatch.id),
-    metadata: { pickListId, allocationPlanId: pl.allocationPlanId, stockRequestId: srId, medicineRequisitionId: mrId },
-    actorUserId: data.createdByUserId ?? null,
-  });
-
-  return prisma.pickList.findUnique({
-    where: { id: pickListId },
-    include: {
-      dispatch: {
-        include: {
-          toLocation: { select: { id: true, name: true, branchId: true } },
-          items: { include: { variant: { select: { id: true, sku: true, title: true, barcode: true } } } },
-        },
+    const pl = await tx.pickList.findFirst({
+      where: { id: pickListId, orgId },
+      include: {
+        lines: true,
+        allocationPlan: true,
       },
-      lines: true,
-    },
+    });
+    if (!pl) throw new Error("Pick list not found");
+
+    if (pl.stockDispatchId != null) {
+      const existing = await tx.pickList.findUnique({
+        where: { id: pickListId },
+        include: handoffReturnInclude,
+      });
+      if (!existing) throw new Error("Pick list not found");
+      return existing;
+    }
+
+    if (pl.status !== "COMPLETED") {
+      throw new Error(`Handoff requires pick list in COMPLETED status (current: ${pl.status})`);
+    }
+
+    const ap = pl.allocationPlan;
+    if (ap.status === "DISPATCHED") {
+      throw new Error("Allocation plan is already DISPATCHED; refresh and verify dispatch link");
+    }
+    if (ap.status !== "PICKED") {
+      throw new Error(`Handoff requires allocation plan in PICKED status (current: ${ap.status})`);
+    }
+
+    await tx.$queryRaw`SELECT id FROM "allocation_plans" WHERE id = ${pl.allocationPlanId} AND "orgId" = ${orgId} FOR UPDATE`;
+
+    const items = pl.lines
+      .filter((l) => l.quantityPicked > 0)
+      .map((l) => ({
+        variantId: l.variantId,
+        lotId: l.lotId,
+        quantity: l.quantityPicked,
+      }));
+    if (!items.length) {
+      throw new Error("No picked quantities to dispatch; complete picking with at least one line > 0");
+    }
+
+    const srId = ap.stockRequestId;
+    const mrId = ap.medicineRequisitionId;
+    if (!srId && !mrId) {
+      throw new Error("Allocation plan has no stock request or medicine requisition");
+    }
+
+    const dispatch = await dispatchService.createDispatch(
+      {
+        orgId,
+        stockRequestId: srId ?? null,
+        medicineRequisitionId: mrId ?? null,
+        fromLocationId: pl.fromLocationId,
+        toLocationId: data.toLocationId,
+        items,
+        transport: data.transport,
+        createdByUserId: data.createdByUserId,
+        pickListId: pl.id,
+      },
+      { tx }
+    );
+
+    await tx.pickList.update({
+      where: { id: pickListId },
+      data: { stockDispatchId: dispatch.id },
+    });
+    await tx.allocationPlan.update({
+      where: { id: pl.allocationPlanId },
+      data: { status: "DISPATCHED" },
+    });
+
+    const fromLoc = await tx.inventoryLocation.findUnique({
+      where: { id: pl.fromLocationId },
+      select: { warehouseId: true },
+    });
+    await logWarehouseAuditInTx(tx, {
+      orgId,
+      warehouseId: fromLoc?.warehouseId ?? null,
+      category: "OPERATIONS",
+      action: "PICK_HANDOFF_DISPATCH",
+      entityType: "StockDispatch",
+      entityId: String(dispatch.id),
+      metadata: {
+        pickListId,
+        allocationPlanId: pl.allocationPlanId,
+        stockRequestId: srId,
+        medicineRequisitionId: mrId,
+      },
+      actorUserId: data.createdByUserId ?? null,
+    });
+
+    const result = await tx.pickList.findUnique({
+      where: { id: pickListId },
+      include: handoffReturnInclude,
+    });
+    if (!result) throw new Error("Pick list not found after handoff");
+    return result;
   });
 }
 

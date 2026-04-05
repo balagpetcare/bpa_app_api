@@ -13,6 +13,8 @@ export const POS_ERROR_CODES = {
   NO_OPEN_SHIFT: "NO_OPEN_SHIFT",
   SHIFT_ALREADY_OPEN: "SHIFT_ALREADY_OPEN",
   SHIFT_ALREADY_CLOSED: "SHIFT_ALREADY_CLOSED",
+  /** List price, floor, retail discount rules, or approval linkage blocked the sale */
+  PRICING_GOVERNANCE: "PRICING_GOVERNANCE",
 } as const;
 
 export function sendPosError(

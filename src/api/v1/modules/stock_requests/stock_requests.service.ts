@@ -35,12 +35,17 @@ export type CreateRequestInput = {
   branchId: number;
   requesterUserId: number;
   items: Array<{ productId: number; variantId: number; requestedQty: number; note?: string }>;
+  requestIntent?: "INTERNAL_TRANSFER" | "PROCUREMENT";
+  procurementNote?: string;
+  preferredVendorId?: number;
+  urgency?: string;
 };
 
 export type ListRequestsFilter = {
   branchIds?: number[];
   orgId?: number;
   status?: string;
+  requestIntent?: string;
   dateFrom?: string;
   dateTo?: string;
   page?: number;
@@ -588,7 +593,27 @@ async function fulfillStockRequestFlexible(requestId: number, input: FlexibleFul
 }
 
 /**
+ * Detect if branch is a warehouse hub; if so, default intent to PROCUREMENT.
+ */
+async function resolveRequestIntent(
+  branchId: number,
+  explicitIntent?: "INTERNAL_TRANSFER" | "PROCUREMENT"
+): Promise<"INTERNAL_TRANSFER" | "PROCUREMENT"> {
+  if (explicitIntent) return explicitIntent;
+  const branch = await prisma.branch.findUnique({
+    where: { id: branchId },
+    select: {
+      typeLinks: { select: { branchType: { select: { code: true } } } },
+    },
+  });
+  const WAREHOUSE_HUB_CODES = new Set(["WAREHOUSE_DC", "WAREHOUSE", "CENTRAL_WAREHOUSE", "DISTRIBUTION_CENTER"]);
+  const isWarehouse = (branch?.typeLinks ?? []).some((t: any) => WAREHOUSE_HUB_CODES.has(t.branchType.code));
+  return isWarehouse ? "PROCUREMENT" : "INTERNAL_TRANSFER";
+}
+
+/**
  * Create draft stock request (branch). No batch; product/variant + qty only.
+ * Auto-detects requestIntent from branch type if not explicitly provided.
  */
 async function createRequest(data: CreateRequestInput) {
   if (!data.items?.length) {
@@ -600,12 +625,18 @@ async function createRequest(data: CreateRequestInput) {
     }
   }
 
+  const intent = await resolveRequestIntent(data.branchId, data.requestIntent);
+
   const request = await prisma.stockRequest.create({
     data: {
       orgId: data.orgId,
       branchId: data.branchId,
       requesterUserId: data.requesterUserId,
       status: "DRAFT",
+      requestIntent: intent,
+      procurementNote: data.procurementNote ?? null,
+      preferredVendorId: data.preferredVendorId ?? null,
+      urgency: data.urgency ?? null,
       items: {
         create: data.items.map((i) => ({
           productId: i.productId,
@@ -641,6 +672,7 @@ async function listRequests(filter: ListRequestsFilter) {
   if (filter.branchIds?.length) where.branchId = { in: filter.branchIds };
   if (filter.orgId) where.orgId = filter.orgId;
   if (filter.status) where.status = filter.status;
+  if (filter.requestIntent) where.requestIntent = filter.requestIntent;
   if (filter.dateFrom || filter.dateTo) {
     where.createdAt = {};
     if (filter.dateFrom) where.createdAt.gte = new Date(filter.dateFrom);

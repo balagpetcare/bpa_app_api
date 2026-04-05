@@ -209,7 +209,7 @@ export async function rankVendorsForVariant(
         ledger: ledgerScore,
         leadTime: leadTimeScore,
         delayPenalty,
-        shortageContext: shortage,
+        shortageContext: shortageRiskAtBranch,
       },
       avgLeadTimeDays: avgLt,
       delayedReceiveCount: delayedCt,

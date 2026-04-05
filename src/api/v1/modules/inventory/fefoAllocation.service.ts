@@ -82,6 +82,58 @@ export async function allocateVariantFifo(
 }
 
 /**
+ * FEFO allocation up to quantityNeeded: never throws for shortage; returns unfilled remainder as shortBy.
+ * Used by enterprise allocation plans for partial allocation + shortage tracking.
+ */
+export async function allocateVariantFifoUpTo(
+  orgId: number,
+  locationId: number,
+  variantId: number,
+  quantityNeeded: number
+): Promise<{ slices: FefoSlice[]; shortBy: number }> {
+  if (quantityNeeded <= 0) return { slices: [], shortBy: 0 };
+  const sellable = await isDispatchSellableLocation(locationId);
+  if (!sellable) return { slices: [], shortBy: quantityNeeded };
+
+  const rows = await prisma.stockLotBalance.findMany({
+    where: {
+      locationId,
+      onHandQty: { gt: 0 },
+      lot: {
+        orgId,
+        variantId,
+        expDate: fefoLotExpDateEligibleFilter(),
+      },
+    },
+    include: { lot: { select: { id: true, expDate: true } } },
+    orderBy: { lot: { expDate: "asc" } },
+  });
+
+  const lotIds = rows.map((r) => r.lotId);
+  const [recallFrozen, qcPending] = await Promise.all([
+    getFrozenRecallLotIds(orgId, lotIds),
+    getPendingQcHoldByLot(orgId, locationId),
+  ]);
+
+  const out: FefoSlice[] = [];
+  let need = quantityNeeded;
+  for (const row of rows) {
+    if (need <= 0) break;
+    if (recallFrozen.has(row.lotId)) continue;
+    const qcBlock = qcPending.get(row.lotId) ?? 0;
+    const effective = row.onHandQty - row.reservedQty - qcBlock;
+    if (effective <= 0) continue;
+    const take = Math.min(need, effective);
+    if (take > 0) {
+      out.push({ lotId: row.lotId, locationId, quantity: take });
+      need -= take;
+    }
+  }
+
+  return { slices: out, shortBy: need };
+}
+
+/**
  * Total quantity dispatchable via FEFO lot lines (effective on-hand minus reservedQty, QC/recall exclusions).
  * Does not consider aggregate StockBalance — use with aggregate max for enterprise non-lot fallback.
  */

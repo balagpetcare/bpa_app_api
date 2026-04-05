@@ -4,6 +4,7 @@
 import prisma from "../../../../infrastructure/db/prismaClient";
 import { Prisma } from "@prisma/client";
 import { logWarehouseAudit } from "../warehouse/warehouseAudit.service";
+import { resolveWarehouseId, validateWarehouseAccess, getWarehouseInfo } from "../../utils/resolveWarehouse";
 
 async function nextPoNumber(orgId: number, db: { purchaseOrder: { count: (args: any) => Promise<number> } } = prisma): Promise<string> {
   const count = await db.purchaseOrder.count({ where: { orgId } });
@@ -47,11 +48,23 @@ export async function createPurchaseOrderWithClient(
   });
   if (!vendor) throw new Error("Vendor not found for organization");
 
+  // Resolve warehouse ID (handles both branch IDs and warehouse IDs)
+  let resolvedWarehouseId: number | null = null;
   if (data.warehouseId != null) {
-    const wh = await db.warehouse.findFirst({
-      where: { id: data.warehouseId, orgId: data.orgId },
-    });
-    if (!wh) throw new Error("Warehouse not found for organization");
+    const resolution = await resolveWarehouseId({
+      orgId: data.orgId,
+      warehouseId: data.warehouseId,
+    }, db);
+
+    if (!resolution.warehouseId) {
+      throw new Error("Invalid warehouse or branch mapping for this organization");
+    }
+
+    resolvedWarehouseId = resolution.warehouseId;
+
+    if (resolution.wasCreated) {
+      console.log(`[PO_CREATE] Created compatibility warehouse ${resolvedWarehouseId} for branch-backed warehouse`);
+    }
   }
 
   for (const l of data.lines) {
@@ -78,11 +91,11 @@ export async function createPurchaseOrderWithClient(
     }
   }
 
-  return db.purchaseOrder.create({
+  const createdPO = await db.purchaseOrder.create({
     data: {
       orgId: data.orgId,
       vendorId: data.vendorId,
-      warehouseId: data.warehouseId ?? undefined,
+      warehouseId: resolvedWarehouseId ?? undefined,
       purchaseRequisitionId: data.purchaseRequisitionId ?? undefined,
       poNumber,
       status: "DRAFT",
@@ -104,10 +117,17 @@ export async function createPurchaseOrderWithClient(
     },
     include: {
       vendor: { select: { id: true, name: true } },
-      warehouse: { select: { id: true, name: true } },
       lines: { include: { variant: { select: { id: true, sku: true, title: true } } } },
     },
   });
+
+  // Get warehouse data for response
+  const warehouseData = await getWarehouseInfo(createdPO.warehouseId, createdPO.orgId, db);
+
+  return {
+    ...createdPO,
+    warehouse: warehouseData,
+  };
 }
 
 export async function listPurchaseOrders(
@@ -129,15 +149,25 @@ export async function listPurchaseOrders(
       orderBy: { createdAt: "desc" },
       include: {
         vendor: { select: { id: true, name: true } },
-        warehouse: { select: { id: true, name: true } },
         lines: { select: { id: true, variantId: true, orderedQty: true, receivedQty: true } },
       },
     }),
     prisma.purchaseOrder.count({ where }),
   ]);
 
+  // Get warehouse data for each PO
+  const itemsWithWarehouse = await Promise.all(
+    items.map(async (item) => {
+      const warehouseData = await getWarehouseInfo(item.warehouseId, orgId);
+      return {
+        ...item,
+        warehouse: warehouseData,
+      };
+    })
+  );
+
   return {
-    items,
+    items: itemsWithWarehouse,
     pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
   };
 }
@@ -148,11 +178,10 @@ const actorSelect = {
 } as const;
 
 export async function getPurchaseOrderById(id: number, orgId: number) {
-  return prisma.purchaseOrder.findFirst({
+  const po = await prisma.purchaseOrder.findFirst({
     where: { id, orgId },
     include: {
       vendor: { select: { id: true, name: true, phone: true, email: true } },
-      warehouse: { select: { id: true, name: true } },
       lines: { include: { variant: { select: { id: true, sku: true, title: true } } } },
       grns: {
         select: {
@@ -163,6 +192,7 @@ export async function getPurchaseOrderById(id: number, orgId: number) {
           receivedAt: true,
           locationId: true,
           _count: { select: { lines: true } },
+          vendorReceiveSession: { select: { status: true, submittedAt: true } },
         },
       },
       purchaseRequisition: { select: { id: true, prNumber: true, status: true } },
@@ -171,6 +201,16 @@ export async function getPurchaseOrderById(id: number, orgId: number) {
       rejectedBy: { select: actorSelect },
     },
   });
+
+  if (!po) return null;
+
+  // Get warehouse data for response
+  const warehouseData = await getWarehouseInfo(po.warehouseId, orgId);
+
+  return {
+    ...po,
+    warehouse: warehouseData,
+  };
 }
 
 export async function submitPurchaseOrder(id: number, orgId: number, actorUserId?: number) {
@@ -193,8 +233,11 @@ export async function submitPurchaseOrder(id: number, orgId: number, actorUserId
   });
   let whId: number | null = null;
   if (po.warehouseId != null) {
-    const w = await prisma.warehouse.findFirst({ where: { id: po.warehouseId, orgId }, select: { id: true } });
-    whId = w?.id ?? null;
+    const validation = await validateWarehouseAccess({
+      orgId,
+      warehouseId: po.warehouseId,
+    });
+    whId = validation.valid ? po.warehouseId : null;
   }
   await logWarehouseAudit({
     orgId,
@@ -229,8 +272,11 @@ export async function approvePurchaseOrder(id: number, orgId: number, approverUs
   });
   let whId: number | null = null;
   if (po.warehouseId != null) {
-    const w = await prisma.warehouse.findFirst({ where: { id: po.warehouseId, orgId }, select: { id: true } });
-    whId = w?.id ?? null;
+    const validation = await validateWarehouseAccess({
+      orgId,
+      warehouseId: po.warehouseId,
+    });
+    whId = validation.valid ? po.warehouseId : null;
   }
   await logWarehouseAudit({
     orgId,
@@ -263,8 +309,11 @@ export async function rejectPurchaseOrder(id: number, orgId: number, userId: num
   });
   let whId: number | null = null;
   if (po.warehouseId != null) {
-    const w = await prisma.warehouse.findFirst({ where: { id: po.warehouseId, orgId }, select: { id: true } });
-    whId = w?.id ?? null;
+    const validation = await validateWarehouseAccess({
+      orgId,
+      warehouseId: po.warehouseId,
+    });
+    whId = validation.valid ? po.warehouseId : null;
   }
   await logWarehouseAudit({
     orgId,
@@ -296,8 +345,11 @@ export async function cancelPurchaseOrder(id: number, orgId: number, reason?: st
   });
   let whId: number | null = null;
   if (po.warehouseId != null) {
-    const w = await prisma.warehouse.findFirst({ where: { id: po.warehouseId, orgId }, select: { id: true } });
-    whId = w?.id ?? null;
+    const validation = await validateWarehouseAccess({
+      orgId,
+      warehouseId: po.warehouseId,
+    });
+    whId = validation.valid ? po.warehouseId : null;
   }
   await logWarehouseAudit({
     orgId,
@@ -347,7 +399,8 @@ export async function applyGrnReceiveToPurchaseOrder(
       }
     }
     if (!pol) continue;
-    const add = gl.quantity;
+    const extra = gl.quantityExtra != null ? Number(gl.quantityExtra) : 0;
+    const add = Number(gl.quantity) + (Number.isFinite(extra) ? extra : 0);
     const nextRecv = pol.receivedQty + add;
     await tx.purchaseOrderLine.update({
       where: { id: pol.id },
@@ -372,4 +425,125 @@ export async function applyGrnReceiveToPurchaseOrder(
   } else if (anyReceived) {
     await tx.purchaseOrder.update({ where: { id: purchaseOrderId }, data: { status: "PARTIALLY_RECEIVED" } });
   }
+}
+
+/**
+ * Create PO from an approved procurement stock request.
+ * Links the PO back to the StockRequest and transitions request to APPROVED.
+ */
+export async function createPurchaseOrderFromStockRequest(opts: {
+  stockRequestId: number;
+  vendorId: number;
+  orgId: number;
+  createdByUserId: number;
+  warehouseId?: number;
+  expectedDeliveryDate?: Date;
+  notes?: string;
+  currency?: string;
+}) {
+  return prisma.$transaction(async (tx) => {
+    const request = await tx.stockRequest.findFirst({
+      where: { id: opts.stockRequestId, orgId: opts.orgId },
+      include: {
+        items: {
+          include: {
+            variant: { select: { id: true, sku: true, productId: true } },
+            product: { select: { id: true, name: true } },
+          },
+        },
+        branch: {
+          select: {
+            id: true, name: true,
+            warehouses: { where: { isActive: true }, select: { id: true }, take: 1 },
+          },
+        },
+      },
+    });
+    if (!request) throw new Error("Stock request not found");
+    if (request.requestIntent !== "PROCUREMENT") {
+      throw new Error("Only PROCUREMENT intent requests can be converted to purchase orders");
+    }
+    if (!["SUBMITTED", "OWNER_REVIEW", "APPROVED"].includes(request.status)) {
+      throw new Error(`Cannot create PO from request in status ${request.status}`);
+    }
+
+    const resolvedWarehouseId = opts.warehouseId ??
+      request.branch?.warehouses?.[0]?.id ?? undefined;
+
+    const poData = {
+      orgId: opts.orgId,
+      vendorId: opts.vendorId,
+      warehouseId: resolvedWarehouseId,
+      lines: request.items
+        .filter((i: any) => i.lineKind !== "EXTRA")
+        .map((i: any) => ({
+          variantId: i.variantId,
+          orderedQty: i.requestedQty,
+          note: i.note ?? undefined,
+        })),
+      expectedDeliveryDate: opts.expectedDeliveryDate,
+      notes: opts.notes ?? request.procurementNote ?? undefined,
+      currency: opts.currency,
+      createdByUserId: opts.createdByUserId,
+    };
+
+    const po = await createPurchaseOrderWithClient(tx, poData);
+
+    await tx.stockRequest.update({
+      where: { id: opts.stockRequestId },
+      data: {
+        linkedPurchaseOrderId: po.id,
+        status: "APPROVED",
+        approvedAt: new Date(),
+        approvedByUserId: opts.createdByUserId,
+      },
+    });
+
+    return po;
+  });
+}
+
+/**
+ * Pending vendor PO receipts for a branch-backed warehouse.
+ * Returns APPROVED and PARTIALLY_RECEIVED POs where the linked warehouse has branchId = branchId
+ * and pendingQty > 0. Used by the warehouse staff Receive Center.
+ */
+export async function listPendingPoReceiptsForBranch(branchId: number, orgId: number) {
+  const pos = await prisma.purchaseOrder.findMany({
+    where: {
+      orgId,
+      status: { in: ["APPROVED", "PARTIALLY_RECEIVED"] },
+      warehouse: { branchId, isActive: true },
+    },
+    include: {
+      vendor: { select: { id: true, name: true } },
+      warehouse: { select: { id: true, name: true, branchId: true } },
+      lines: { select: { id: true, orderedQty: true, receivedQty: true } },
+    },
+    orderBy: { createdAt: "desc" },
+    take: 100,
+  });
+
+  return pos
+    .map((po) => {
+      const totalOrderedQty = po.lines.reduce((s, l) => s + l.orderedQty, 0);
+      const totalReceivedQty = po.lines.reduce((s, l) => s + Number(l.receivedQty), 0);
+      const pendingQty = po.lines.reduce((s, l) => s + Math.max(0, l.orderedQty - Number(l.receivedQty)), 0);
+      return {
+        id: po.id,
+        poNumber: po.poNumber,
+        status: po.status,
+        vendorId: po.vendor?.id ?? null,
+        vendorName: po.vendor?.name ?? null,
+        expectedDeliveryDate: po.expectedDeliveryDate ?? null,
+        lineCount: po.lines.length,
+        pendingQty,
+        totalOrderedQty,
+        totalReceivedQty,
+        warehouseId: po.warehouseId ?? null,
+        warehouseName: po.warehouse?.name ?? null,
+        createdAt: po.createdAt,
+      };
+    })
+    .filter((po) => po.pendingQty > 0);
 }

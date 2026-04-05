@@ -121,10 +121,24 @@ export async function getById(req: any, res: any) {
   }
 }
 
+export async function printHtml(req: any, res: any) {
+  try {
+    const ctx = await resolveOrg(req);
+    if (!ctx) return res.status(403).json({ success: false, message: "No organization access" });
+    const id = Number(req.params.id);
+    const { renderPickListPrintHtml } = await import("../inventory/printDocuments.service");
+    const html = await renderPickListPrintHtml(id, ctx.orgId);
+    return res.type("html").send(html);
+  } catch (e: any) {
+    console.error("pickList.printHtml", e);
+    return res.status(400).json({ success: false, message: e?.message || "Failed" });
+  }
+}
+
 export async function list(req: any, res: any) {
   try {
     const ctx = await resolveOrg(req);
-    if (!ctx) return res.status(200).json({ success: true, data: [], pagination: { page: 1, limit: 20, total: 0, totalPages: 0 } });
+    if (!ctx) return res.status(403).json({ success: false, message: "No organization access" });
     const result = await service.listPickLists(ctx.orgId, {
       status: req.query.status as string | undefined,
       assignedPickerUserId: req.query.mine ? ctx.userId : req.query.pickerUserId ? Number(req.query.pickerUserId) : undefined,

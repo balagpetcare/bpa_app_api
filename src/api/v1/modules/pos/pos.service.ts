@@ -2,6 +2,10 @@ const orderService = require("../orders/orders.service");
 const ledgerService = require("../inventory/ledger.service");
 const inventoryService = require("../inventory/inventory.service");
 const prisma = require("../../../../infrastructure/db/prismaClient");
+const {
+  assertPosSalePricingGovernance,
+  consumeRetailDiscountApprovalsForPaidOrder,
+} = require("../pricing/retailDiscount.service");
 
 /**
  * Look up product + variant by barcode for a branch. Returns stock and location price at branch's SHOP location.
@@ -219,6 +223,7 @@ async function createSale(data: {
     variantId?: number;
     quantity: number;
     price: number;
+    retailDiscountApprovalId?: number;
   }>;
   paymentMethod: string;
   customerId?: number;
@@ -233,7 +238,22 @@ async function createSale(data: {
     throw new Error("No open shift for this branch. Open a shift before making a sale.");
   }
 
+  const branchRow = await prisma.branch.findUnique({
+    where: { id: data.branchId },
+    select: { orgId: true },
+  });
+  if (!branchRow) {
+    throw new Error("Branch not found");
+  }
+
   const shopLocationId = await orderService.getDefaultFulfilmentLocationForBranch(data.branchId, "SHOP");
+
+  await assertPosSalePricingGovernance({
+    orgId: branchRow.orgId,
+    branchId: data.branchId,
+    shopLocationId,
+    items: data.items,
+  });
 
   if (shopLocationId != null) {
     for (const item of data.items) {
@@ -247,72 +267,107 @@ async function createSale(data: {
     }
   }
 
-  const order = await orderService.createOrder({
-    branchId: data.branchId,
-    customerId: data.customerId,
-    items: data.items,
-    paymentMethod: data.paymentMethod,
-    notes: data.notes || "POS Sale",
-    createdByUserId: data.createdByUserId,
-    orderSource: "POS",
-    fulfilmentInventoryLocationId: shopLocationId ?? undefined,
-  });
-
-  const paidOrder = await orderService.processPayment(order.id, {
-    paymentMethod: data.paymentMethod,
-    paymentStatus: "COMPLETED",
-  });
-
-  const confirmedOrder = await orderService.updateOrderStatus(
-    paidOrder.id,
-    "CONFIRMED",
-    data.branchId
-  );
-
-  if (shopLocationId != null) {
-    for (const item of data.items) {
-      if (item.variantId) {
-        await ledgerService.saleFEFO({
-          locationId: shopLocationId,
-          variantId: item.variantId,
-          quantity: item.quantity,
-          saleType: "SALE_POS",
-          refType: "ORDER",
-          refId: String(confirmedOrder.id),
-          createdByUserId: data.createdByUserId,
-        });
-      }
-    }
-  } else {
-    for (const item of data.items) {
-      if (item.variantId) {
-        const inv = await inventoryService.getInventory({
-          branchId: data.branchId,
+  /**
+   * Single DB transaction: order → payment → discount consumption → ledger (or legacy inventory OUT).
+   * Rollback on any failure (no orphan paid orders without stock movement).
+   */
+  const confirmedOrder = await prisma.$transaction(async (tx: any) => {
+    const order = await orderService.createOrder(
+      {
+        branchId: data.branchId,
+        customerId: data.customerId,
+        items: data.items.map((item) => ({
           productId: item.productId,
-          variantId: item.variantId,
-          limit: 1,
-        });
-        if (inv.items.length > 0) {
-          await inventoryService.adjustStock(
-            inv.items[0].id,
-            {
-              type: "OUT",
-              quantity: item.quantity,
-              reason: `POS Sale - Order ${confirmedOrder.orderNumber}`,
-              createdByUserId: data.createdByUserId,
-            },
-            data.branchId
-          );
+          variantId: item.variantId ?? null,
+          quantity: item.quantity,
+          price: item.price,
+          retailDiscountApprovalRequestId: item.retailDiscountApprovalId ?? undefined,
+        })),
+        paymentMethod: data.paymentMethod,
+        notes: data.notes || "POS Sale",
+        createdByUserId: data.createdByUserId,
+        orderSource: "POS",
+        fulfilmentInventoryLocationId: shopLocationId ?? undefined,
+      },
+      tx
+    );
+
+    const paidOrder = await orderService.processPayment(
+      order.id,
+      {
+        paymentMethod: data.paymentMethod,
+        paymentStatus: "COMPLETED",
+      },
+      data.branchId,
+      tx
+    );
+
+    await consumeRetailDiscountApprovalsForPaidOrder({
+      orgId: branchRow.orgId,
+      orderId: paidOrder.id,
+      items: data.items,
+      tx,
+    });
+
+    const updated = await orderService.updateOrderStatus(paidOrder.id, "CONFIRMED", data.branchId, tx);
+
+    if (shopLocationId != null) {
+      for (const item of data.items) {
+        if (item.variantId) {
+          await ledgerService.saleFEFOInTx(tx, {
+            locationId: shopLocationId,
+            variantId: item.variantId,
+            quantity: item.quantity,
+            saleType: "SALE_POS",
+            refType: "ORDER",
+            refId: String(updated.id),
+            createdByUserId: data.createdByUserId,
+          });
+        }
+      }
+    } else {
+      for (const item of data.items) {
+        if (item.variantId) {
+          const inv = await inventoryService.getInventory({
+            branchId: data.branchId,
+            productId: item.productId,
+            variantId: item.variantId,
+            limit: 1,
+          });
+          if (inv.items.length > 0) {
+            await inventoryService.adjustStock(
+              inv.items[0].id,
+              {
+                type: "OUT",
+                quantity: item.quantity,
+                reason: `POS Sale - Order ${updated.orderNumber}`,
+                createdByUserId: data.createdByUserId,
+              },
+              data.branchId,
+              tx
+            );
+          }
         }
       }
     }
-  }
 
-  if (currentShift) {
-    await prisma.order.update({
-      where: { id: confirmedOrder.id },
-      data: { posShiftId: currentShift.id },
-    });
+    if (currentShift) {
+      await tx.order.update({
+        where: { id: updated.id },
+        data: { posShiftId: currentShift.id },
+      });
+    }
+
+    return updated;
+  });
+
+  if (confirmedOrder.visitId) {
+    try {
+      const { createSettlementLedgerForOrder } = require("../clinic/doctorSettlement.service");
+      createSettlementLedgerForOrder(confirmedOrder.id).catch(() => {});
+    } catch (_) {
+      // clinic module optional
+    }
   }
 
   return confirmedOrder;

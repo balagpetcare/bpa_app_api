@@ -2,10 +2,12 @@
  * Stock Dispatch (Challan/DO) service.
  * Create dispatch from fulfill plan; send = ledger TRANSFER_OUT; receive = GRN + ledger TRANSFER_IN.
  */
+import { Prisma } from "@prisma/client";
 import prisma from "../../../../infrastructure/db/prismaClient";
 const ledgerService = require("../inventory/ledger.service");
 const { isFulfillmentReservationEnabled } = require("../fulfillment/reservation.service");
 const stockRequestsService = require("../stock_requests/stock_requests.service");
+import { logWarehouseAudit } from "../warehouse/warehouseAudit.service";
 
 export type CreateDispatchInput = {
   orgId: number;
@@ -48,6 +50,9 @@ export type ReceiveItemInput = {
   quantityReceived: number;
   quantityDamaged?: number;
   quantityShort?: number;
+  /** Optional line-level reason (e.g. session verification); stored on dispatch discrepancy rows. */
+  reasonCode?: string | null;
+  lineNote?: string | null;
 };
 
 export async function listDispatches(filter: ListDispatchesFilter) {
@@ -117,11 +122,34 @@ export async function getDispatchById(id: number) {
           allocationPlan: { select: { id: true, stockRequestId: true, medicineRequisitionId: true } },
         },
       },
+      dispatchReceiveSession: {
+        include: {
+          lines: {
+            include: {
+              stockDispatchItem: {
+                include: {
+                  variant: { select: { id: true, sku: true, title: true } },
+                  lot: { select: { id: true, lotCode: true, expDate: true } },
+                },
+              },
+            },
+          },
+        },
+      },
     },
   });
 }
 
-export async function createDispatch(data: CreateDispatchInput) {
+/**
+ * Create a stock dispatch (SR or MR path). Pass `tx` when called inside an interactive transaction
+ * so dispatch + MR linkage roll back with the caller (e.g. pick handoff).
+ */
+export async function createDispatch(
+  data: CreateDispatchInput,
+  options?: { tx?: Prisma.TransactionClient }
+) {
+  const db: Prisma.TransactionClient | typeof prisma = options?.tx ?? prisma;
+
   const hasSr = data.stockRequestId != null && data.stockRequestId !== undefined;
   const hasMr = data.medicineRequisitionId != null && data.medicineRequisitionId !== undefined;
   if (hasSr === hasMr) {
@@ -131,28 +159,38 @@ export async function createDispatch(data: CreateDispatchInput) {
 
   let branchIdForToLocation: number;
 
+  /** SR statuses allowed for legacy / non-pick dispatch creation */
+  const SR_DISPATCH_BASE = [
+    "SUBMITTED",
+    "OWNER_REVIEW",
+    "APPROVED",
+    "FULFILLED_PARTIAL",
+    "FULFILLED_FULL",
+    "PARTIALLY_DISPATCHED",
+  ] as const;
+  /** When validating against a completed pick list (allocation handoff), allow receive-stage statuses that blocked outbound challan creation */
+  const SR_DISPATCH_WITH_PICK_HANDOFF = [
+    ...SR_DISPATCH_BASE,
+    "RECEIVED_FULL",
+    "RECEIVED_PARTIAL",
+    "PARTIALLY_RECEIVED",
+    "RECEIVED",
+  ] as const;
+
   if (hasSr) {
-    const request = await prisma.stockRequest.findUnique({
+    const request = await db.stockRequest.findUnique({
       where: { id: data.stockRequestId! },
       include: { items: true },
     });
     if (!request) throw new Error("Stock request not found");
     if (request.orgId !== data.orgId) throw new Error("Stock request does not belong to organization");
-    if (
-      ![
-        "SUBMITTED",
-        "OWNER_REVIEW",
-        "APPROVED",
-        "FULFILLED_PARTIAL",
-        "FULFILLED_FULL",
-        "PARTIALLY_DISPATCHED",
-      ].includes(request.status)
-    ) {
+    const allowedSrStatuses = (data.pickListId != null ? SR_DISPATCH_WITH_PICK_HANDOFF : SR_DISPATCH_BASE) as readonly string[];
+    if (!allowedSrStatuses.includes(request.status)) {
       throw new Error(`Request cannot be dispatched in status ${request.status}`);
     }
     branchIdForToLocation = request.branchId;
   } else {
-    const mr = await prisma.medicineRequisition.findUnique({
+    const mr = await db.medicineRequisition.findUnique({
       where: { id: data.medicineRequisitionId! },
       select: {
         orgId: true,
@@ -173,7 +211,7 @@ export async function createDispatch(data: CreateDispatchInput) {
   }
 
   if (data.pickListId != null) {
-    const pl = await prisma.pickList.findFirst({
+    const pl = await db.pickList.findFirst({
       where: { id: data.pickListId, orgId: data.orgId, status: "COMPLETED" },
       include: {
         lines: true,
@@ -213,7 +251,7 @@ export async function createDispatch(data: CreateDispatchInput) {
     }
   }
 
-  const toLocation = await prisma.inventoryLocation.findUnique({
+  const toLocation = await db.inventoryLocation.findUnique({
     where: { id: data.toLocationId },
     select: { branchId: true },
   });
@@ -221,7 +259,7 @@ export async function createDispatch(data: CreateDispatchInput) {
     throw new Error("To location must belong to request branch");
   }
 
-  const dispatch = await prisma.stockDispatch.create({
+  const dispatch = await db.stockDispatch.create({
     data: {
       orgId: data.orgId,
       stockRequestId: hasSr ? data.stockRequestId! : null,
@@ -261,7 +299,7 @@ export async function createDispatch(data: CreateDispatchInput) {
   });
 
   if (hasMr) {
-    await prisma.medicineRequisition.update({
+    await db.medicineRequisition.update({
       where: { id: data.medicineRequisitionId! },
       data: { stockDispatchId: dispatch.id },
     });
@@ -420,9 +458,11 @@ export async function updateDispatchStatus(
 }
 
 /**
- * Receive dispatch at branch: create GRN (linked to dispatch), write TRANSFER_IN (and DAMAGE/EXPIRED for discrepancies).
+ * Core receive posting inside an existing transaction (row-locked dispatch).
+ * Used by legacy immediate receive and by controlled confirm (same atomic unit as session update).
  */
-export async function receiveDispatch(
+export async function receiveDispatchLedgerInTx(
+  tx: any,
   dispatchId: number,
   data: {
     items: ReceiveItemInput[];
@@ -431,23 +471,24 @@ export async function receiveDispatch(
     idempotencyKey?: string;
   }
 ) {
-  return prisma.$transaction(async (tx: any) => {
-    const dispatch = await tx.stockDispatch.findUnique({
-      where: { id: dispatchId },
-      include: { items: true },
-    });
-    if (!dispatch) throw new Error("Dispatch not found");
-    if (dispatch.status !== "IN_TRANSIT") {
-      throw new Error(`Dispatch can only be received when IN_TRANSIT. Current: ${dispatch.status}`);
-    }
+  await tx.$executeRaw(Prisma.sql`SELECT id FROM stock_dispatches WHERE id = ${dispatchId} FOR UPDATE`);
 
-    if (data.idempotencyKey?.trim()) {
-      const existing = await tx.grn.findFirst({
-        where: { stockDispatchId: dispatchId, idempotencyKey: data.idempotencyKey.trim() },
-        select: { id: true },
-      });
-      if (existing) throw new Error("Duplicate receive request (idempotency key)");
-    }
+  const dispatch = await tx.stockDispatch.findUnique({
+    where: { id: dispatchId },
+    include: { items: true },
+  });
+  if (!dispatch) throw new Error("Dispatch not found");
+  if (dispatch.status !== "IN_TRANSIT") {
+    throw new Error(`Dispatch can only be received when IN_TRANSIT. Current: ${dispatch.status}`);
+  }
+
+  if (data.idempotencyKey?.trim()) {
+    const existing = await tx.grn.findFirst({
+      where: { stockDispatchId: dispatchId, idempotencyKey: data.idempotencyKey.trim() },
+      select: { id: true },
+    });
+    if (existing) throw new Error("Duplicate receive request (idempotency key)");
+  }
 
     const receiveItems = data.items?.length
       ? data.items
@@ -515,6 +556,39 @@ export async function receiveDispatch(
           refType: "DISPATCH",
           refId: String(dispatchId),
           createdByUserId: data.createdByUserId,
+        });
+      }
+
+      const discNote =
+        rec.lineNote != null && String(rec.lineNote).trim() ? String(rec.lineNote).trim() : null;
+      const discRc =
+        rec.reasonCode != null && String(rec.reasonCode).trim()
+          ? String(rec.reasonCode).trim().slice(0, 64)
+          : null;
+      if (qtyDamaged > 0) {
+        await tx.stockDispatchDiscrepancy.create({
+          data: {
+            orgId,
+            stockDispatchId: dispatchId,
+            variantId: rec.variantId,
+            lotId: lotId ?? null,
+            reasonCode: discRc || "DAMAGE",
+            quantity: qtyDamaged,
+            notes: discNote,
+          },
+        });
+      }
+      if (qtyShort > 0) {
+        await tx.stockDispatchDiscrepancy.create({
+          data: {
+            orgId,
+            stockDispatchId: dispatchId,
+            variantId: rec.variantId,
+            lotId: lotId ?? null,
+            reasonCode: discRc || "SHORT",
+            quantity: qtyShort,
+            notes: discNote,
+          },
         });
       }
     }
@@ -586,7 +660,321 @@ export async function receiveDispatch(
       });
     }
 
-    return { dispatch: updatedDispatch, grn };
+  return { dispatch: updatedDispatch, grn };
+}
+
+/**
+ * Receive dispatch at branch: create GRN (linked to dispatch), write TRANSFER_IN (and DAMAGE for discrepancies).
+ * Ledger posting path — use after branch verification/manager confirmation when using controlled receive.
+ */
+export async function receiveDispatchLegacyImmediate(
+  dispatchId: number,
+  data: {
+    items: ReceiveItemInput[];
+    notes?: string;
+    createdByUserId?: number;
+    idempotencyKey?: string;
+  }
+) {
+  return prisma.$transaction((tx: any) => receiveDispatchLedgerInTx(tx, dispatchId, data));
+}
+
+export type ReceiveDispatchMode = "legacy_immediate" | "verify" | "submit" | "confirm";
+
+/** Save proposed receive quantities (no ledger). */
+export async function saveDispatchReceiveVerification(
+  dispatchId: number,
+  data: {
+    items: ReceiveItemInput[];
+    notes?: string;
+    createdByUserId?: number;
+  }
+) {
+  const dispatch = await prisma.stockDispatch.findUnique({
+    where: { id: dispatchId },
+    include: { items: true },
+  });
+  if (!dispatch) throw new Error("Dispatch not found");
+  if (dispatch.status !== "IN_TRANSIT") {
+    throw new Error(`Dispatch can only be verified when IN_TRANSIT. Current: ${dispatch.status}`);
+  }
+
+  const receiveItems: ReceiveItemInput[] = data.items?.length
+    ? data.items
+    : dispatch.items.map((i: any) => ({
+        variantId: i.variantId,
+        lotId: i.lotId,
+        quantityReceived: i.quantityDispatched,
+        quantityDamaged: 0,
+        quantityShort: 0,
+      }));
+
+  for (const rec of receiveItems) {
+    const line = dispatch.items.find(
+      (i: any) => i.variantId === rec.variantId && (rec.lotId == null || rec.lotId === i.lotId)
+    );
+    if (!line) throw new Error(`Item variant ${rec.variantId} not found in dispatch`);
+    const qtyReceived = Math.max(0, rec.quantityReceived ?? 0);
+    const qtyDamaged = Math.max(0, rec.quantityDamaged ?? 0);
+    const qtyShort = Math.max(0, rec.quantityShort ?? 0);
+    const total = qtyReceived + qtyDamaged + qtyShort;
+    if (total > line.quantityDispatched) {
+      throw new Error(`Verified total ${total} cannot exceed dispatched ${line.quantityDispatched} for variant ${rec.variantId}`);
+    }
+    const newReceived = line.quantityReceived + qtyReceived;
+    const newDamaged = line.quantityDamaged + qtyDamaged;
+    const newShort = line.quantityShort + qtyShort;
+    const newTotal = newReceived + newDamaged + newShort;
+    if (newTotal > line.quantityDispatched) {
+      throw new Error(`Running verified total would exceed dispatched for variant ${rec.variantId}`);
+    }
+  }
+
+  return prisma.$transaction(async (tx: any) => {
+    const session = await tx.dispatchReceiveSession.upsert({
+      where: { stockDispatchId: dispatchId },
+      create: {
+        orgId: dispatch.orgId,
+        stockDispatchId: dispatchId,
+        status: "DRAFT",
+        notes: data.notes ?? null,
+        verifiedAt: new Date(),
+        verifiedByUserId: data.createdByUserId ?? null,
+      },
+      update: {
+        notes: data.notes ?? null,
+        verifiedAt: new Date(),
+        verifiedByUserId: data.createdByUserId ?? null,
+        status: "DRAFT",
+      },
+    });
+
+    await tx.dispatchReceiveSessionLine.deleteMany({ where: { sessionId: session.id } });
+
+    for (const rec of receiveItems) {
+      const line = dispatch.items.find(
+        (i: any) => i.variantId === rec.variantId && (rec.lotId == null || rec.lotId === i.lotId)
+      )!;
+      await tx.dispatchReceiveSessionLine.create({
+        data: {
+          sessionId: session.id,
+          stockDispatchItemId: line.id,
+          quantityReceived: Math.max(0, rec.quantityReceived ?? 0),
+          quantityDamaged: Math.max(0, rec.quantityDamaged ?? 0),
+          quantityShort: Math.max(0, rec.quantityShort ?? 0),
+          reasonCode:
+            rec.reasonCode != null && String(rec.reasonCode).trim()
+              ? String(rec.reasonCode).trim().slice(0, 64)
+              : null,
+          lineNote: rec.lineNote != null && String(rec.lineNote).trim() ? String(rec.lineNote).trim() : null,
+        },
+      });
+    }
+
+    await logWarehouseAudit({
+      orgId: dispatch.orgId,
+      warehouseId: null,
+      category: "OPERATIONS",
+      action: "DISPATCH_RECEIVE_VERIFICATION_SAVED",
+      entityType: "DispatchReceiveSession",
+      entityId: String(session.id),
+      metadata: { stockDispatchId: dispatchId },
+      actorUserId: data.createdByUserId ?? null,
+    });
+
+    return tx.dispatchReceiveSession.findUnique({
+      where: { id: session.id },
+      include: {
+        lines: {
+          include: {
+            stockDispatchItem: {
+              include: {
+                variant: { select: { id: true, sku: true, title: true } },
+                lot: { select: { id: true, lotCode: true, expDate: true } },
+              },
+            },
+          },
+        },
+      },
+    });
+  });
+}
+
+export async function submitDispatchReceiveSessionForConfirmation(dispatchId: number, userId: number) {
+  const session = await prisma.dispatchReceiveSession.findUnique({
+    where: { stockDispatchId: dispatchId },
+  });
+  if (!session) throw new Error("No receive verification saved for this dispatch yet");
+  if (session.status === "AWAITING_CONFIRMATION") {
+    return session;
+  }
+  if (session.status !== "DRAFT") {
+    throw new Error(`Submit requires session in DRAFT (current: ${session.status})`);
+  }
+  const updated = await prisma.dispatchReceiveSession.update({
+    where: { id: session.id },
+    data: {
+      status: "AWAITING_CONFIRMATION",
+      submittedAt: new Date(),
+      submittedByUserId: userId,
+    },
+  });
+  await logWarehouseAudit({
+    orgId: session.orgId,
+    warehouseId: null,
+    category: "OPERATIONS",
+    action: "DISPATCH_RECEIVE_SUBMITTED_FOR_CONFIRMATION",
+    entityType: "DispatchReceiveSession",
+    entityId: String(session.id),
+    metadata: { stockDispatchId: dispatchId },
+    actorUserId: userId,
+  });
+  try {
+    const { notifyDispatchReceiveSubmittedForConfirmation } = require("../../services/warehouseOpsNotifications.service");
+    void notifyDispatchReceiveSubmittedForConfirmation({
+      orgId: session.orgId,
+      stockDispatchId: dispatchId,
+      actorUserId: userId,
+    });
+  } catch (_) {
+    /* optional */
+  }
+  return updated;
+}
+
+export async function confirmDispatchReceiveFromSession(
+  dispatchId: number,
+  data: { createdByUserId?: number; idempotencyKey?: string; notes?: string },
+  options?: { allowConfirmFromDraft?: boolean }
+) {
+  const session = await prisma.dispatchReceiveSession.findUnique({
+    where: { stockDispatchId: dispatchId },
+    include: {
+      lines: {
+        include: {
+          stockDispatchItem: true,
+        },
+      },
+    },
+  });
+  if (!session) throw new Error("No receive session to confirm");
+  if (session.status === "POSTED" || session.status === "CANCELLED") {
+    throw new Error(`Cannot confirm in status ${session.status}`);
+  }
+  if (session.status === "DRAFT" && !options?.allowConfirmFromDraft) {
+    throw new Error(
+      "Submit branch verification for manager confirmation first (POST .../receive-submit), or use legacy receive with branch manager permission."
+    );
+  }
+  if (!session.lines.length) {
+    throw new Error("Receive session has no lines; save verification first.");
+  }
+
+  const items: ReceiveItemInput[] = session.lines.map((l: any) => ({
+    variantId: l.stockDispatchItem.variantId,
+    lotId: l.stockDispatchItem.lotId,
+    quantityReceived: l.quantityReceived,
+    quantityDamaged: l.quantityDamaged,
+    quantityShort: l.quantityShort,
+    reasonCode: l.reasonCode ?? undefined,
+    lineNote: l.lineNote ?? undefined,
+  }));
+
+  /** Ledger + GRN + session state in one transaction (no committed receive without session update). */
+  const result = await prisma.$transaction(async (tx: any) => {
+    await tx.$executeRaw(
+      Prisma.sql`SELECT id FROM dispatch_receive_sessions WHERE stock_dispatch_id = ${dispatchId} FOR UPDATE`
+    );
+    const locked = await tx.dispatchReceiveSession.findUnique({
+      where: { stockDispatchId: dispatchId },
+      select: { id: true, status: true, orgId: true, notes: true },
+    });
+    if (!locked) throw new Error("No receive session to confirm");
+    if (locked.status === "POSTED" || locked.status === "CANCELLED") {
+      throw new Error(`Cannot confirm in status ${locked.status}`);
+    }
+
+    const receiveResult = await receiveDispatchLedgerInTx(tx, dispatchId, {
+      items,
+      notes: data.notes ?? session.notes ?? undefined,
+      createdByUserId: data.createdByUserId,
+      idempotencyKey: data.idempotencyKey,
+    });
+
+    const allReceived = receiveResult.dispatch?.status === "DELIVERED";
+
+    await tx.dispatchReceiveSession.update({
+      where: { id: locked.id },
+      data: {
+        status: allReceived ? "POSTED" : "DRAFT",
+        confirmedAt: new Date(),
+        confirmedByUserId: data.createdByUserId ?? null,
+        idempotencyKey: data.idempotencyKey?.trim() || null,
+      },
+    });
+
+    if (!allReceived) {
+      await tx.dispatchReceiveSessionLine.deleteMany({ where: { sessionId: locked.id } });
+    }
+
+    return receiveResult;
+  });
+
+  await logWarehouseAudit({
+    orgId: session.orgId,
+    warehouseId: null,
+    category: "OPERATIONS",
+    action: "DISPATCH_RECEIVE_CONFIRMED",
+    entityType: "DispatchReceiveSession",
+    entityId: String(session.id),
+    metadata: { stockDispatchId: dispatchId, allReceived: result.dispatch?.status === "DELIVERED" },
+    actorUserId: data.createdByUserId ?? null,
+  });
+
+  return result;
+}
+
+/**
+ * Controlled receive entry point.
+ * - `legacy_immediate` — post TRANSFER_IN immediately (manager / backward compatible).
+ * - `verify` — draft session only.
+ * - `submit` — AWAITING_CONFIRMATION.
+ * - `confirm` — post ledger from saved session.
+ */
+export async function receiveDispatch(
+  dispatchId: number,
+  data: {
+    items?: ReceiveItemInput[];
+    notes?: string;
+    createdByUserId?: number;
+    idempotencyKey?: string;
+  },
+  options?: { mode?: ReceiveDispatchMode; allowConfirmFromDraft?: boolean }
+) {
+  const mode = options?.mode ?? "legacy_immediate";
+  if (mode === "verify") {
+    return saveDispatchReceiveVerification(dispatchId, {
+      items: data.items ?? [],
+      notes: data.notes,
+      createdByUserId: data.createdByUserId,
+    });
+  }
+  if (mode === "submit") {
+    if (data.createdByUserId == null) {
+      throw new Error("createdByUserId is required for submit");
+    }
+    return submitDispatchReceiveSessionForConfirmation(dispatchId, data.createdByUserId);
+  }
+  if (mode === "confirm") {
+    return confirmDispatchReceiveFromSession(dispatchId, data, {
+      allowConfirmFromDraft: options?.allowConfirmFromDraft === true,
+    });
+  }
+  return receiveDispatchLegacyImmediate(dispatchId, {
+    items: data.items ?? [],
+    notes: data.notes,
+    createdByUserId: data.createdByUserId,
+    idempotencyKey: data.idempotencyKey,
   });
 }
 

@@ -2,6 +2,23 @@ const router = require("express").Router();
 const controller = require("./transfers.controller");
 const authenticateToken = require("../../../../middleware/auth.middleware");
 
+/**
+ * @deprecated LEGACY STOCK TRANSFER ROUTES
+ *
+ * These routes are deprecated. Use StockDispatch flow instead:
+ *   - POST /api/v1/inventory/dispatches (create dispatch)
+ *   - POST /api/v1/inventory/dispatches/:id/send (send/transit)
+ *   - POST /api/v1/inventory/dispatches/:id/receive (receive with controlled session)
+ *
+ * See: docs/VENDOR_RECEIVE_BRANCH_CONFIRMATION_PRICING_GOVERNANCE_PLAN.md
+ */
+
+// Middleware to log deprecation warning on every request
+router.use((req: any, res: any, next: any) => {
+  console.warn(`[DEPRECATED] StockTransfer API called: ${req.method} ${req.originalUrl}. Use StockDispatch flow instead.`);
+  next();
+});
+
 // Helper function to check permissions
 function requirePermission(...permissions) {
   return (req, res, next) => {

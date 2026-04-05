@@ -22,7 +22,7 @@ export async function createFromStockRequest(req: any, res: any) {
   try {
     const ctx = await resolveOrg(req);
     if (!ctx) return res.status(403).json({ success: false, message: "No organization access" });
-    const { stockRequestId, fromLocationId, warehouseId } = req.body || {};
+    const { stockRequestId, fromLocationId, warehouseId, skipAutoAllocation } = req.body || {};
     if (!stockRequestId || !fromLocationId) {
       return res.status(400).json({ success: false, message: "stockRequestId and fromLocationId required" });
     }
@@ -32,6 +32,7 @@ export async function createFromStockRequest(req: any, res: any) {
       fromLocationId: Number(fromLocationId),
       warehouseId: warehouseId != null ? Number(warehouseId) : undefined,
       createdByUserId: ctx.userId,
+      skipAutoAllocation: Boolean(skipAutoAllocation),
     });
     return res.status(201).json({ success: true, data: plan });
   } catch (e: any) {
@@ -44,7 +45,7 @@ export async function createFromMedicineRequisition(req: any, res: any) {
   try {
     const ctx = await resolveOrg(req, req.body);
     if (!ctx) return res.status(403).json({ success: false, message: "No organization access" });
-    const { medicineRequisitionId, fromLocationId, warehouseId } = req.body || {};
+    const { medicineRequisitionId, fromLocationId, warehouseId, skipAutoAllocation } = req.body || {};
     if (!medicineRequisitionId || !fromLocationId) {
       return res.status(400).json({ success: false, message: "medicineRequisitionId and fromLocationId required" });
     }
@@ -54,6 +55,7 @@ export async function createFromMedicineRequisition(req: any, res: any) {
       fromLocationId: Number(fromLocationId),
       warehouseId: warehouseId != null ? Number(warehouseId) : undefined,
       createdByUserId: ctx.userId,
+      skipAutoAllocation: Boolean(skipAutoAllocation),
     });
     return res.status(201).json({ success: true, data: plan });
   } catch (e: any) {
@@ -67,7 +69,7 @@ export async function runFefo(req: any, res: any) {
     const ctx = await resolveOrg(req);
     if (!ctx) return res.status(403).json({ success: false, message: "No organization access" });
     const id = Number(req.params.id);
-    const plan = await service.runFefoForPlan(id, ctx.orgId);
+    const plan = await service.runFefoForPlan(id, ctx.orgId, { actorUserId: ctx.userId });
     return res.status(200).json({ success: true, data: plan });
   } catch (e: any) {
     console.error("allocationPlan.runFefo", e);
@@ -77,10 +79,13 @@ export async function runFefo(req: any, res: any) {
 
 export async function confirm(req: any, res: any) {
   try {
-    const ctx = await resolveOrg(req);
+    const ctx = await resolveOrg(req, req.body);
     if (!ctx) return res.status(403).json({ success: false, message: "No organization access" });
     const id = Number(req.params.id);
-    const plan = await service.confirmPlan(id, ctx.orgId, ctx.userId);
+    const expectedVersion = req.body?.expectedVersion != null ? Number(req.body.expectedVersion) : undefined;
+    const plan = await service.confirmPlan(id, ctx.orgId, ctx.userId, {
+      expectedVersion: Number.isFinite(expectedVersion as number) ? expectedVersion : undefined,
+    });
     return res.status(200).json({ success: true, data: plan });
   } catch (e: any) {
     console.error("allocationPlan.confirm", e);
@@ -102,6 +107,46 @@ export async function cancel(req: any, res: any) {
   }
 }
 
+export async function addManualLine(req: any, res: any) {
+  try {
+    const ctx = await resolveOrg(req, req.body);
+    if (!ctx) return res.status(403).json({ success: false, message: "No organization access" });
+    const id = Number(req.params.id);
+    const { variantId, lotId, locationId, quantity } = req.body || {};
+    if (!variantId || !lotId || !locationId || quantity == null) {
+      return res.status(400).json({ success: false, message: "variantId, lotId, locationId, quantity required" });
+    }
+    const plan = await service.addManualAllocationLine(
+      id,
+      ctx.orgId,
+      {
+        variantId: Number(variantId),
+        lotId: Number(lotId),
+        locationId: Number(locationId),
+        quantity: Number(quantity),
+      },
+      ctx.userId
+    );
+    return res.status(200).json({ success: true, data: plan });
+  } catch (e: any) {
+    console.error("allocationPlan.addManualLine", e);
+    return res.status(400).json({ success: false, message: e?.message || "Failed" });
+  }
+}
+
+export async function reallocate(req: any, res: any) {
+  try {
+    const ctx = await resolveOrg(req);
+    if (!ctx) return res.status(403).json({ success: false, message: "No organization access" });
+    const id = Number(req.params.id);
+    const plan = await service.reallocatePlan(id, ctx.orgId, ctx.userId);
+    return res.status(200).json({ success: true, data: plan });
+  } catch (e: any) {
+    console.error("allocationPlan.reallocate", e);
+    return res.status(400).json({ success: false, message: e?.message || "Failed" });
+  }
+}
+
 export async function getById(req: any, res: any) {
   try {
     const ctx = await resolveOrg(req);
@@ -119,7 +164,7 @@ export async function getById(req: any, res: any) {
 export async function list(req: any, res: any) {
   try {
     const ctx = await resolveOrg(req);
-    if (!ctx) return res.status(200).json({ success: true, data: [], pagination: { page: 1, limit: 20, total: 0, totalPages: 0 } });
+    if (!ctx) return res.status(403).json({ success: false, message: "No organization access" });
     const result = await service.listPlans(ctx.orgId, {
       status: req.query.status as string | undefined,
       page: req.query.page ? Number(req.query.page) : undefined,

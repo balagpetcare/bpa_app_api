@@ -53,6 +53,10 @@ exports.createSale = async (req, res) => {
         variantId: item.variantId ? parseInt(item.variantId, 10) : undefined,
         quantity: parseInt(item.quantity, 10),
         price: parseFloat(item.price),
+        retailDiscountApprovalId:
+          item.retailDiscountApprovalId != null && item.retailDiscountApprovalId !== ""
+            ? parseInt(String(item.retailDiscountApprovalId), 10)
+            : undefined,
       })),
       paymentMethod,
       notes: notes || "POS Sale",
@@ -82,14 +86,26 @@ exports.createSale = async (req, res) => {
   } catch (error) {
     console.error("createSale error:", error);
     let code = POS_ERROR_CODES.VALIDATION_ERROR;
-    if (error.message && error.message.includes("Insufficient stock")) code = POS_ERROR_CODES.INSUFFICIENT_STOCK;
-    else if (error.message && error.message.includes("Open a shift")) code = POS_ERROR_CODES.NO_OPEN_SHIFT;
-    return sendPosError(
-      res,
-      400,
-      error.message || "Failed to create sale",
-      code
-    );
+    const err = error as { message?: string; code?: string };
+    const msg = err?.message || "Failed to create sale";
+    const errCode = err?.code;
+    if (msg.includes("Insufficient stock")) code = POS_ERROR_CODES.INSUFFICIENT_STOCK;
+    else if (msg.includes("Open a shift")) code = POS_ERROR_CODES.NO_OPEN_SHIFT;
+    else if (
+      errCode === "APPROVAL_REQUIRED" ||
+      errCode === "BELOW_MIN_SALE_PRICE" ||
+      errCode === "NO_RETAIL_RULE" ||
+      errCode === "EXCEEDS_MAX_DISCOUNT_PERCENT" ||
+      errCode === "EXCEEDS_MAX_DISCOUNT_AMOUNT" ||
+      errCode === "NO_LIST_PRICE" ||
+      errCode === "APPROVAL_NOT_APPROVED" ||
+      errCode === "APPROVAL_ALREADY_USED" ||
+      errCode === "APPROVAL_PRICE_MISMATCH" ||
+      errCode === "LIST_PRICE_CHANGED"
+    ) {
+      code = POS_ERROR_CODES.PRICING_GOVERNANCE;
+    }
+    return sendPosError(res, 400, msg, code);
   }
 };
 

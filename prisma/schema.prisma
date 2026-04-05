@@ -476,6 +476,12 @@ model User {
 
   grnsReceived                   Grn[]                  @relation("GrnReceivedBy")
   grnsVoided                     Grn[]                  @relation("GrnVoidedBy")
+  vendorReceiveSessionsCreated   VendorReceiveSession[] @relation("VendorReceiveSessionCreatedBy")
+  vendorReceiveSessionsSubmitted VendorReceiveSession[] @relation("VendorReceiveSessionSubmittedBy")
+  vendorReceiveSessionsConfirmed VendorReceiveSession[] @relation("VendorReceiveSessionConfirmedBy")
+  dispatchReceiveSessionsVerified DispatchReceiveSession[] @relation("DispatchReceiveSessionVerifiedBy")
+  dispatchReceiveSessionsSubmitted DispatchReceiveSession[] @relation("DispatchReceiveSessionSubmittedBy")
+  dispatchReceiveSessionsConfirmed DispatchReceiveSession[] @relation("DispatchReceiveSessionConfirmedBy")
   catalogEnableRequestsRequested CatalogEnableRequest[] @relation("CatalogEnableRequestedBy")
   catalogEnableRequestsReviewed  CatalogEnableRequest[] @relation("CatalogEnableReviewedBy")
 
@@ -704,6 +710,7 @@ model User {
   purchaseOrdersApproved        PurchaseOrder[]            @relation("PurchaseOrderApprovedBy")
   purchaseOrdersRejected        PurchaseOrder[]            @relation("PurchaseOrderRejectedBy")
   allocationPlansCreated        AllocationPlan[]           @relation("AllocationPlanCreatedBy")
+  allocationPlanEventsPerformed AllocationPlanEvent[]      @relation("AllocationPlanEventPerformedBy")
   pickListsAssigned             PickList[]                 @relation("PickListAssignedPicker")
   proofOfDeliveriesRecorded     ProofOfDelivery[]          @relation("ProofOfDeliveryRecordedBy")
   qcInspectionsPerformed        QcInspection[]             @relation("QcInspectionInspectedBy")
@@ -724,6 +731,9 @@ model User {
   purchaseRequisitionsRejected    PurchaseRequisition[]     @relation("PurchaseRequisitionRejectedBy")
   putawayTasksCompleted           PutawayTask[]             @relation("PutawayTaskCompletedBy")
   inboundDiscrepanciesResolved    InboundDiscrepancy[]      @relation("InboundDiscrepancyResolvedBy")
+  pricingAuditLogsAsActor         PricingAuditLog[]         @relation("PricingAuditActor")
+  retailDiscountRequestsRequested RetailDiscountApprovalRequest[] @relation("RetailDiscountRequester")
+  retailDiscountRequestsReviewed  RetailDiscountApprovalRequest[] @relation("RetailDiscountReviewer")
 
   @@map("users")
 }
@@ -2922,6 +2932,8 @@ model Organization {
 
   // === GRN (Goods Received Note) & Catalog Enable ===
   grns                  Grn[]
+  vendorReceiveSessions VendorReceiveSession[]
+  dispatchReceiveSessions DispatchReceiveSession[]
   catalogEnableRequests CatalogEnableRequest[]
 
   // === Enterprise Extensions ===
@@ -2993,7 +3005,8 @@ model Organization {
   warehouses Warehouse[]
   productPricings ProductPricing[]
   purchaseOrders   PurchaseOrder[]
-  allocationPlans  AllocationPlan[]
+  allocationPlans      AllocationPlan[]
+  allocationPlanEvents AllocationPlanEvent[]
   pickLists        PickList[]
   proofOfDeliveries ProofOfDelivery[]
   qcInspections        QcInspection[]
@@ -3005,6 +3018,12 @@ model Organization {
   inboundShipments        InboundShipment[]
   putawayTasks            PutawayTask[]
   inboundDiscrepancies    InboundDiscrepancy[]
+
+  /// Phase 3 pricing governance: central policy + audit + retail discount rules
+  orgPricingPolicy                 OrgPricingPolicy?
+  pricingAuditLogs                 PricingAuditLog[]
+  retailDiscountRules              RetailDiscountRule[]
+  retailDiscountApprovalRequests   RetailDiscountApprovalRequest[]
 
   // === Wave-4: Financial intelligence + SLA + command center ===
   costAllocationPolicies       CostAllocationPolicy[]
@@ -3077,6 +3096,8 @@ model Branch {
   inventoryLocations InventoryLocation[]
 
   branchPricings BranchPricing[]
+  retailDiscountRules              RetailDiscountRule[]
+  retailDiscountApprovalRequests   RetailDiscountApprovalRequest[]
 
   // === Stock Request (branch requests stock from owner) ===
   stockRequests StockRequest[]
@@ -4963,6 +4984,12 @@ enum StockRequestStatus {
   CANCELLED
 }
 
+/// Warehouse procurement vs branch internal transfer routing
+enum StockRequestIntent {
+  INTERNAL_TRANSFER // Branch wants stock from warehouse (default)
+  PROCUREMENT       // Warehouse wants stock from external vendor
+}
+
 /// Request line vs owner-added extra line (fulfillment-time)
 enum StockRequestItemLineKind {
   REQUESTED
@@ -5166,6 +5193,8 @@ model ProductVariant {
   networkTransferRecommendations NetworkTransferRecommendation[]
   costFacts                      CostFact[]
   ctsSummaries                   CtsSummary[]
+  retailDiscountRules            RetailDiscountRule[]
+  retailDiscountApprovalRequests RetailDiscountApprovalRequest[]
 
   @@index([productId, isActive])
   @@index([flavorId])
@@ -5634,6 +5663,7 @@ model Order {
   clinicInvoice               ClinicInvoice?
   appliedDiscounts            AppliedDiscount[]
   injectionTokens             InjectionToken[]
+  retailDiscountApprovalsConsumed RetailDiscountApprovalRequest[] @relation("RetailDiscountConsumedOrder")
 
   @@index([branchId])
   @@index([posShiftId])
@@ -5679,11 +5709,15 @@ model OrderItem {
   total     Decimal
   createdAt DateTime @default(now())
 
+  retailDiscountApprovalRequestId Int?
+  retailDiscountApprovalRequest   RetailDiscountApprovalRequest? @relation(fields: [retailDiscountApprovalRequestId], references: [id], onDelete: SetNull)
+
   order   Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
   product Product?        @relation(fields: [productId], references: [id], onDelete: Restrict)
   variant ProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
   service Service?        @relation(fields: [serviceId], references: [id], onDelete: SetNull)
 
+  @@unique([retailDiscountApprovalRequestId])
   @@index([orderId])
   @@index([productId])
   @@index([serviceId])
@@ -6798,6 +6832,111 @@ model BranchPricing {
   @@map("branch_pricings")
 }
 
+/// Org-level switches for pricing governance (central vs branch bounds, retail approval).
+model OrgPricingPolicy {
+  orgId                                  Int      @id
+  enforceBranchOverrideWithinCentralBand Boolean  @default(true)
+  retailDiscountApprovalEnabled          Boolean  @default(true)
+  /// When true, POS commits enforce floor, retail rules, and approval linkage (server-side).
+  posPricingGovernanceEnabled            Boolean  @default(false)
+  createdAt                              DateTime @default(now())
+  updatedAt                              DateTime @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@map("org_pricing_policies")
+}
+
+enum PricingAuditEntityType {
+  PRODUCT_PRICING
+  BRANCH_PRICING
+  LOCATION_PRICE
+  RETAIL_DISCOUNT_RULE
+  ORG_PRICING_POLICY
+}
+
+model PricingAuditLog {
+  id            Int                    @id @default(autoincrement())
+  orgId         Int
+  entityType    PricingAuditEntityType
+  entityKey     String                 @db.VarChar(128)
+  actorUserId   Int?
+  action        String                 @db.VarChar(64)
+  payloadBefore Json?
+  payloadAfter  Json?
+  createdAt     DateTime               @default(now())
+
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  actor User?        @relation("PricingAuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, createdAt])
+  @@map("pricing_audit_logs")
+}
+
+/// Retail (inventory selling) discount caps per variant; optional branch scope.
+model RetailDiscountRule {
+  id                           Int       @id @default(autoincrement())
+  orgId                        Int
+  branchId                     Int?
+  variantId                    Int
+  maxDiscountPercent           Decimal?  @db.Decimal(5, 2)
+  maxDiscountAmount            Decimal?  @db.Decimal(12, 2)
+  requiresApprovalAbovePercent Decimal?  @db.Decimal(5, 2)
+  status                       String    @default("ACTIVE") @db.VarChar(16)
+  validFrom                    DateTime? @db.Date
+  validTo                      DateTime? @db.Date
+  createdAt                    DateTime  @default(now())
+  updatedAt                    DateTime  @updatedAt
+
+  org     Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  branch  Branch?        @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  variant ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, variantId])
+  @@index([branchId])
+  @@map("retail_discount_rules")
+}
+
+enum RetailDiscountApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+model RetailDiscountApprovalRequest {
+  id                         Int                          @id @default(autoincrement())
+  orgId                      Int
+  branchId                   Int
+  variantId                  Int
+  listPriceSnapshot          Decimal                      @db.Decimal(12, 2)
+  requestedUnitPrice         Decimal                      @db.Decimal(12, 2)
+  requestedDiscountPercent   Decimal?                     @db.Decimal(5, 2)
+  reason                     String?                      @db.Text
+  status                     RetailDiscountApprovalStatus @default(PENDING)
+  requestedByUserId          Int
+  reviewedByUserId           Int?
+  reviewedAt                 DateTime?
+  reviewNote                 String?                      @db.Text
+  consumedOrderId            Int?
+  consumedAt                 DateTime?
+  createdAt                  DateTime                     @default(now())
+  updatedAt                  DateTime                     @updatedAt
+
+  org         Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  branch      Branch         @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  variant     ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
+  requestedBy User           @relation("RetailDiscountRequester", fields: [requestedByUserId], references: [id], onDelete: Restrict)
+  reviewedBy  User?          @relation("RetailDiscountReviewer", fields: [reviewedByUserId], references: [id], onDelete: SetNull)
+  consumedOrder Order?       @relation("RetailDiscountConsumedOrder", fields: [consumedOrderId], references: [id], onDelete: SetNull)
+  orderItems    OrderItem[]
+
+  @@index([orgId, status])
+  @@index([branchId, status])
+  @@index([consumedOrderId])
+  @@map("retail_discount_approval_requests")
+}
+
 model StockBalance {
   locationId  Int
   variantId   Int
@@ -6942,6 +7081,7 @@ model StockDispatch {
   pickList             PickList?
   proofOfDelivery      ProofOfDelivery?
   dispatchDiscrepancies StockDispatchDiscrepancy[]
+  dispatchReceiveSession DispatchReceiveSession?
 
   @@index([orgId])
   @@index([stockRequestId])
@@ -6950,6 +7090,52 @@ model StockDispatch {
   @@index([status])
   @@index([createdAt])
   @@map("stock_dispatches")
+}
+
+model DispatchReceiveSession {
+  id                 Int                         @id @default(autoincrement())
+  orgId              Int
+  stockDispatchId    Int                         @unique
+  status             DispatchReceiveSessionStatus @default(DRAFT)
+  verifiedAt         DateTime?
+  verifiedByUserId   Int?
+  submittedAt        DateTime?
+  submittedByUserId  Int?
+  confirmedAt        DateTime?
+  confirmedByUserId  Int?
+  notes              String?                     @db.Text
+  idempotencyKey     String?                     @db.VarChar(64)
+  createdAt          DateTime                    @default(now())
+  updatedAt          DateTime                    @updatedAt
+
+  org           Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  stockDispatch StockDispatch @relation(fields: [stockDispatchId], references: [id], onDelete: Cascade)
+  verifiedBy    User?         @relation("DispatchReceiveSessionVerifiedBy", fields: [verifiedByUserId], references: [id], onDelete: SetNull)
+  submittedBy   User?         @relation("DispatchReceiveSessionSubmittedBy", fields: [submittedByUserId], references: [id], onDelete: SetNull)
+  confirmedBy   User?         @relation("DispatchReceiveSessionConfirmedBy", fields: [confirmedByUserId], references: [id], onDelete: SetNull)
+  lines         DispatchReceiveSessionLine[]
+
+  @@index([orgId])
+  @@index([status])
+  @@map("dispatch_receive_sessions")
+}
+
+model DispatchReceiveSessionLine {
+  id                  Int @id @default(autoincrement())
+  sessionId           Int
+  stockDispatchItemId Int
+  quantityReceived    Int @default(0)
+  quantityDamaged     Int @default(0)
+  quantityShort       Int @default(0)
+  reasonCode          String? @db.VarChar(64)
+  lineNote            String? @db.Text
+
+  session           DispatchReceiveSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  stockDispatchItem StockDispatchItem      @relation(fields: [stockDispatchItemId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, stockDispatchItemId])
+  @@index([stockDispatchItemId])
+  @@map("dispatch_receive_session_lines")
 }
 
 /// Branch/ops reported mismatch on a dispatch (receive/short/damage) — complements transfer-scoped StockDiscrepancy.
@@ -6996,6 +7182,7 @@ model StockDispatchItem {
   stockDispatch StockDispatch  @relation(fields: [stockDispatchId], references: [id], onDelete: Cascade)
   variant       ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
   lot           StockLot       @relation(fields: [lotId], references: [id], onDelete: Restrict)
+  dispatchReceiveSessionLines DispatchReceiveSessionLine[]
 
   @@index([stockDispatchId])
   @@index([variantId])
@@ -7026,11 +7213,20 @@ model StockRequest {
   approvedAt       DateTime?
   approvedByUserId Int?
 
+  // Procurement routing: warehouse demand vs branch transfer
+  requestIntent        StockRequestIntent @default(INTERNAL_TRANSFER)
+  linkedPurchaseOrderId Int?
+  procurementNote      String?  @db.Text
+  preferredVendorId    Int?
+  urgency              String?  @db.VarChar(20)
+
   org        Organization       @relation(fields: [orgId], references: [id], onDelete: Cascade)
   branch     Branch             @relation(fields: [branchId], references: [id], onDelete: Cascade)
   requester  User               @relation("StockRequestRequestedBy", fields: [requesterUserId], references: [id], onDelete: Restrict)
   declinedBy User?              @relation("StockRequestDeclinedBy", fields: [declinedByUserId], references: [id], onDelete: SetNull)
   approvedBy User?              @relation("StockRequestApprovedBy", fields: [approvedByUserId], references: [id], onDelete: SetNull)
+  linkedPurchaseOrder PurchaseOrder? @relation("StockRequestLinkedPO", fields: [linkedPurchaseOrderId], references: [id], onDelete: SetNull)
+  preferredVendor     Vendor?        @relation("StockRequestPreferredVendor", fields: [preferredVendorId], references: [id], onDelete: SetNull)
   items          StockRequestItem[]
   transfers      StockTransfer[] // Multi-wave dispatch: multiple transfers per request
   dispatches     StockDispatch[]
@@ -7041,6 +7237,8 @@ model StockRequest {
   @@index([branchId])
   @@index([status])
   @@index([requesterUserId])
+  @@index([requestIntent])
+  @@index([linkedPurchaseOrderId])
   @@map("stock_requests")
 }
 
@@ -7912,6 +8110,7 @@ model Vendor {
   ledgerEntries     VendorLedgerEntry[]
   productsPreferred Product[]              @relation("ProductPreferredVendor")
   vendorReturns     VendorReturn[]
+  stockRequestsPreferred StockRequest[]   @relation("StockRequestPreferredVendor")
 
   @@unique([orgId, code])
   @@index([orgId])
@@ -8036,6 +8235,22 @@ enum GrnStatus {
   VOIDED
 }
 
+/// Vendor/PO warehouse receive — draft and confirmation before GRN_IN ledger post.
+enum VendorReceiveSessionStatus {
+  DRAFT
+  AWAITING_CONFIRMATION
+  POSTED
+  CANCELLED
+}
+
+/// Internal dispatch branch receive — verification draft before TRANSFER_IN ledger post.
+enum DispatchReceiveSessionStatus {
+  DRAFT
+  AWAITING_CONFIRMATION
+  POSTED
+  CANCELLED
+}
+
 model Grn {
   id               Int       @id @default(autoincrement())
   orgId            Int
@@ -8071,6 +8286,7 @@ model Grn {
   qcInspections QcInspection[]
   inboundDiscrepancies InboundDiscrepancy[]
   putawayTasks  PutawayTask[]
+  vendorReceiveSession VendorReceiveSession?
 
   @@unique([stockDispatchId, idempotencyKey])
   @@index([orgId])
@@ -8086,6 +8302,31 @@ model Grn {
   @@map("grns")
 }
 
+model VendorReceiveSession {
+  id                Int                        @id @default(autoincrement())
+  orgId             Int
+  grnId             Int                        @unique
+  status            VendorReceiveSessionStatus @default(DRAFT)
+  createdByUserId   Int?
+  submittedAt       DateTime?
+  submittedByUserId Int?
+  confirmedAt       DateTime?
+  confirmedByUserId Int?
+  notes             String?                    @db.Text
+  createdAt         DateTime                   @default(now())
+  updatedAt         DateTime                   @updatedAt
+
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  grn         Grn          @relation(fields: [grnId], references: [id], onDelete: Cascade)
+  createdBy   User?        @relation("VendorReceiveSessionCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  submittedBy User?        @relation("VendorReceiveSessionSubmittedBy", fields: [submittedByUserId], references: [id], onDelete: SetNull)
+  confirmedBy User?        @relation("VendorReceiveSessionConfirmedBy", fields: [confirmedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([orgId])
+  @@index([status])
+  @@map("vendor_receive_sessions")
+}
+
 model GrnLine {
   id              Int       @id @default(autoincrement())
   grnId           Int
@@ -8094,6 +8335,8 @@ model GrnLine {
   quantity        Int // received qty (good)
   quantityDamaged Int       @default(0) // discrepancy: damaged (DAMAGE ledger)
   quantityShort   Int       @default(0) // discrepancy: short (no stock movement, audit only)
+  /// Over-receipt / surplus quantity recorded for reporting (not added to good qty twice).
+  quantityExtra   Int       @default(0)
   unitCost        Decimal?  @db.Decimal(12, 4) // Enterprise: cost per unit at receive
   /// Landed cost per unit if different from PO line (optional variance capture).
   landedUnitCost  Decimal?  @db.Decimal(12, 4)
@@ -12838,11 +13081,15 @@ enum PurchaseOrderStatus {
 
 enum AllocationPlanStatus {
   DRAFT
+  ALLOCATED
+  PARTIALLY_ALLOCATED
   CONFIRMED
   PICKING
   PICKED
   DISPATCHED
   CANCELLED
+  ON_HOLD
+  FAILED
 }
 
 enum PickListStatus {
@@ -12890,6 +13137,7 @@ model PurchaseOrder {
   lines       PurchaseOrderLine[]
   grns        Grn[]
   inboundShipments InboundShipment[]
+  stockRequests    StockRequest[]    @relation("StockRequestLinkedPO")
 
   @@unique([orgId, poNumber])
   @@index([orgId, status])
@@ -13126,6 +13374,16 @@ model AllocationPlan {
   fromLocationId          Int
   warehouseId             Int?
   status                  AllocationPlanStatus  @default(DRAFT)
+  /// Sum of requisition demand (variants); set after allocation run.
+  totalDemandQty          Int?
+  /// Sum of line quantityAllocated after allocation.
+  totalAllocatedQty       Int?
+  /// totalDemandQty - totalAllocatedQty (unmet demand).
+  shortageQty             Int?
+  /// Optimistic concurrency on confirm/reallocate.
+  version                 Int                   @default(0)
+  /// AUTO_FEFO | MANUAL | HYBRID
+  allocationMethod        String?               @db.VarChar(32)
   createdByUserId         Int?
   confirmedAt             DateTime?
   cancelledAt             DateTime?
@@ -13141,9 +13399,31 @@ model AllocationPlan {
   createdBy             User?                @relation("AllocationPlanCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   lines                 AllocationPlanLine[]
   pickList              PickList?
+  events                AllocationPlanEvent[]
 
   @@index([orgId, status])
   @@map("allocation_plans")
+}
+
+/// Audit trail for allocation plan lifecycle (enterprise).
+model AllocationPlanEvent {
+  id                  Int      @id @default(autoincrement())
+  orgId               Int
+  allocationPlanId    Int
+  action              String   @db.VarChar(64)
+  fromStatus          String?  @db.VarChar(32)
+  toStatus            String?  @db.VarChar(32)
+  metadata            Json?
+  performedByUserId   Int?
+  createdAt           DateTime @default(now())
+
+  org             Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  allocationPlan  AllocationPlan @relation(fields: [allocationPlanId], references: [id], onDelete: Cascade)
+  performedBy     User?          @relation("AllocationPlanEventPerformedBy", fields: [performedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([orgId])
+  @@index([allocationPlanId, createdAt])
+  @@map("allocation_plan_events")
 }
 
 model AllocationPlanLine {
@@ -13153,6 +13433,14 @@ model AllocationPlanLine {
   lotId            Int
   locationId       Int
   quantityAllocated Int
+  /// Variant-level demand for this wave (set on first lot line per variant when applicable).
+  demandQty        Int?
+  /// Unmet quantity for this variant on the first line of that variant (0 on subsequent lot lines).
+  quantityShort    Int      @default(0)
+  /// ALLOCATED | PARTIAL | SHORT (informational)
+  lineStatus       String?  @db.VarChar(32)
+  /// FEFO | MANUAL | FIFO
+  allocationMethod String?  @db.VarChar(32)
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 

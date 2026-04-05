@@ -1,6 +1,7 @@
 import * as service from "./dispatches.service";
 import { notifyDispatchReceived } from "./dispatches.notifications";
 import { getIncomingInboundUnifiedForBranch } from "../inventory/inboundReceipts.service";
+import { listPendingPoReceiptsForBranch } from "../purchase_orders/purchaseOrder.service";
 import prisma from "../../../../infrastructure/db/prismaClient";
 import { auditStockDispatch, auditGrn, auditDiscrepancy } from "../inventory/auditHelper";
 import {
@@ -144,6 +145,13 @@ exports.updateStatus = async (req, res) => {
   }
 };
 
+function dispatchUserHasPerm(req: any, key: string): boolean {
+  const raw = req.user?.permissions || req.user?.perms || [];
+  const arr = Array.isArray(raw) ? raw : [];
+  const set = new Set(arr.map((p: any) => String(p)));
+  return set.has("global.admin") || set.has("country.admin") || set.has(key);
+}
+
 exports.receiveDispatch = async (req, res) => {
   try {
     const userId = req.user?.id;
@@ -158,39 +166,102 @@ exports.receiveDispatch = async (req, res) => {
     const allowedByBranch = toBranchId != null && allowedBranchIds.includes(toBranchId);
     if (!allowedByBranch) return res.status(403).json({ success: false, message: "Only branch staff or org owner can receive at this branch" });
 
-    const { items, notes } = req.body;
+    const { items, notes, receiveMode } = req.body || {};
     const idempotencyKey = (req.headers["idempotency-key"] || req.headers["x-idempotency-key"] || "").trim() || undefined;
-    const result = await service.receiveDispatch(id, {
-      items: Array.isArray(items) ? items : [],
-      notes,
-      createdByUserId: userId,
-      idempotencyKey,
-    });
-    await auditStockDispatch(req, "RECEIVE", id, { status: "IN_TRANSIT" }, { status: result.dispatch?.status ?? "DELIVERED" });
-    if (result.grn) await auditGrn(req, "RECEIVE_DISPATCH", result.grn.id, null, { dispatchId: id });
-    if (result.grn?.lines?.length) {
-      const discrepancyLines = result.grn.lines
-        .filter((l) => (l.quantityDamaged ?? 0) > 0 || (l.quantityShort ?? 0) > 0)
-        .map((l) => ({ variantId: l.variantId, quantityDamaged: l.quantityDamaged ?? 0, quantityShort: l.quantityShort ?? 0 }));
-      if (discrepancyLines.length > 0) {
-        auditDiscrepancy(req, {
-          dispatchId: id,
-          grnId: result.grn.id,
-          branchId: toBranchId ?? null,
-          userId,
-          lines: discrepancyLines,
-        }).catch(() => {});
-      }
+
+    const modeRaw = typeof receiveMode === "string" ? receiveMode.trim().toLowerCase() : "";
+    const hasConfirm = dispatchUserHasPerm(req, "dispatch.receive.confirm.branch_manager");
+
+    if (modeRaw === "verify") {
+      const result = await service.receiveDispatch(
+        id,
+        { items: Array.isArray(items) ? items : [], notes, createdByUserId: userId },
+        { mode: "verify" }
+      );
+      return res.status(200).json({
+        success: true,
+        data: result,
+        receiveMode: "verify",
+        message: "Verification saved; manager confirmation required to post stock.",
+      });
     }
-    // toBranchId is derived only from dispatch destination (toLocation.branchId or DB lookup by toLocationId)
-    notifyDispatchReceived({
-      dispatchId: id,
-      dispatch,
-      result,
-      receiverUserId: userId,
-      toBranchId: toBranchId ?? null,
-    }).catch((e) => console.warn("notifyDispatchReceived failed", (e as Error)?.message));
-    return res.status(200).json({ success: true, data: result });
+    if (modeRaw === "submit") {
+      const result = await service.receiveDispatch(id, { createdByUserId: userId }, { mode: "submit" });
+      return res.status(200).json({ success: true, data: result, receiveMode: "submit" });
+    }
+    if (modeRaw === "confirm") {
+      if (!hasConfirm) {
+        return res.status(403).json({
+          success: false,
+          code: "DISPATCH_CONFIRM_REQUIRED",
+          message: "Branch manager confirmation permission required to post dispatch receive.",
+        });
+      }
+      const result = await service.receiveDispatch(
+        id,
+        { notes, createdByUserId: userId, idempotencyKey },
+        { mode: "confirm", allowConfirmFromDraft: true }
+      );
+      await auditStockDispatch(req, "RECEIVE", id, { status: "IN_TRANSIT" }, { status: result.dispatch?.status ?? "DELIVERED" });
+      if (result.grn) await auditGrn(req, "RECEIVE_DISPATCH", result.grn.id, null, { dispatchId: id });
+      notifyDispatchReceived({
+        dispatchId: id,
+        dispatch,
+        result,
+        receiverUserId: userId,
+        toBranchId: toBranchId ?? null,
+      }).catch((e) => console.warn("notifyDispatchReceived failed", (e as Error)?.message));
+      return res.status(200).json({ success: true, data: result, receiveMode: "confirm" });
+    }
+
+    if (hasConfirm) {
+      const result = await service.receiveDispatch(
+        id,
+        {
+          items: Array.isArray(items) ? items : [],
+          notes,
+          createdByUserId: userId,
+          idempotencyKey,
+        },
+        { mode: "legacy_immediate" }
+      );
+      await auditStockDispatch(req, "RECEIVE", id, { status: "IN_TRANSIT" }, { status: result.dispatch?.status ?? "DELIVERED" });
+      if (result.grn) await auditGrn(req, "RECEIVE_DISPATCH", result.grn.id, null, { dispatchId: id });
+      if (result.grn?.lines?.length) {
+        const discrepancyLines = result.grn.lines
+          .filter((l) => (l.quantityDamaged ?? 0) > 0 || (l.quantityShort ?? 0) > 0)
+          .map((l) => ({ variantId: l.variantId, quantityDamaged: l.quantityDamaged ?? 0, quantityShort: l.quantityShort ?? 0 }));
+        if (discrepancyLines.length > 0) {
+          auditDiscrepancy(req, {
+            dispatchId: id,
+            grnId: result.grn.id,
+            branchId: toBranchId ?? null,
+            userId,
+            lines: discrepancyLines,
+          }).catch(() => {});
+        }
+      }
+      notifyDispatchReceived({
+        dispatchId: id,
+        dispatch,
+        result,
+        receiverUserId: userId,
+        toBranchId: toBranchId ?? null,
+      }).catch((e) => console.warn("notifyDispatchReceived failed", (e as Error)?.message));
+      return res.status(200).json({ success: true, data: result, receiveMode: "legacy_immediate" });
+    }
+
+    const result = await service.receiveDispatch(
+      id,
+      { items: Array.isArray(items) ? items : [], notes, createdByUserId: userId },
+      { mode: "verify" }
+    );
+    return res.status(200).json({
+      success: true,
+      data: result,
+      receiveMode: "verify",
+      message: "Verification saved (no stock posted). Branch manager must confirm receiveMode: confirm after submit.",
+    });
   } catch (e: any) {
     if (e?.message?.includes("Duplicate receive") || e?.message?.includes("idempotency")) {
       return res.status(409).json({ success: false, message: e.message ?? "Duplicate receive request" });
@@ -300,5 +371,123 @@ exports.getIncomingInboundUnified = async (req, res) => {
   } catch (e: any) {
     console.error("getIncomingInboundUnified error:", e);
     return res.status(500).json({ success: false, message: e?.message ?? "Failed to list incoming inbound" });
+  }
+};
+
+/**
+ * GET /api/v1/inventory/receipts/pending-po-receipts?branchId=
+ * Returns approved/partially-received POs awaiting vendor GRN receipt at the branch warehouse.
+ * Requires: inventory.receive OR inbound.grn OR purchase.receive (checked via requirePermission in route).
+ */
+exports.listPendingPoReceipts = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const branchId = parseInt(req.query.branchId as string);
+    if (!branchId) return res.status(400).json({ success: false, message: "branchId required" });
+
+    const allowedBranchIds = await getAllowedBranchIdsForDispatches(userId);
+    if (!allowedBranchIds.includes(branchId)) return res.status(403).json({ success: false, message: "Branch not accessible" });
+
+    const orgId = await getOrgIdForUser(userId);
+    if (!orgId) return res.status(403).json({ success: false, message: "Organization context required" });
+
+    const items = await listPendingPoReceiptsForBranch(branchId, orgId);
+    return res.status(200).json({ success: true, data: items });
+  } catch (e: any) {
+    console.error("listPendingPoReceipts error:", e);
+    return res.status(500).json({ success: false, message: e?.message ?? "Failed to list pending PO receipts" });
+  }
+};
+
+async function assertDispatchAccessibleForPrint(req: any, dispatchId: number): Promise<{ orgId: number }> {
+  const userId = req.user?.id;
+  if (!userId) throw Object.assign(new Error("Unauthorized"), { status: 401 });
+  const dispatch = await service.getDispatchById(dispatchId);
+  if (!dispatch) throw Object.assign(new Error("Dispatch not found"), { status: 404 });
+  const toBranchId =
+    dispatch.toLocation?.branchId ??
+    (await prisma.inventoryLocation.findUnique({ where: { id: dispatch.toLocationId }, select: { branchId: true } }))?.branchId;
+  const allowedBranchIds = await getAllowedBranchIdsForDispatches(userId);
+  const orgId = await getOrgIdForUser(userId);
+  const allowedByBranch = toBranchId != null && allowedBranchIds.includes(toBranchId);
+  const allowedByOrg = orgId != null && dispatch.orgId === orgId;
+  if (!allowedByBranch && !allowedByOrg) throw Object.assign(new Error("Forbidden"), { status: 403 });
+  return { orgId: dispatch.orgId };
+}
+
+exports.printDispatchChallan = async (req: any, res: any) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!id) return res.status(400).json({ success: false, message: "Invalid dispatch ID" });
+    const { orgId } = await assertDispatchAccessibleForPrint(req, id);
+    const { renderDispatchChallanHtml } = require("../inventory/printDocuments.service");
+    const html = await renderDispatchChallanHtml(id, orgId);
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    return res.status(200).send(html);
+  } catch (e: any) {
+    const st = e?.status;
+    if (st === 401) return res.status(401).json({ success: false, message: e.message });
+    if (st === 403) return res.status(403).json({ success: false, message: e.message });
+    if (st === 404) return res.status(404).json({ success: false, message: e.message });
+    console.error("printDispatchChallan error:", e);
+    return res.status(400).json({ success: false, message: e?.message ?? "Failed to render" });
+  }
+};
+
+exports.printBranchReceiveConfirmation = async (req: any, res: any) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!id) return res.status(400).json({ success: false, message: "Invalid dispatch ID" });
+    const { orgId } = await assertDispatchAccessibleForPrint(req, id);
+    const { renderBranchReceiveConfirmationHtml } = require("../inventory/printDocuments.service");
+    const html = await renderBranchReceiveConfirmationHtml(id, orgId);
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    return res.status(200).send(html);
+  } catch (e: any) {
+    const st = e?.status;
+    if (st === 401) return res.status(401).json({ success: false, message: e.message });
+    if (st === 403) return res.status(403).json({ success: false, message: e.message });
+    if (st === 404) return res.status(404).json({ success: false, message: e.message });
+    console.error("printBranchReceiveConfirmation error:", e);
+    return res.status(400).json({ success: false, message: e?.message ?? "Failed to render" });
+  }
+};
+
+exports.printDispatchDiscrepancyReport = async (req: any, res: any) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!id) return res.status(400).json({ success: false, message: "Invalid dispatch ID" });
+    const { orgId } = await assertDispatchAccessibleForPrint(req, id);
+    const { renderDispatchDiscrepancyReportHtml } = require("../inventory/printDocuments.service");
+    const html = await renderDispatchDiscrepancyReportHtml(id, orgId);
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    return res.status(200).send(html);
+  } catch (e: any) {
+    const st = e?.status;
+    if (st === 401) return res.status(401).json({ success: false, message: e.message });
+    if (st === 403) return res.status(403).json({ success: false, message: e.message });
+    if (st === 404) return res.status(404).json({ success: false, message: e.message });
+    console.error("printDispatchDiscrepancyReport error:", e);
+    return res.status(400).json({ success: false, message: e?.message ?? "Failed to render" });
+  }
+};
+
+exports.printBranchReceiveWorksheet = async (req: any, res: any) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!id) return res.status(400).json({ success: false, message: "Invalid dispatch ID" });
+    const { orgId } = await assertDispatchAccessibleForPrint(req, id);
+    const { renderBranchReceiveWorksheetHtml } = require("../inventory/printDocuments.service");
+    const html = await renderBranchReceiveWorksheetHtml(id, orgId);
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    return res.status(200).send(html);
+  } catch (e: any) {
+    const st = e?.status;
+    if (st === 401) return res.status(401).json({ success: false, message: e.message });
+    if (st === 403) return res.status(403).json({ success: false, message: e.message });
+    if (st === 404) return res.status(404).json({ success: false, message: e.message });
+    console.error("printBranchReceiveWorksheet error:", e);
+    return res.status(400).json({ success: false, message: e?.message ?? "Failed to render" });
   }
 };

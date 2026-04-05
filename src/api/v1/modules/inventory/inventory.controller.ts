@@ -487,8 +487,17 @@ exports.createBulkReceipt = async (req, res) => {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
 
-    const { locationId, vendorId, invoiceNo, invoiceDate, notes, lines, purchaseOrderId, receiveIdempotencyKey } =
-      req.body || {};
+    const {
+      locationId,
+      vendorId,
+      invoiceNo,
+      invoiceDate,
+      notes,
+      lines,
+      purchaseOrderId,
+      receiveIdempotencyKey,
+      postImmediately,
+    } = req.body || {};
     const idemFromHeader = req.headers["idempotency-key"] ?? req.headers["Idempotency-Key"];
     const idemKey =
       receiveIdempotencyKey != null && String(receiveIdempotencyKey).trim()
@@ -515,19 +524,44 @@ exports.createBulkReceipt = async (req, res) => {
       include: { branch: true },
     });
     if (!location) return res.status(404).json({ success: false, message: "Location not found" });
-    const allowedTypes = ["CENTRAL_WAREHOUSE"];
-    if (!allowedTypes.includes(location.type)) {
-      return res.status(400).json({
-        success: false,
-        code: "BRANCH_LOCATION_REQUIRES_DISPATCH",
-        message: "Branch locations require dispatch confirmation. Create dispatch instead?",
-        payload: { locationType: location.type, locationId: locId, suggestedAction: "CREATE_DISPATCH" },
-      });
+
+    // PO-linked vendor inbound (GRN against a purchase order): the receiving destination is whatever
+    // warehouse/DC the PO targets. Skip internal-dispatch gate entirely — this is NOT a branch transfer.
+    // For generic (non-PO) bulk receive, keep the CENTRAL_WAREHOUSE-only guard so that accidental
+    // direct receive into branch stores still routes through the dispatch confirmation flow.
+    const isPOLinkedInbound = poIdNum != null;
+    if (!isPOLinkedInbound) {
+      const allowedTypes = ["CENTRAL_WAREHOUSE"];
+      if (!allowedTypes.includes(location.type)) {
+        return res.status(400).json({
+          success: false,
+          code: "BRANCH_LOCATION_REQUIRES_DISPATCH",
+          message: "Branch locations require dispatch confirmation. Create dispatch instead?",
+          payload: { locationType: location.type, locationId: locId, suggestedAction: "CREATE_DISPATCH" },
+        });
+      }
     }
     const orgId = location.branch.orgId;
     const member = await prisma.orgMember.findFirst({ where: { userId, orgId, status: "ACTIVE" } });
     const isOwner = await prisma.organization.findFirst({ where: { id: orgId, ownerUserId: userId } });
     if (!member && !isOwner) return res.status(403).json({ success: false, message: "Not authorized for this org" });
+
+    const postImmediatelyBool = postImmediately === true;
+    if (postImmediatelyBool) {
+      const rawPerms = req.user?.permissions || req.user?.perms || [];
+      const permSet = new Set(Array.isArray(rawPerms) ? rawPerms.map((p: string) => String(p)) : []);
+      const canImmediate =
+        permSet.has("global.admin") ||
+        permSet.has("grn.confirm.warehouse_manager") ||
+        permSet.has("inventory.emergency.override");
+      if (!canImmediate) {
+        return res.status(403).json({
+          success: false,
+          code: "BULK_POST_IMMEDIATE_DENIED",
+          message: "postImmediately requires grn.confirm.warehouse_manager (or emergency override). Save as draft instead.",
+        });
+      }
+    }
 
     const payload = {
       orgId,
@@ -548,20 +582,86 @@ exports.createBulkReceipt = async (req, res) => {
         purchaseOrderLineId: l.purchaseOrderLineId != null ? parseInt(String(l.purchaseOrderLineId), 10) : undefined,
         quantityDamaged: l.quantityDamaged != null ? parseInt(String(l.quantityDamaged), 10) : undefined,
         quantityShort: l.quantityShort != null ? parseInt(String(l.quantityShort), 10) : undefined,
+        quantityExtra: l.quantityExtra != null ? parseInt(String(l.quantityExtra), 10) : undefined,
         supplierBarcode: l.supplierBarcode != null ? String(l.supplierBarcode) : undefined,
         receiveBarcode: l.receiveBarcode != null ? String(l.receiveBarcode) : undefined,
         landedUnitCost: l.landedUnitCost != null ? Number(l.landedUnitCost) : undefined,
         lineRemarks: l.lineRemarks != null ? String(l.lineRemarks) : undefined,
+        lineDiscrepancyNote: l.lineDiscrepancyNote != null ? String(l.lineDiscrepancyNote) : undefined,
       })),
     };
-    const grn = await grnService.createAndReceiveGrn(payload, userId);
-    return res.status(201).json({ success: true, data: grn, message: "Bulk receipt received" });
+    const grn = await grnService.createAndReceiveGrn(payload, userId, { postImmediately: postImmediatelyBool });
+    return res.status(201).json({
+      success: true,
+      data: grn,
+      message: postImmediatelyBool
+        ? "Bulk receipt received and posted to stock"
+        : "Bulk receipt saved as draft. Submit for confirmation, then a manager posts the GRN.",
+      requiresManagerConfirmation: !postImmediatelyBool,
+    });
   } catch (e: any) {
     console.error("createBulkReceipt error:", e);
     if (e?.code === "BULK_RECEIVE_VALIDATION" && Array.isArray(e.errors)) {
       return res.status(400).json({ success: false, message: e.message || "Validation failed", errors: e.errors });
     }
     return res.status(400).json({ success: false, message: (e && e.message) || "Bulk receipt failed" });
+  }
+};
+
+/**
+ * POST /api/v1/inventory/receipts/bulk-override
+ * Emergency owner override for bulk receive when warehouse staff unavailable.
+ * Requires explicit inventory.emergency.override permission and logs audit trail.
+ */
+exports.createBulkReceiptOverride = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+
+    const { reason, ...bulkReceiptBody } = req.body || {};
+    if (!reason || typeof reason !== "string" || !reason.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Override reason required for audit trail"
+      });
+    }
+
+    // Log the override usage before processing
+    const { locationId } = bulkReceiptBody;
+    const locId = locationId != null ? parseInt(locationId, 10) : NaN;
+    if (Number.isInteger(locId)) {
+      const location = await prisma.inventoryLocation.findUnique({
+        where: { id: locId },
+        include: { branch: true },
+      });
+      if (location) {
+        await logWarehouseAudit({
+          orgId: location.branch.orgId,
+          warehouseId: null, // May not have direct warehouse link
+          category: "SECURITY",
+          action: "OWNER_RECEIVE_OVERRIDE_USED",
+          entityType: "BulkReceipt",
+          entityId: null, // Will be set after GRN creation
+          metadata: {
+            reason: reason.trim(),
+            locationId: locId,
+            locationName: location.name,
+            overrideType: "EMERGENCY_BULK_RECEIVE"
+          },
+          actorUserId: userId,
+        });
+      }
+    }
+
+    // Use the same logic as createBulkReceipt but with override context
+    const result = await exports.createBulkReceipt(req, res);
+    return result;
+  } catch (e: any) {
+    console.error("createBulkReceiptOverride error:", e);
+    return res.status(400).json({
+      success: false,
+      message: (e && e.message) || "Override bulk receipt failed"
+    });
   }
 };
 
@@ -2010,6 +2110,96 @@ exports.dispatchInventoryTransfer = async (req: any, res: any) => {
       return res.status(400).json({ success: false, message: (e as Error).message, code });
     }
     return res.status(400).json({ success: false, message: (e as Error).message });
+  }
+};
+
+const operationsVisibility = require("../../services/operationsVisibility.service");
+
+/** GET /api/v1/inventory/operations/exception-summary — queues & discrepancy counts for dashboards */
+exports.getOperationsExceptionSummary = async (req: any, res: any) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const orgId = await resolveOrgIdForWarehouseEndpoints(userId, req.query as Record<string, unknown>);
+    const data = await operationsVisibility.getOperationsExceptionSummary(orgId);
+    return res.status(200).json({ success: true, data });
+  } catch (e: unknown) {
+    const code = (e as { code?: string })?.code;
+    if (code === "FORBIDDEN_ORG" || code === "ORG_REQUIRED") {
+      return res.status(code === "ORG_REQUIRED" ? 400 : 403).json({
+        success: false,
+        message: (e as Error).message,
+        code,
+      });
+    }
+    console.error("getOperationsExceptionSummary error:", e);
+    return res.status(500).json({ success: false, message: (e as Error).message });
+  }
+};
+
+/** GET /api/v1/inventory/operations/pending-confirmations — detail rows for confirmation queues */
+exports.getOperationsPendingDetails = async (req: any, res: any) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const orgId = await resolveOrgIdForWarehouseEndpoints(userId, req.query as Record<string, unknown>);
+    const limit = Math.min(parseInt(String(req.query.limit || "25"), 10) || 25, 100);
+    const data = await operationsVisibility.listPendingConfirmationDetails(orgId, limit);
+    return res.status(200).json({ success: true, data });
+  } catch (e: unknown) {
+    const code = (e as { code?: string })?.code;
+    if (code === "FORBIDDEN_ORG" || code === "ORG_REQUIRED") {
+      return res.status(code === "ORG_REQUIRED" ? 400 : 403).json({
+        success: false,
+        message: (e as Error).message,
+        code,
+      });
+    }
+    console.error("getOperationsPendingDetails error:", e);
+    return res.status(500).json({ success: false, message: (e as Error).message });
+  }
+};
+
+/** GET /api/v1/inventory/lookup/variant-by-barcode?barcode= — org-scoped variant for receive / scan flows */
+exports.lookupVariantByBarcode = async (req: any, res: any) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const orgId = await resolveOrgIdForWarehouseEndpoints(userId, req.query as Record<string, unknown>);
+    const barcode = String((req.query as Record<string, string>)?.barcode || "").trim();
+    if (!barcode) {
+      return res.status(400).json({ success: false, message: "barcode query parameter is required" });
+    }
+    const v = await prisma.productVariant.findFirst({
+      where: {
+        barcode,
+        isActive: true,
+        product: { orgId, status: "ACTIVE" },
+      },
+      select: {
+        id: true,
+        sku: true,
+        title: true,
+        productId: true,
+        barcode: true,
+        product: { select: { id: true, name: true } },
+      },
+    });
+    if (!v) {
+      return res.status(404).json({ success: false, message: "No active variant found for this barcode in your catalog" });
+    }
+    return res.status(200).json({ success: true, data: v });
+  } catch (e: unknown) {
+    const code = (e as { code?: string })?.code;
+    if (code === "FORBIDDEN_ORG" || code === "ORG_REQUIRED") {
+      return res.status(code === "ORG_REQUIRED" ? 400 : 403).json({
+        success: false,
+        message: (e as Error).message,
+        code,
+      });
+    }
+    console.error("lookupVariantByBarcode error:", e);
+    return res.status(500).json({ success: false, message: (e as Error).message });
   }
 };
 
