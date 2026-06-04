@@ -2,6 +2,7 @@ const path = require('path');
 const fs = require('fs');
 const { z } = require('zod');
 const { prisma } = require('../../../utils/prisma');
+const centralizedLocationService = require('../../../../../modules/location/location.service');
 
 const basicUpdateSchema = z.object({
   name: z.string().min(2).max(150).optional(),
@@ -110,13 +111,45 @@ async function updateMyOrganizationBasic(req, res, next) {
       }
     }
 
+    const addressJsonObj = data.addressJson && typeof data.addressJson === "object" ? data.addressJson : null;
+    let normalizedLocation = {
+      divisionId: addressJsonObj?.divisionId != null ? Number(addressJsonObj.divisionId) || null : null,
+      districtId: addressJsonObj?.districtId != null ? Number(addressJsonObj.districtId) || null : null,
+      upazilaId: addressJsonObj?.upazilaId != null ? Number(addressJsonObj.upazilaId) || null : null,
+      unionId: addressJsonObj?.unionId != null ? Number(addressJsonObj.unionId) || null : null,
+      areaId: addressJsonObj?.bdAreaId != null ? Number(addressJsonObj.bdAreaId) || null : addressJsonObj?.areaId != null ? Number(addressJsonObj.areaId) || null : null,
+    };
+    if (
+      normalizedLocation.divisionId ||
+      normalizedLocation.districtId ||
+      normalizedLocation.upazilaId ||
+      normalizedLocation.unionId ||
+      normalizedLocation.areaId
+    ) {
+      const validated = await centralizedLocationService.validateSelection(prisma, normalizedLocation);
+      if (!validated?.ok) throw httpError(400, validated?.message || "Invalid location selection");
+      normalizedLocation = validated.normalized || normalizedLocation;
+      if (addressJsonObj) {
+        addressJsonObj.divisionId = normalizedLocation.divisionId;
+        addressJsonObj.districtId = normalizedLocation.districtId;
+        addressJsonObj.upazilaId = normalizedLocation.upazilaId;
+        addressJsonObj.unionId = normalizedLocation.unionId;
+        addressJsonObj.bdAreaId = normalizedLocation.areaId;
+      }
+    }
+
     // Update organization
     const updated = await prisma.organization.update({
       where: { id: orgId },
       data: {
         ...(data.name !== undefined ? { name: data.name } : {}),
         ...(data.supportPhone !== undefined ? { supportPhone: data.supportPhone } : {}),
-        ...(data.addressJson !== undefined ? { addressJson: data.addressJson } : {}),
+        ...(data.addressJson !== undefined ? { addressJson: addressJsonObj } : {}),
+        ...(normalizedLocation.divisionId !== null ? { divisionId: normalizedLocation.divisionId } : {}),
+        ...(normalizedLocation.districtId !== null ? { districtId: normalizedLocation.districtId } : {}),
+        ...(normalizedLocation.upazilaId !== null ? { upazilaId: normalizedLocation.upazilaId } : {}),
+        ...(normalizedLocation.unionId !== null ? { unionId: normalizedLocation.unionId } : {}),
+        ...(normalizedLocation.areaId !== null ? { areaId: normalizedLocation.areaId } : {}),
         ...(locationUpdate || {}),
       },
       include: {

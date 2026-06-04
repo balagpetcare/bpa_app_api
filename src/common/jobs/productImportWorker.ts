@@ -9,17 +9,15 @@ import prisma from "../../infrastructure/db/prismaClient";
 import { runBatchSyncSafe } from "../../api/v1/services/product-import/BatchRunner";
 import type { ProductImportJobPayload } from "../../api/v1/services/productImportQueue";
 
-const REDIS_ENABLED = process.env.REDIS_ENABLED !== "false" && process.env.REDIS_ENABLED !== "0";
-if (!REDIS_ENABLED) {
-  console.log("[ProductImportWorker] REDIS_ENABLED=false; worker will not start.");
+import { areRedisQueuesEnabled } from "../../infrastructure/redis/redis.client";
+import { getRedisConnectionOptions, isRedisEnabled } from "../../infrastructure/redis/redisConnection";
+
+if (!isRedisEnabled() || !areRedisQueuesEnabled()) {
+  console.log("[ProductImportWorker] Redis unavailable; worker will not start.");
   process.exit(0);
 }
 
-const redisConfig = {
-  host: process.env.REDIS_HOST || "localhost",
-  port: Number(process.env.REDIS_PORT) || 6379,
-  maxRetriesPerRequest: null,
-};
+const redisConfig = getRedisConnectionOptions();
 
 async function processJob(job: Job<ProductImportJobPayload>) {
   const { batchId, bufferBase64, orgId, branchId, createdByUserId, provider, sourceType, filename } = job.data;

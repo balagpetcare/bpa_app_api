@@ -1,0 +1,63 @@
+﻿{
+  "migrationCount": 252,
+  "uniqueTablesCreated": 468,
+  "violationCount": 8,
+  "violations": [
+    {
+      "kind": "REFERENCES_BEFORE_FIRST_CREATE_TABLE",
+      "migration": "20260401143000_staff_invites_warehouse_target",
+      "migrationIndex": 194,
+      "referencedTable": "warehouses",
+      "firstCreateMigration": "20260428150000_central_warehouse_foundation"
+    },
+    {
+      "kind": "REFERENCES_BEFORE_FIRST_CREATE_TABLE",
+      "migration": "20260402140000_wave2_procurement_inbound_putaway",
+      "migrationIndex": 199,
+      "referencedTable": "warehouses",
+      "firstCreateMigration": "20260428150000_central_warehouse_foundation"
+    },
+    {
+      "kind": "REFERENCES_BEFORE_FIRST_CREATE_TABLE",
+      "migration": "20260402140000_wave2_procurement_inbound_putaway",
+      "migrationIndex": 199,
+      "referencedTable": "purchase_orders",
+      "firstCreateMigration": "20260429120000_warehouse_enterprise_po_allocation_pick_pod"
+    },
+    {
+      "kind": "REFERENCES_BEFORE_FIRST_CREATE_TABLE",
+      "migration": "20260402140000_wave2_procurement_inbound_putaway",
+      "migrationIndex": 199,
+      "referencedTable": "purchase_order_lines",
+      "firstCreateMigration": "20260429120000_warehouse_enterprise_po_allocation_pick_pod"
+    },
+    {
+      "kind": "ALTER_TABLE_BEFORE_FIRST_CREATE_TABLE",
+      "migration": "20260402140000_wave2_procurement_inbound_putaway",
+      "migrationIndex": 199,
+      "referencedTable": "purchase_orders",
+      "firstCreateMigration": "20260429120000_warehouse_enterprise_po_allocation_pick_pod"
+    },
+    {
+      "kind": "REFERENCES_BEFORE_FIRST_CREATE_TABLE",
+      "migration": "20260403140000_enterprise_grn_po_line_barcode_void",
+      "migrationIndex": 207,
+      "referencedTable": "purchase_order_lines",
+      "firstCreateMigration": "20260429120000_warehouse_enterprise_po_allocation_pick_pod"
+    },
+    {
+      "kind": "ALTER_TABLE_BEFORE_FIRST_CREATE_TABLE",
+      "migration": "20260403140000_enterprise_grn_po_line_barcode_void",
+      "migrationIndex": 207,
+      "referencedTable": "warehouses",
+      "firstCreateMigration": "20260428150000_central_warehouse_foundation"
+    },
+    {
+      "kind": "ALTER_TABLE_BEFORE_FIRST_CREATE_TABLE",
+      "migration": "20260501000000_drift_reconciliation_baseline",
+      "migrationIndex": 245,
+      "referencedTable": "public",
+      "firstCreateMigration": null
+    }
+  ]
+}

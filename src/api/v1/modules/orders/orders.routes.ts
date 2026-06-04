@@ -7,14 +7,14 @@ function requirePermission(...permissions) {
   return (req, res, next) => {
     const userPerms = req.user?.permissions || [];
     const hasPermission = permissions.some((perm) => userPerms.includes(perm));
-    
+
     if (!hasPermission) {
       const userId = req.user?.id;
       if (!userId) {
         return res.status(401).json({ success: false, message: "Unauthorized" });
       }
     }
-    
+
     next();
   };
 }
@@ -49,10 +49,10 @@ router.post(
   controller.processPayment
 );
 
-// POST /api/v1/orders/:id/cancel - Cancel order
+// POST /api/v1/orders/:id/cancel - Cancel order (POS cashiers: pos.refund; staff: order.update / org.write)
 router.post(
   "/:id/cancel",
-  requirePermission("order.update", "org.write"),
+  requirePermission("order.update", "org.write", "pos.refund"),
   controller.cancelOrder
 );
 

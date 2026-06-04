@@ -25,7 +25,7 @@ export async function notifyDispatchCreated(params: NotifyDispatchCreatedParams)
   const lineCount = items.length;
   const totalQty = items.reduce((s, i) => s + (i.quantityDispatched ?? 0), 0);
   const message = `Dispatch #${dispatchId} created: ${fromName} → ${toName} (${lineCount} line(s), Qty ${totalQty}). Awaiting branch receive confirmation.`;
-  const actionUrl = `/staff/branch/${toBranchId}/inventory/incoming/${dispatchId}`;
+  const actionUrl = `/staff/branch/${toBranchId}/warehouse/inbound-transfers`;
   const members = await prisma.branchMember.findMany({
     where: { branchId: toBranchId, status: "ACTIVE" },
     select: { userId: true },
@@ -73,7 +73,7 @@ export type NotifyDispatchReceivedParams = {
 
 /**
  * After successful receive: notify receiver, sender (if createdByUserId), and org owner.
- * actionUrl is always /staff/branch/{toBranchId}/inventory/incoming/{dispatchId} when toBranchId is set.
+ * actionUrl points at the branch inbound queue when toBranchId is set (consistent with unified inbound UX).
  * Dedupes recipients. Does not change API response.
  */
 export async function notifyDispatchReceived(params: NotifyDispatchReceivedParams): Promise<void> {
@@ -86,7 +86,7 @@ export async function notifyDispatchReceived(params: NotifyDispatchReceivedParam
   const message = `Dispatch #${dispatchId} received from ${fromName} to ${toName} (${lineCount} lines, Qty ${totalQty}).`;
   const actionUrl =
     toBranchId != null
-      ? `/staff/branch/${toBranchId}/inventory/incoming/${dispatchId}`
+      ? `/staff/branch/${toBranchId}/warehouse/inbound-transfers`
       : undefined;
 
   const recipientIds: number[] = [receiverUserId];

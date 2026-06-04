@@ -7,6 +7,7 @@ const prisma =
   require("../../../../infrastructure/db/prismaClient");
 const {
   recordClinicalLedgerEntryStandalone,
+  recordClinicalLedgerEntry,
 } = require("./clinicalStockLedger.service");
 const { Decimal } = require("@prisma/client-runtime-utils");
 
@@ -186,6 +187,10 @@ export async function createBranchItemBatch(
     receivedQty: number;
     purchaseCost?: number | null;
     actorId?: number;
+    sourceStockLotId?: number | null;
+    sourceGrnLineId?: number | null;
+    sourceStockDispatchItemId?: number | null;
+    sourceClinicalTransferItemId?: number | null;
   }
 ) {
   const batch = await prisma.branchItemBatch.create({
@@ -199,11 +204,98 @@ export async function createBranchItemBatch(
       remainingQty: data.receivedQty,
       usedQty: 0,
       purchaseCost: data.purchaseCost ?? undefined,
+      sourceStockLotId: data.sourceStockLotId ?? undefined,
+      sourceGrnLineId: data.sourceGrnLineId ?? undefined,
+      sourceStockDispatchItemId: data.sourceStockDispatchItemId ?? undefined,
+      sourceClinicalTransferItemId: data.sourceClinicalTransferItemId ?? undefined,
     },
   });
-  await adjustBranchItemStock(branchId, itemId, variantId, data.receivedQty, {
-    reason: "Receive",
+  const qtyLedger = Math.round(Number(data.receivedQty));
+  if (data.actorId != null) {
+    const branch = await prisma.branch.findUnique({
+      where: { id: branchId },
+      select: { orgId: true },
+    });
+    if (!branch) throw new Error("Branch not found");
+    await recordClinicalLedgerEntryStandalone({
+      orgId: branch.orgId,
+      branchId,
+      clinicalItemId: itemId,
+      variantId,
+      batchId: batch.id,
+      txnType: "RECEIVE",
+      quantityDelta: qtyLedger,
+      unitCost: data.purchaseCost ?? undefined,
+      refType: "BRANCH_BATCH",
+      refId: String(batch.id),
+      note: "Clinical batch receive",
+      actorId: data.actorId,
+    });
+  } else {
+    await adjustBranchItemStock(branchId, itemId, variantId, Number(data.receivedQty), {
+      reason: "Receive",
+      unitCost: data.purchaseCost ?? undefined,
+      actorId: undefined,
+    });
+  }
+  return batch;
+}
+
+/**
+ * Same as createBranchItemBatch but uses an existing transaction client (inventory GRN / dispatch receive).
+ */
+export async function createBranchItemBatchInTx(
+  tx: any,
+  branchId: number,
+  itemId: number,
+  variantId: number,
+  data: {
+    batchNo: string;
+    expiryDate?: Date | null;
+    receivedQty: number;
+    purchaseCost?: number | null;
+    actorId: number;
+    sourceStockLotId?: number | null;
+    sourceGrnLineId?: number | null;
+    sourceStockDispatchItemId?: number | null;
+    sourceClinicalTransferItemId?: number | null;
+  }
+) {
+  const batch = await tx.branchItemBatch.create({
+    data: {
+      branchId,
+      itemId,
+      variantId,
+      batchNo: data.batchNo.trim(),
+      expiryDate: data.expiryDate ?? undefined,
+      receivedQty: data.receivedQty,
+      remainingQty: data.receivedQty,
+      usedQty: 0,
+      purchaseCost: data.purchaseCost ?? undefined,
+      sourceStockLotId: data.sourceStockLotId ?? undefined,
+      sourceGrnLineId: data.sourceGrnLineId ?? undefined,
+      sourceStockDispatchItemId: data.sourceStockDispatchItemId ?? undefined,
+      sourceClinicalTransferItemId: data.sourceClinicalTransferItemId ?? undefined,
+    },
+  });
+  const branch = await tx.branch.findUnique({
+    where: { id: branchId },
+    select: { orgId: true },
+  });
+  if (!branch) throw new Error("Branch not found");
+  const qtyLedger = Math.round(Number(data.receivedQty));
+  await recordClinicalLedgerEntry(tx, {
+    orgId: branch.orgId,
+    branchId,
+    clinicalItemId: itemId,
+    variantId,
+    batchId: batch.id,
+    txnType: "RECEIVE",
+    quantityDelta: qtyLedger,
     unitCost: data.purchaseCost ?? undefined,
+    refType: "BRANCH_BATCH",
+    refId: String(batch.id),
+    note: "Clinical batch receive",
     actorId: data.actorId,
   });
   return batch;

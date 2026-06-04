@@ -4,6 +4,284 @@
 const prisma = require("../../../../infrastructure/db/prismaClient").default ?? require("../../../../infrastructure/db/prismaClient");
 const orderService = require("../orders/orders.service");
 
+function roundMoney(value: number): number {
+  return Math.round(Number(value || 0) * 100) / 100;
+}
+
+async function listVaccinationBillingOptions(branchId: number): Promise<{ services: any[] }> {
+  const branch = await prisma.branch.findUnique({
+    where: { id: branchId },
+    select: { id: true, orgId: true },
+  });
+  if (!branch) return { services: [] };
+
+  const services = await prisma.service.findMany({
+    where: {
+      branchId,
+      orgId: branch.orgId,
+      status: "ACTIVE",
+      category: "VACCINATION",
+    },
+    include: {
+      pricingVariants: {
+        where: { isActive: true },
+        orderBy: [{ species: "asc" }, { sex: "asc" }],
+      },
+    },
+    orderBy: [{ name: "asc" }],
+  });
+
+  return {
+    services: services.map((service: any) => {
+      const activeVariants = Array.isArray(service.pricingVariants) ? service.pricingVariants : [];
+      const singleVariant = activeVariants.length === 1 ? activeVariants[0] : null;
+      return {
+        serviceId: service.id,
+        name: service.name,
+        category: service.category,
+        price: singleVariant?.price != null ? Number(singleVariant.price) : Number(service.price ?? 0),
+        pricingVariantId: singleVariant?.id ?? null,
+        currency: null,
+        pricingVariants: activeVariants.map((variant: any) => ({
+          pricingVariantId: variant.id,
+          species: variant.species,
+          sex: variant.sex ?? null,
+          price: variant.price != null ? Number(variant.price) : 0,
+        })),
+      };
+    }),
+  };
+}
+
+async function prepareVaccinationBilling(data: {
+  branchId: number;
+  petId: number;
+  vaccinationId?: number | null;
+  vaccineTypeId: number;
+  batchId: number;
+  batchNumber?: string | null;
+  visitId?: number | null;
+  appointmentId?: number | null;
+  serviceId?: number | null;
+  pricingVariantId?: number | null;
+  unitPrice?: number | null;
+  quantity?: number | null;
+  discountAmount?: number | null;
+  billingNotes?: string | null;
+}) {
+  const branchId = Number(data.branchId);
+  const petId = Number(data.petId);
+  const vaccineTypeId = Number(data.vaccineTypeId);
+  const batchId = Number(data.batchId);
+  const serviceId = data.serviceId != null ? Number(data.serviceId) : NaN;
+  const pricingVariantId = data.pricingVariantId != null ? Number(data.pricingVariantId) : null;
+  const visitId = data.visitId != null ? Number(data.visitId) : null;
+  const appointmentId = data.appointmentId != null ? Number(data.appointmentId) : null;
+  const quantity = data.quantity != null ? Number(data.quantity) : 1;
+  const discountAmount = data.discountAmount != null ? roundMoney(Number(data.discountAmount)) : 0;
+
+  if (!Number.isFinite(branchId) || branchId <= 0) throw new Error("Invalid branchId");
+  if (!Number.isFinite(petId) || petId <= 0) throw new Error("Invalid petId");
+  if (!Number.isFinite(vaccineTypeId) || vaccineTypeId <= 0) throw new Error("Invalid vaccineTypeId");
+  if (!Number.isFinite(batchId) || batchId <= 0) throw new Error("Invalid batchId");
+  if (!Number.isFinite(serviceId) || serviceId <= 0) throw new Error("Valid vaccination billing service is required");
+  if (!Number.isFinite(quantity) || quantity <= 0) throw new Error("quantity must be a positive number");
+  if (quantity !== 1) throw new Error("Vaccination billing quantity must be 1 in this phase");
+  if (!Number.isFinite(discountAmount) || discountAmount < 0) throw new Error("discountAmount must be a non-negative number");
+
+  const [branch, pet, service, vaccineType] = await Promise.all([
+    prisma.branch.findUnique({
+      where: { id: branchId },
+      select: { id: true, orgId: true },
+    }),
+    prisma.pet.findUnique({
+      where: { id: petId },
+      select: {
+        id: true,
+        userId: true,
+        sex: true,
+        animalType: { select: { id: true, name: true } },
+      },
+    }),
+    prisma.service.findFirst({
+      where: {
+        id: serviceId,
+        branchId,
+        status: "ACTIVE",
+        category: "VACCINATION",
+      },
+      include: {
+        pricingVariants: {
+          where: { isActive: true },
+          orderBy: [{ species: "asc" }, { sex: "asc" }],
+        },
+      },
+    }),
+    prisma.vaccineType.findUnique({
+      where: { id: vaccineTypeId },
+      select: { id: true, name: true },
+    }),
+  ]);
+
+  if (!branch) throw new Error("Branch not found");
+  if (!pet) throw new Error("Pet not found");
+  if (!service) throw new Error("Vaccination billing service not found for this branch");
+  if (!vaccineType) throw new Error("Vaccine type not found");
+
+  const pricingVariants = Array.isArray(service.pricingVariants) ? service.pricingVariants : [];
+  let selectedPricingVariant: any = null;
+  if (pricingVariantId != null) {
+    selectedPricingVariant = pricingVariants.find((variant: any) => Number(variant.id) === pricingVariantId) ?? null;
+    if (!selectedPricingVariant) throw new Error("Selected pricing variant is not valid for this vaccination service");
+  } else {
+    const petSpecies = String(pet.animalType?.name ?? "").trim().toLowerCase();
+    const petSex = String(pet.sex ?? "").trim().toLowerCase();
+    selectedPricingVariant =
+      pricingVariants.find((variant: any) => {
+        const species = String(variant.species ?? "").trim().toLowerCase();
+        const sex = String(variant.sex ?? "").trim().toLowerCase();
+        const speciesMatch = !!petSpecies && species === petSpecies;
+        const sexMatch = !sex || !petSex || sex === petSex;
+        return speciesMatch && sexMatch;
+      }) ?? (pricingVariants.length === 1 ? pricingVariants[0] : null);
+  }
+
+  const defaultUnitPrice =
+    selectedPricingVariant?.price != null ? Number(selectedPricingVariant.price) : Number(service.price ?? 0);
+  const unitPrice = data.unitPrice != null ? roundMoney(Number(data.unitPrice)) : roundMoney(defaultUnitPrice);
+  if (!Number.isFinite(unitPrice) || unitPrice < 0) throw new Error("unitPrice must be a non-negative number");
+
+  const subtotalAmount = roundMoney(unitPrice * quantity);
+  if (discountAmount > subtotalAmount) throw new Error("discountAmount cannot exceed the service subtotal");
+  const totalAmount = roundMoney(subtotalAmount - discountAmount);
+
+  let visit: any = null;
+  if (visitId != null) {
+    if (!Number.isFinite(visitId) || visitId <= 0) throw new Error("Invalid visitId");
+    visit = await prisma.visit.findFirst({
+      where: { id: visitId, branchId },
+      select: { id: true, petId: true, patientId: true, appointmentId: true },
+    });
+    if (!visit) throw new Error("Visit not found for this branch");
+    if (Number(visit.petId) !== petId) throw new Error("Selected visit does not belong to this pet");
+    if (Number(visit.patientId) !== Number(pet.userId)) throw new Error("Selected visit does not match this pet owner");
+    if (appointmentId != null && visit.appointmentId != null && Number(visit.appointmentId) !== appointmentId) {
+      throw new Error("Selected appointment does not match the visit");
+    }
+  }
+
+  let appointment: any = null;
+  if (appointmentId != null) {
+    if (!Number.isFinite(appointmentId) || appointmentId <= 0) throw new Error("Invalid appointmentId");
+    appointment = await prisma.appointment.findFirst({
+      where: { id: appointmentId, branchId },
+      select: { id: true, petId: true, patientId: true },
+    });
+    if (!appointment) throw new Error("Appointment not found for this branch");
+    if (appointment.petId != null && Number(appointment.petId) !== petId) {
+      throw new Error("Selected appointment does not belong to this pet");
+    }
+    if (appointment.patientId != null && Number(appointment.patientId) !== Number(pet.userId)) {
+      throw new Error("Selected appointment does not match this pet owner");
+    }
+  }
+
+  return {
+    branchId,
+    orgId: branch.orgId,
+    customerId: Number(pet.userId),
+    petId,
+    vaccineTypeId,
+    vaccineTypeName: vaccineType.name,
+    batchId,
+    batchNumber: data.batchNumber ?? null,
+    vaccinationId: data.vaccinationId != null ? Number(data.vaccinationId) : null,
+    visitId: visit?.id ?? null,
+    appointmentId: appointment?.id ?? appointmentId ?? null,
+    serviceId: service.id,
+    serviceName: service.name,
+    pricingVariantId: selectedPricingVariant?.id ?? null,
+    unitPrice,
+    quantity,
+    discountAmount,
+    subtotalAmount,
+    totalAmount,
+    billingNotes: data.billingNotes ? String(data.billingNotes).trim() : "",
+  };
+}
+
+async function createVaccinationBillingOrder(
+  plan: {
+    branchId: number;
+    customerId: number;
+    petId: number;
+    vaccineTypeId: number;
+    vaccineTypeName: string;
+    batchId: number;
+    batchNumber?: string | null;
+    vaccinationId?: number | null;
+    visitId?: number | null;
+    appointmentId?: number | null;
+    serviceId: number;
+    serviceName: string;
+    pricingVariantId?: number | null;
+    unitPrice: number;
+    quantity: number;
+    discountAmount: number;
+    subtotalAmount: number;
+    totalAmount: number;
+    billingNotes?: string;
+  },
+  createdByUserId: number
+) {
+  const noteParts = [
+    `Vaccination #${plan.vaccinationId ?? "pending"}`,
+    `Pet #${plan.petId}`,
+    `VaccineType #${plan.vaccineTypeId}`,
+    plan.batchNumber ? `Batch ${plan.batchNumber}` : `BatchId ${plan.batchId}`,
+    plan.appointmentId ? `Appointment #${plan.appointmentId}` : null,
+    plan.billingNotes || null,
+  ].filter(Boolean);
+
+  const order = await orderService.createOrder({
+    branchId: plan.branchId,
+    customerId: plan.customerId,
+    items: [
+      {
+        serviceId: plan.serviceId,
+        quantity: plan.quantity,
+        price: plan.unitPrice,
+      },
+    ],
+    notes: noteParts.join(" | "),
+    createdByUserId,
+    orderSource: "CLINIC",
+    visitId: plan.visitId ?? undefined,
+    orderTotals: {
+      subtotalAmount: plan.subtotalAmount,
+      discountPercent: null,
+      discountAmount: plan.discountAmount,
+      taxPercent: null,
+      taxAmount: 0,
+      totalAmount: plan.totalAmount,
+    },
+  });
+
+  return {
+    order,
+    billing: {
+      status: "CREATED",
+      orderId: order.id,
+      invoiceId: null,
+      amount: plan.totalAmount,
+      visitId: plan.visitId ?? null,
+      serviceId: plan.serviceId,
+      pricingVariantId: plan.pricingVariantId ?? null,
+      message: `Clinic billing order created for service ${plan.serviceName}`,
+    },
+  };
+}
+
 /**
  * Per-service payment status for a visit (for payment gate UI).
  * Returns services delivered or expected (appointment service) and whether each is paid.
@@ -334,4 +612,7 @@ module.exports = {
   getOpenVialAvailability,
   getTreatmentBillingSummary,
   createTreatmentDayBill,
+  listVaccinationBillingOptions,
+  prepareVaccinationBilling,
+  createVaccinationBillingOrder,
 };

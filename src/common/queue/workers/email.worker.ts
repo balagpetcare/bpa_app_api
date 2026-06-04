@@ -9,18 +9,11 @@ import { sendInviteEmail } from "../../email/email.service";
 import type { ProducerStaffInviteEmailJobPayload } from "../queues";
 import { QUEUE_NAME } from "../queues";
 
-const REDIS_URL = process.env.REDIS_URL || "";
-const REDIS_ENABLED =
-  REDIS_URL.length > 0 ||
-  (process.env.REDIS_ENABLED !== "false" && process.env.REDIS_ENABLED !== "0");
+import { areRedisQueuesEnabled } from "../../../infrastructure/redis/redis.client";
+import { getRedisConnectionOptions, isRedisEnabled } from "../../../infrastructure/redis/redisConnection";
 
-function getConnection(): { url?: string; host?: string; port?: number; maxRetriesPerRequest: null } {
-  if (REDIS_URL) return { url: REDIS_URL, maxRetriesPerRequest: null };
-  return {
-    host: process.env.REDIS_HOST || "localhost",
-    port: Number(process.env.REDIS_PORT) || 6379,
-    maxRetriesPerRequest: null,
-  };
+function getConnection() {
+  return getRedisConnectionOptions();
 }
 
 async function processJob(job: Job<ProducerStaffInviteEmailJobPayload>): Promise<string | null> {
@@ -53,8 +46,8 @@ async function processJob(job: Job<ProducerStaffInviteEmailJobPayload>): Promise
 }
 
 function run(): void {
-  if (!REDIS_ENABLED) {
-    console.log("Email worker: Redis not configured; worker will not start.");
+  if (!isRedisEnabled() || !areRedisQueuesEnabled()) {
+    console.log("Email worker: Redis not configured or unavailable; worker will not start.");
     return;
   }
   const worker = new Worker<ProducerStaffInviteEmailJobPayload>(

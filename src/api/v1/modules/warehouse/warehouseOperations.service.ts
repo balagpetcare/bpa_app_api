@@ -7,6 +7,7 @@ const prisma = require("../../../../infrastructure/db/prismaClient").default;
 const { resolvePermissionsForUser } = require("../../utils/permissions");
 const { getPrimaryBranchTypeCode, prismaBranchSelectTypeCodes } = require("../../constants/branchRoleMatrix");
 const { OPEN_TRANSFER_STATUSES } = require("../../constants/warehouseTransferStatuses");
+const { selectPrimaryPickListForPlan } = require("../pick_lists/pickList.service");
 
 async function getLinkedLocationIds(warehouseId: number): Promise<number[]> {
   const locs = await prisma.inventoryLocation.findMany({
@@ -14,6 +15,90 @@ async function getLinkedLocationIds(warehouseId: number): Promise<number[]> {
     select: { id: true },
   });
   return locs.map((l: { id: number }) => l.id);
+}
+
+/**
+ * Staff "Open" target for enterprise fulfillment (pick → dispatch), using the warehouse hub branch URL.
+ */
+function computeStaffWarehouseStockRequestAction(
+  staffBranchId: number,
+  warehouseLocationIds: number[],
+  row: Record<string, any>
+): { openHref: string; nextActionLabel: string } {
+  const base = `/staff/branch/${staffBranchId}`;
+  const srId = row.id;
+  const locSet = new Set(warehouseLocationIds);
+
+  const plans = Array.isArray(row.allocationPlans) ? row.allocationPlans : [];
+  const primaryPlan = plans[0];
+
+  const dispatches = Array.isArray(row.dispatches) ? row.dispatches : [];
+  const whDispatches = dispatches.filter((d: any) => locSet.has(d.fromLocationId));
+
+  if (primaryPlan?.pickLists?.length) {
+    const primaryPick = selectPrimaryPickListForPlan(primaryPlan.pickLists);
+    if (primaryPick && locSet.has(primaryPick.fromLocationId)) {
+      const st = String(primaryPick.status || "").toUpperCase();
+      if (["DRAFT", "IN_PROGRESS"].includes(st)) {
+        return {
+          openHref: `${base}/warehouse/pick-lists/${primaryPick.id}`,
+          nextActionLabel: "Pick items",
+        };
+      }
+      if (st === "COMPLETED" && !primaryPick.stockDispatchId) {
+        return {
+          openHref: `${base}/warehouse/pick-lists/${primaryPick.id}`,
+          nextActionLabel: "Hand off dispatch",
+        };
+      }
+    }
+  }
+
+  const openD = whDispatches.find((d: any) =>
+    ["CREATED", "PACKED", "IN_TRANSIT"].includes(String(d.status || "").toUpperCase())
+  );
+  if (openD) {
+    return {
+      openHref: `${base}/warehouse/requests/${srId}?focus=dispatch&dispatchId=${openD.id}`,
+      nextActionLabel: "Dispatch",
+    };
+  }
+
+  if (primaryPlan && !["CANCELLED", "DRAFT"].includes(String(primaryPlan.status || "").toUpperCase())) {
+    return {
+      openHref: `${base}/warehouse/requests/${srId}`,
+      nextActionLabel: "Fulfillment",
+    };
+  }
+
+  return {
+    openHref: `${base}/warehouse/requests/${srId}`,
+    nextActionLabel: "Review",
+  };
+}
+
+/**
+ * Limits requisition queue rows to requests that plausibly involve this warehouse
+ * (approval queue, picks from warehouse locations, or dispatches from warehouse locations).
+ */
+function buildWarehouseRequisitionScopeFilter(locIds: number[]): Record<string, unknown> | null {
+  if (!Array.isArray(locIds) || locIds.length === 0) return null;
+  return {
+    OR: [
+      { status: { in: ["SUBMITTED", "OWNER_REVIEW"] } },
+      { dispatches: { some: { fromLocationId: { in: locIds } } } },
+      {
+        allocationPlans: {
+          some: {
+            parentPlanId: null,
+            pickLists: {
+              some: { fromLocationId: { in: locIds } },
+            },
+          },
+        },
+      },
+    ],
+  };
 }
 
 /** Stock requests that typically still need owner/warehouse fulfillment action */
@@ -37,9 +122,12 @@ export async function getOperationsSummary(warehouseId: number) {
   const in30 = new Date(now);
   in30.setDate(in30.getDate() + 30);
 
+  const scopeFilter = buildWarehouseRequisitionScopeFilter(locIds);
+
   const [
     draftGrnCount,
     requisitionCount,
+    warehouseRequisitionQueueCount,
     outboundOpenCount,
     inTransitFromWarehouse,
     dispatchesWithDiscrepancy,
@@ -58,6 +146,15 @@ export async function getOperationsSummary(warehouseId: number) {
     prisma.stockRequest.count({
       where: { orgId: wh.orgId, status: { in: REQUISITION_QUEUE_STATUSES } },
     }),
+    locIds.length && scopeFilter
+      ? prisma.stockRequest.count({
+          where: {
+            AND: [{ orgId: wh.orgId }, { status: { in: REQUISITION_QUEUE_STATUSES } }, scopeFilter],
+          },
+        })
+      : prisma.stockRequest.count({
+          where: { orgId: wh.orgId, status: { in: REQUISITION_QUEUE_STATUSES } },
+        }),
     locIds.length
       ? prisma.stockDispatch.count({
           where: {
@@ -153,11 +250,46 @@ export async function getOperationsSummary(warehouseId: number) {
       : 0,
   ]);
 
+  let warehouseRequisitionBreakdown: Record<string, number> | null = null;
+  if (locIds.length && scopeFilter) {
+    const [actionRequired, approvedReady, partialCases] = await Promise.all([
+      prisma.stockRequest.count({
+        where: {
+          AND: [{ orgId: wh.orgId }, scopeFilter, { status: { in: ["SUBMITTED", "OWNER_REVIEW"] } }],
+        },
+      }),
+      prisma.stockRequest.count({
+        where: {
+          AND: [{ orgId: wh.orgId }, scopeFilter, { status: "APPROVED" }],
+        },
+      }),
+      prisma.stockRequest.count({
+        where: {
+          AND: [
+            { orgId: wh.orgId },
+            scopeFilter,
+            { status: { in: ["PARTIALLY_DISPATCHED", "FULFILLED_PARTIAL"] } },
+          ],
+        },
+      }),
+    ]);
+    warehouseRequisitionBreakdown = {
+      actionRequired,
+      approvedReady,
+      partialCases,
+      openDispatchUnits: outboundOpenCount + inTransitFromWarehouse,
+      totalQueue: warehouseRequisitionQueueCount,
+    };
+  }
+
   return {
     warehouse: wh,
     linkedLocationCount: locIds.length,
     draftGrnCount,
     requisitionQueueCount: requisitionCount,
+    /** Warehouse-scoped actionable requisition count (sidebar badge + staff queue). */
+    warehouseRequisitionQueueCount,
+    warehouseRequisitionBreakdown,
     outboundPackOrCreateCount: outboundOpenCount,
     inTransitFromWarehouseCount: inTransitFromWarehouse,
     dispatchesWithLineDiscrepancyCount: dispatchesWithDiscrepancy,
@@ -211,7 +343,27 @@ export async function listInboundQueue(warehouseId: number, opts?: { page?: numb
   };
 }
 
-export async function listRequisitionQueue(warehouseId: number, opts?: { page?: number; limit?: number }) {
+export async function listRequisitionQueue(
+  warehouseId: number,
+  opts?: {
+    page?: number;
+    limit?: number;
+    staffBranchIdForActionPaths?: number;
+    warehouseLocationIds?: number[];
+    /** Search request id (numeric) or branch name substring */
+    q?: string;
+    /** Comma-separated status values (must be in requisition queue set) */
+    status?: string;
+    branchId?: number;
+    dateFrom?: string;
+    dateTo?: string;
+    sortBy?: string;
+    sortDir?: string;
+    /** "true" | "false" — filter by presence of any dispatch on the request */
+    hasDispatch?: string;
+    urgency?: string;
+  }
+) {
   const wh = await prisma.warehouse.findUnique({
     where: { id: warehouseId },
     select: { orgId: true },
@@ -222,17 +374,83 @@ export async function listRequisitionQueue(warehouseId: number, opts?: { page?: 
   const limit = Math.min(opts?.limit ?? 20, 100);
   const skip = (page - 1) * limit;
 
-  const where = {
-    orgId: wh.orgId,
-    status: { in: REQUISITION_QUEUE_STATUSES },
-  };
+  const locIds = Array.isArray(opts?.warehouseLocationIds) ? opts.warehouseLocationIds : [];
+  const scopeFilter = buildWarehouseRequisitionScopeFilter(locIds);
+
+  const andParts: any[] = [{ orgId: wh.orgId }];
+
+  if (opts?.status && String(opts.status).trim()) {
+    const sts = String(opts.status)
+      .split(",")
+      .map((s) => s.trim().toUpperCase())
+      .filter((s) => REQUISITION_QUEUE_STATUSES.includes(s));
+    if (sts.length) {
+      andParts.push({ status: { in: sts } });
+    } else {
+      andParts.push({ status: { in: REQUISITION_QUEUE_STATUSES } });
+    }
+  } else {
+    andParts.push({ status: { in: REQUISITION_QUEUE_STATUSES } });
+  }
+
+  if (scopeFilter) {
+    andParts.push(scopeFilter);
+  }
+
+  if (opts?.branchId != null && Number.isFinite(Number(opts.branchId))) {
+    andParts.push({ branchId: Number(opts.branchId) });
+  }
+
+  if (opts?.dateFrom || opts?.dateTo) {
+    const range: Record<string, Date> = {};
+    if (opts.dateFrom) {
+      const d = new Date(String(opts.dateFrom));
+      if (!Number.isNaN(d.getTime())) range.gte = d;
+    }
+    if (opts.dateTo) {
+      const d = new Date(String(opts.dateTo));
+      if (!Number.isNaN(d.getTime())) range.lte = d;
+    }
+    if (Object.keys(range).length) {
+      andParts.push({ createdAt: range });
+    }
+  }
+
+  if (opts?.q && String(opts.q).trim()) {
+    const qt = String(opts.q).trim();
+    const asNum = Number(qt);
+    const qOr: any[] = [];
+    if (Number.isFinite(asNum) && asNum > 0) {
+      qOr.push({ id: asNum });
+    }
+    qOr.push({ branch: { name: { contains: qt, mode: "insensitive" } } });
+    andParts.push({ OR: qOr });
+  }
+
+  const hd = opts?.hasDispatch != null ? String(opts.hasDispatch).toLowerCase() : "";
+  if (hd === "true") {
+    andParts.push({ dispatches: { some: { id: { gt: 0 } } } });
+  } else if (hd === "false") {
+    andParts.push({ dispatches: { none: {} } });
+  }
+
+  if (opts?.urgency && String(opts.urgency).trim()) {
+    andParts.push({ urgency: String(opts.urgency).trim() });
+  }
+
+  const where = { AND: andParts };
+
+  const sortKey = String(opts?.sortBy || "createdAt").toLowerCase();
+  const dir = String(opts?.sortDir || "desc").toLowerCase() === "asc" ? "asc" : "desc";
+  const allowedSort = ["createdAt", "updatedAt", "id", "urgency"].includes(sortKey) ? sortKey : "createdAt";
+  const orderBy = { [allowedSort]: dir };
 
   const [items, total] = await Promise.all([
     prisma.stockRequest.findMany({
       where,
       skip,
       take: limit,
-      orderBy: { createdAt: "desc" },
+      orderBy,
       include: {
         branch: { select: { id: true, name: true } },
         requester: { select: { id: true, profile: { select: { displayName: true } } } },
@@ -241,19 +459,51 @@ export async function listRequisitionQueue(warehouseId: number, opts?: { page?: 
             variant: { select: { id: true, sku: true, title: true } },
           },
         },
-        dispatches: { select: { id: true, status: true } },
+        dispatches: { select: { id: true, status: true, fromLocationId: true } },
+        allocationPlans: {
+          where: { parentPlanId: null },
+          orderBy: { id: "desc" },
+          take: 1,
+          include: {
+            pickLists: {
+              orderBy: { id: "desc" },
+              take: 30,
+              select: {
+                id: true,
+                status: true,
+                stockDispatchId: true,
+                fromLocationId: true,
+                dispatch: { select: { id: true, status: true } },
+              },
+            },
+          },
+        },
       },
     }),
     prisma.stockRequest.count({ where }),
   ]);
 
-  const enriched = items.map((r: any) => ({
-    ...r,
-    _meta: {
-      lineCount: r.items?.length ?? 0,
-      dispatchCount: r.dispatches?.length ?? 0,
-    },
-  }));
+  const staffBid = opts?.staffBranchIdForActionPaths;
+  const whLocs = opts?.warehouseLocationIds;
+
+  const enriched = items.map((r: any) => {
+    const base = {
+      ...r,
+      _meta: {
+        lineCount: r.items?.length ?? 0,
+        dispatchCount: r.dispatches?.length ?? 0,
+      },
+    };
+    let warehouseAction: { openHref: string; nextActionLabel: string } | null = null;
+    if (staffBid && whLocs && whLocs.length > 0) {
+      try {
+        warehouseAction = computeStaffWarehouseStockRequestAction(staffBid, whLocs, base);
+      } catch (e: any) {
+        console.warn("[listRequisitionQueue] warehouseAction", e?.message);
+      }
+    }
+    return { ...base, warehouseAction };
+  });
 
   return {
     items: enriched,
@@ -575,7 +825,12 @@ export async function getWarehouseStaffDashboard(
 
   const [requisitions, outbound, inbound, transferTotal, transferRows, myAssignments, lowStockRows, recentActivity, handoverRows] =
     await Promise.all([
-      listRequisitionQueue(warehouseId, { page, limit: limitPerQueue }),
+      listRequisitionQueue(warehouseId, {
+        page,
+        limit: limitPerQueue,
+        staffBranchIdForActionPaths: primaryBranch?.id ?? locationRows[0]?.branchId ?? undefined,
+        warehouseLocationIds: locationIds,
+      }),
       listOutboundFulfillmentQueue(warehouseId, { page, limit: limitPerQueue }),
       listInboundQueue(warehouseId, { page, limit: limitPerQueue }),
       locationIds.length

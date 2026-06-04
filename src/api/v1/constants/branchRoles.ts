@@ -18,6 +18,11 @@ export const BRANCH_ROLE_PRIORITY = [
   "CLINIC_STAFF",
   "CLINIC_RECEPTION",
   "CLINIC_INVENTORY_STAFF",
+  "DOCTOR",
+  "PHARMACIST",
+  "GROOMING_STAFF",
+  "BOARDING_STAFF",
+  "TRAINING_STAFF",
 ] as const;
 
 /** Base permissions always included when user has APPROVED branch access. */
@@ -41,6 +46,8 @@ export const BRANCH_ROLE_PERMISSIONS: Record<string, string[]> = {
     "inventory.transfer",
     "inventory.transfer.approve",
     "inventory.ledger.view",
+    /** SHOP batch sell price + expiry (branch-scoped batch pricing rules; not global org pricing). */
+    "inventory.batch.pricing",
     "pos.view",
     "pos.sell",
     "pos.refund",
@@ -332,6 +339,104 @@ export const BRANCH_ROLE_PERMISSIONS: Record<string, string[]> = {
     "clinic.refill.convert",
     "manager.inventory.low_stock_alert",
   ],
+  DOCTOR: [
+    "branch.view",
+    "dashboard.view",
+    "tasks.view",
+    "inventory.read",
+    "services.view",
+    "appointments.view",
+    "customers.view",
+    "clinic.settings.read",
+    "clinic.overview.read",
+    "clinic.services.manage",
+    "clinic.appointments.read",
+    "clinic.appointments.manage",
+    "clinic.queue.read",
+    "clinic.queue.manage",
+    "clinic.queue.screen",
+    "clinic.patients.read",
+    "clinic.patients.manage",
+    "clinic.visits.read",
+    "clinic.visits.manage",
+    "clinic.emr.read",
+    "clinic.emr.write",
+    "clinic.prescription.read",
+    "clinic.prescription.create",
+    "clinic.prescription.edit",
+    "clinic.prescription.finalize",
+    "medicine.policy.read",
+    "medicine.dispense.request",
+    "medicine.dispense.approve",
+    "medicine.override.approve",
+    "medicine.dispense.issue",
+    "medicine.vial.open",
+    "medicine.vial.activate",
+    "medicine.vial.force_open",
+    "medicine.vial.use",
+    "medicine.vial.return",
+    "medicine.dose.record",
+    "medicine.dose.read",
+    "injection.token.generate",
+    "injection.token.validate",
+    "injection.token.list",
+    "injection.token.cancel",
+    "medicine.return.submit",
+    "medicine.return.verify",
+    "medicine.audit.bin.view",
+    "clinic.rooms.view",
+    "clinic.analytics.view",
+    "clinic.surgery.read",
+    "clinic.surgery.create",
+    "clinic.surgery.manage",
+    "clinic.surgery.notes.write",
+  ],
+  PHARMACIST: [
+    "branch.view",
+    "dashboard.view",
+    "tasks.view",
+    "inventory.read",
+    "inventory.receive",
+    "clinic.prescription.read",
+    "clinic.catalog.view",
+    "clinic.catalog.search",
+    "medicine.policy.read",
+    "medicine.dispense.request",
+    "medicine.dispense.approve",
+    "medicine.dispense.issue",
+    "medicine.vial.open",
+    "medicine.vial.use",
+    "medicine.vial.return",
+    "medicine.dose.record",
+    "medicine.dose.read",
+    "injection.token.validate",
+    "injection.token.list",
+  ],
+  GROOMING_STAFF: [
+    "branch.view",
+    "dashboard.view",
+    "tasks.view",
+    "inventory.read",
+    "customers.view",
+    "orders.read",
+    "pos.view",
+  ],
+  BOARDING_STAFF: [
+    "branch.view",
+    "dashboard.view",
+    "tasks.view",
+    "inventory.read",
+    "customers.view",
+    "orders.read",
+    "pos.view",
+  ],
+  TRAINING_STAFF: [
+    "branch.view",
+    "dashboard.view",
+    "tasks.view",
+    "customers.view",
+    "orders.read",
+  ],
   ACCOUNTANT: [
     "branch.view",
     "dashboard.view",
@@ -492,6 +597,48 @@ export const BRANCH_ROLE_PERMISSIONS: Record<string, string[]> = {
 
 /** Default role when BranchMember.role is missing or unmapped. */
 export const BRANCH_DEFAULT_ROLE = "BRANCH_STAFF";
+
+const BRANCH_ROLE_PRIORITY_INDEX: Map<string, number> = new Map(
+  BRANCH_ROLE_PRIORITY.map((k, i) => [k, i])
+);
+
+/** Minimal member shape for role resolution (Prisma select / plain objects). */
+export type BranchMemberRolePickInput = {
+  role?: string | null;
+  roles?: Array<{ role?: { key?: string | null } | null } | null> | null;
+};
+
+/**
+ * When a user has multiple rows in `branch_member_roles`, Prisma order is not guaranteed.
+ * Pick the role with the highest privilege (lowest index in BRANCH_ROLE_PRIORITY) so
+ * e.g. BRANCH_MANAGER wins over CLINIC_STAFF when both are assigned — aligns JWT, /branches/:id/me, and services.
+ */
+export function pickEffectiveBranchRoleKey(
+  member: BranchMemberRolePickInput | null | undefined,
+  fallback: string = BRANCH_DEFAULT_ROLE
+): string {
+  if (!member) return fallback;
+  const keys: string[] = [];
+  if (Array.isArray(member.roles)) {
+    for (const row of member.roles) {
+      const k = row?.role?.key;
+      if (k && typeof k === "string") keys.push(String(k));
+    }
+  }
+  if (member.role) keys.push(String(member.role));
+  if (!keys.length) return fallback;
+  let best = keys[0];
+  let bestIdx = BRANCH_ROLE_PRIORITY_INDEX.has(best) ? BRANCH_ROLE_PRIORITY_INDEX.get(best)! : 999;
+  for (let i = 1; i < keys.length; i++) {
+    const k = keys[i];
+    const idx = BRANCH_ROLE_PRIORITY_INDEX.has(k) ? BRANCH_ROLE_PRIORITY_INDEX.get(k)! : 999;
+    if (idx < bestIdx) {
+      bestIdx = idx;
+      best = k;
+    }
+  }
+  return best;
+}
 
 /** Default permissions when role has no entry (minimal view). */
 export const BRANCH_DEFAULT_PERMISSIONS = [

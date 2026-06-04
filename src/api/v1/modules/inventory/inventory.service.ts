@@ -1,6 +1,9 @@
 const prisma = require("../../../../infrastructure/db/prismaClient");
 const { resolveOrgIdForLocation } = require("./stockAvailability.service");
 const { getManagedBranchesForUser } = require("../../services/branchManager.service");
+const orderService = require("../orders/orders.service");
+const { getOrCreateOrgPolicy } = require("../pricing/pricingGovernance.service");
+const { resolvePosBranchVariantListPricesMetaBulk } = require("../pricing/posListPriceResolution.service");
 const {
   getNonLotEffectiveAtLocation,
   getFefoEligibleLotTotal,
@@ -381,16 +384,100 @@ async function getExpiringItems(branchId?: number, daysAhead: number = 30) {
   return items;
 }
 
+function missingPosPriceMeta(reason = "NO_POS_PRICE_CONFIGURED") {
+  return {
+    price: null,
+    sellPrice: null,
+    effectiveSellPrice: null,
+    priceSource: "NONE",
+    priceMissing: true,
+    priceMissingReason: reason,
+  };
+}
+
+async function enrichInventoryRowsWithPosPrice(items: any[]) {
+  if (!Array.isArray(items) || items.length === 0) return items;
+
+  const groups = new Map<number, { orgId: number | null; rows: any[] }>();
+  for (const row of items) {
+    const variantId = Number(row?.variantId ?? row?.variant?.id);
+    const branchId = Number(row?.location?.branchId ?? row?.location?.branch?.id ?? row?.branchId);
+    if (!Number.isFinite(variantId) || variantId <= 0 || !Number.isFinite(branchId) || branchId <= 0) {
+      continue;
+    }
+    const current = groups.get(branchId) ?? { orgId: null, rows: [] };
+    const orgId = Number(row?.location?.branch?.orgId ?? row?.branch?.orgId);
+    if (Number.isFinite(orgId) && orgId > 0) current.orgId = orgId;
+    current.rows.push(row);
+    groups.set(branchId, current);
+  }
+
+  await Promise.all(
+    [...groups.entries()].map(async ([branchId, group]) => {
+      let orgId = group.orgId;
+      if (!orgId) {
+        const branch = await prisma.branch.findUnique({
+          where: { id: branchId },
+          select: { orgId: true },
+        });
+        orgId = branch?.orgId ?? null;
+      }
+      if (!orgId) {
+        group.rows.forEach((row) => Object.assign(row, missingPosPriceMeta("BRANCH_ORG_NOT_FOUND")));
+        return;
+      }
+
+      let shopLocationId: number | null = null;
+      try {
+        shopLocationId = await orderService.getDefaultFulfilmentLocationForBranch(branchId, "SHOP");
+      } catch {
+        shopLocationId = null;
+      }
+
+      try {
+        const variantIds = group.rows
+          .map((row) => Number(row?.variantId ?? row?.variant?.id))
+          .filter((id) => Number.isFinite(id) && id > 0);
+        const policy = await getOrCreateOrgPolicy(orgId);
+        const priceMap = await resolvePosBranchVariantListPricesMetaBulk({
+          orgId,
+          branchId,
+          shopLocationId,
+          variantIds,
+          policy,
+        });
+        group.rows.forEach((row) => {
+          const variantId = Number(row?.variantId ?? row?.variant?.id);
+          Object.assign(row, priceMap.get(variantId) ?? missingPosPriceMeta());
+        });
+      } catch (err) {
+        console.warn("Inventory POS price enrichment failed; rows marked unpriced", {
+          branchId,
+          orgId,
+          err,
+        });
+        group.rows.forEach((row) => Object.assign(row, missingPosPriceMeta("PRICE_RESOLUTION_FAILED")));
+      }
+    })
+  );
+
+  return items;
+}
+
 /**
  * Get ledger-derived inventory summary (v2)
  */
 async function getInventorySummaryV2(options: {
   locationId?: number;
   branchId?: number;
+  orgId?: number;
   productId?: number;
   variantId?: number;
   search?: string;
   lowStockOnly?: boolean;
+  outOfStockOnly?: boolean;
+  inStockOnly?: boolean;
+  locationScope?: "hub" | "branch";
   page?: number;
   limit?: number;
 }) {
@@ -400,7 +487,10 @@ async function getInventorySummaryV2(options: {
 
   const where: any = {};
   if (options.locationId) where.locationId = options.locationId;
-  if (options.branchId) where.location = { branchId: options.branchId };
+  if (options.branchId) where.location = { ...(where.location || {}), branchId: options.branchId };
+  if (options.orgId) where.location = { ...(where.location || {}), branch: { orgId: options.orgId } };
+  if (options.locationScope === "hub") where.location = { ...(where.location || {}), warehouseId: { not: null } };
+  if (options.locationScope === "branch") where.location = { ...(where.location || {}), warehouseId: null };
   if (options.variantId) where.variantId = options.variantId;
   if (options.productId) {
     where.variant = where.variant || {};
@@ -416,6 +506,8 @@ async function getInventorySummaryV2(options: {
     };
   }
   if (options.lowStockOnly) where.onHandQty = { lte: 10 };
+  if (options.outOfStockOnly) where.onHandQty = { lte: 0 };
+  if (options.inStockOnly) where.onHandQty = { gt: 0 };
 
   const [balances, total] = await Promise.all([
     prisma.stockBalance.findMany({
@@ -429,7 +521,7 @@ async function getInventorySummaryV2(options: {
             name: true,
             type: true,
             branchId: true,
-            branch: { select: { id: true, name: true } },
+            branch: { select: { id: true, name: true, orgId: true } },
           },
         },
         variant: {
@@ -458,9 +550,10 @@ async function getInventorySummaryV2(options: {
     product: b.variant?.product,
     variant: b.variant ? { id: b.variant.id, sku: b.variant.sku, title: b.variant.title } : null,
   }));
+  const enrichedItems = await enrichInventoryRowsWithPosPrice(items);
 
   return {
-    items,
+    items: enrichedItems,
     pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
   };
 }
@@ -585,8 +678,10 @@ async function getInventoryBatches(options: {
               id: true,
               sku: true,
               title: true,
+              attributes: true,
               requiresExpiry: true,
               requiresMfg: true,
+              unit: { select: { name: true, code: true } },
               product: { select: { id: true, name: true, slug: true } },
             },
           },
@@ -610,6 +705,8 @@ async function getInventoryBatches(options: {
       id: lb.lot.variant.id,
       sku: lb.lot.variant.sku,
       title: lb.lot.variant.title,
+      attributes: lb.lot.variant.attributes,
+      unit: lb.lot.variant.unit ? { name: lb.lot.variant.unit.name, code: lb.lot.variant.unit.code } : null,
       requiresExpiry: lb.lot.variant.requiresExpiry,
       requiresMfg: lb.lot.variant.requiresMfg,
     };
@@ -951,13 +1048,43 @@ async function getStockByLotExpiryReport(options: { locationId?: number; variant
 /**
  * Search variants for product picker (bulk receive, etc.).
  * orgIds: orgs the user can access; q: search string (sku, barcode, title, product name).
+ * When variantId is set and q is empty, returns 0–1 rows for label hydration (same org scope).
  */
 async function getVariantsSearch(options: {
   orgIds: number[];
   q?: string;
   limit?: number;
   page?: number;
+  variantId?: number;
 }) {
+  const select = {
+    id: true,
+    sku: true,
+    title: true,
+    barcode: true,
+    productId: true,
+    requiresLot: true,
+    requiresExpiry: true,
+    requiresMfg: true,
+    product: { select: { id: true, name: true, slug: true } },
+  };
+
+  const qTrim = options.q?.trim() ?? "";
+  if (options.variantId != null && options.variantId > 0 && !qTrim) {
+    const one = await prisma.productVariant.findFirst({
+      where: {
+        id: options.variantId,
+        product: { orgId: { in: options.orgIds } },
+        isActive: true,
+      },
+      select,
+    });
+    return {
+      items: one ? [one] : [],
+      pagination: { page: 1, limit: 1, total: one ? 1 : 0, totalPages: 1 },
+    };
+  }
+
   const limit = Math.min(options.limit ?? 20, 100);
   const page = options.page ?? 1;
   const skip = (page - 1) * limit;
@@ -978,17 +1105,7 @@ async function getVariantsSearch(options: {
       skip,
       take: limit,
       orderBy: [{ product: { name: "asc" } }, { sku: "asc" }],
-      select: {
-        id: true,
-        sku: true,
-        title: true,
-        barcode: true,
-        productId: true,
-        requiresLot: true,
-        requiresExpiry: true,
-        requiresMfg: true,
-        product: { select: { id: true, name: true, slug: true } },
-      },
+      select,
     }),
     prisma.productVariant.count({ where }),
   ]);

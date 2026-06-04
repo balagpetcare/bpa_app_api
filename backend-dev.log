@@ -1,0 +1,14 @@
+
+> bpa_app_api@10.0.0.6 dev
+> cross-env NODE_OPTIONS=--no-deprecation TS_NODE_TRANSPILE_ONLY=1 nodemon --watch src --ext ts,json --exec "node -r ts-node/register src/index.ts"
+
+[33m[nodemon] 3.1.11[39m
+[33m[nodemon] to restart at any time, enter `rs`[39m
+[33m[nodemon] watching path(s): src\**\*[39m
+[33m[nodemon] watching extensions: ts,json[39m
+[32m[nodemon] starting `node -r ts-node/register src/index.ts`[39m
+[JOB] Starting expiryEngine job...
+[OWNERS_AUTOMATION] Starting (check=1h, sync=6h, audit=daily 00:00)
+🚀 Server running at http://0.0.0.0:3000/api/v1
+[OWNERS_AUTOMATION] Sync ok: owners=8 teamMembers=0 (671ms)
+[JOB] Completed in 696ms. Write-offs: 0

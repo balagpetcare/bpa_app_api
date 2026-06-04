@@ -1,5 +1,6 @@
 const prisma = require("../../../infrastructure/db/prismaClient");
 const { isAdminAllowed } = require("../services/authUnified.service");
+const { OWNER_ENTERPRISE_PRICING_PERMS } = require("../constants/pricingOwnerPermissions");
 
 const ADMIN_PERMISSIONS = [
   "reports.read", "dashboard.view", "dashboard.read", "finance.read",
@@ -53,7 +54,8 @@ const LEGACY_ROLE_PERMS = {
     "clinic.appointments.read","clinic.appointments.manage",
     "clinic.patients.read","clinic.patients.manage",
     "product.read","product.create","product.update","product.delete",
-    "owner.products.manage"
+    "owner.products.manage",
+    ...OWNER_ENTERPRISE_PRICING_PERMS,
   ],
   ORG_ADMIN: [
     "org.read","org.write",
@@ -70,6 +72,8 @@ const LEGACY_ROLE_PERMS = {
     "staff.read","staff.write",
     "orders.read","orders.write",
     "inventory.read","inventory.write",
+    /** Must stay aligned with branch dashboard / inventory routes (see branchRoles.BRANCH_MANAGER). */
+    "inventory.batch.pricing",
     "customers.read","customers.write",
     "reports.read","dashboard.view"
   ],
@@ -279,16 +283,22 @@ async function resolvePermissionsForUser(userId) {
 
     let BRANCH_ROLE_PERMISSIONS;
     let BRANCH_DEFAULT_ROLE;
+    /** @type {((m: any) => string) | null} */
+    let pickEffectiveBranchRoleKey = null;
     try {
       const branchRoles = require("../constants/branchRoles");
       BRANCH_ROLE_PERMISSIONS = branchRoles.BRANCH_ROLE_PERMISSIONS || {};
       BRANCH_DEFAULT_ROLE = branchRoles.BRANCH_DEFAULT_ROLE || "BRANCH_STAFF";
+      if (typeof branchRoles.pickEffectiveBranchRoleKey === "function") {
+        pickEffectiveBranchRoleKey = branchRoles.pickEffectiveBranchRoleKey;
+      }
     } catch (_) {
       BRANCH_ROLE_PERMISSIONS = {};
       BRANCH_DEFAULT_ROLE = "BRANCH_STAFF";
     }
 
     // Only process branch members with approved access (or owners who have implicit access)
+    // Use the same role key resolution as resolveBranchAccessProfile (join Role.key before legacy enum).
     for (const m of branchMembers) {
       const hasAccess = isOwner || approvedBranchIds.has(m.branchId);
 
@@ -296,8 +306,11 @@ async function resolvePermissionsForUser(userId) {
         for (const r of (m.roles || [])) {
           for (const rp of (r.role.rolePermissions || [])) out.add(rp.permission.key);
         }
-        for (const p of (LEGACY_ROLE_PERMS[m.role] || [])) out.add(p);
-        for (const p of (BRANCH_ROLE_PERMISSIONS[m.role] || [])) out.add(p);
+        const memberRoleKey = pickEffectiveBranchRoleKey
+          ? pickEffectiveBranchRoleKey(m)
+          : m.roles?.[0]?.role?.key || m.role;
+        for (const p of (LEGACY_ROLE_PERMS[memberRoleKey] || LEGACY_ROLE_PERMS[m.role] || [])) out.add(p);
+        for (const p of (BRANCH_ROLE_PERMISSIONS[memberRoleKey] || [])) out.add(p);
       }
     }
 
@@ -305,7 +318,10 @@ async function resolvePermissionsForUser(userId) {
     for (const ap of activeBranchAccess) {
       const member = branchMembers.find((m) => m.branchId === ap.branchId);
       const roleKey =
-        (member && (member.roles?.[0]?.role?.key || member.role)) ||
+        (member &&
+          (pickEffectiveBranchRoleKey
+            ? pickEffectiveBranchRoleKey(member)
+            : member.roles?.[0]?.role?.key || member.role)) ||
         ap.role ||
         BRANCH_DEFAULT_ROLE;
       const basePerms = BRANCH_ROLE_PERMISSIONS[roleKey] || [];
@@ -375,7 +391,11 @@ async function resolvePermissionsForUser(userId) {
         }),
         prisma.branchMember.findMany({
           where: { userId: Number(userId), status: "ACTIVE" },
-          select: { role: true, branchId: true },
+          select: {
+            role: true,
+            branchId: true,
+            roles: { select: { role: { select: { key: true } } } },
+          },
         }),
       ]);
 
@@ -408,25 +428,40 @@ async function resolvePermissionsForUser(userId) {
         });
         const isOwner2 = Boolean(ownerProfile2 || ownedOrgs2.length > 0);
 
-        for (const m of branchMembers2) {
-          const hasAccess = isOwner2 || approvedBranchIds2.has(m.branchId);
-          if (hasAccess) {
-            for (const p of (LEGACY_ROLE_PERMS[m.role] || [])) out.add(p);
-          }
-        }
-
-        // BAP-only: grant permissions from each active BAP (align with main path)
         let BRANCH_ROLE_PERMISSIONS2 = {};
         let BRANCH_DEFAULT_ROLE2 = "BRANCH_STAFF";
+        /** @type {((m: any) => string) | null} */
+        let pickEffectiveBranchRoleKey2 = null;
         try {
           const branchRoles = require("../constants/branchRoles");
           BRANCH_ROLE_PERMISSIONS2 = branchRoles.BRANCH_ROLE_PERMISSIONS || {};
           BRANCH_DEFAULT_ROLE2 = branchRoles.BRANCH_DEFAULT_ROLE || "BRANCH_STAFF";
+          if (typeof branchRoles.pickEffectiveBranchRoleKey === "function") {
+            pickEffectiveBranchRoleKey2 = branchRoles.pickEffectiveBranchRoleKey;
+          }
         } catch (_) {}
+
+        for (const m of branchMembers2) {
+          const hasAccess = isOwner2 || approvedBranchIds2.has(m.branchId);
+          if (hasAccess) {
+            const memberRoleKey2 = pickEffectiveBranchRoleKey2
+              ? pickEffectiveBranchRoleKey2(m)
+              : m.roles?.[0]?.role?.key || m.role;
+            for (const p of (LEGACY_ROLE_PERMS[memberRoleKey2] || LEGACY_ROLE_PERMS[m.role] || [])) out.add(p);
+            for (const p of (BRANCH_ROLE_PERMISSIONS2[memberRoleKey2] || [])) out.add(p);
+          }
+        }
+
+        // BAP-only: grant permissions from each active BAP (align with main path)
         for (const ap of activeBranchAccess2) {
           const member = branchMembers2.find((m) => m.branchId === ap.branchId);
           const roleKey =
-            (member && member.role) || ap.role || BRANCH_DEFAULT_ROLE2;
+            (member &&
+              (pickEffectiveBranchRoleKey2
+                ? pickEffectiveBranchRoleKey2(member)
+                : member.roles?.[0]?.role?.key || member.role)) ||
+            ap.role ||
+            BRANCH_DEFAULT_ROLE2;
           for (const p of (BRANCH_ROLE_PERMISSIONS2[roleKey] || [])) out.add(p);
           const overridesRaw = ap.permissionOverrides;
           const overrides = Array.isArray(overridesRaw) ? overridesRaw.filter((k) => typeof k === "string") : [];
@@ -437,6 +472,10 @@ async function resolvePermissionsForUser(userId) {
           out.add("branches.read");
           out.add("org.read");
           out.add("reports.view");
+        }
+
+        if (isOwner2) {
+          for (const p of (LEGACY_ROLE_PERMS.OWNER || [])) out.add(p);
         }
       } catch (_e3) {
         for (const m of branchMembers2) for (const p of (LEGACY_ROLE_PERMS[m.role] || [])) out.add(p);
@@ -454,4 +493,10 @@ async function resolvePermissionsForUser(userId) {
 const ENFORCEMENT_CASES = "admin.governance.enforcement.cases";
 const ENFORCEMENT_ACTIONS = "admin.governance.enforcement.actions";
 
-module.exports = { resolvePermissionsForUser, LEGACY_ROLE_PERMS, ENFORCEMENT_CASES, ENFORCEMENT_ACTIONS };
+module.exports = {
+  resolvePermissionsForUser,
+  LEGACY_ROLE_PERMS,
+  OWNER_ENTERPRISE_PRICING_PERMS,
+  ENFORCEMENT_CASES,
+  ENFORCEMENT_ACTIONS,
+};

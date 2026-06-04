@@ -8,6 +8,7 @@ import {
   BRANCH_ROLE_PERMISSIONS,
   BRANCH_DEFAULT_ROLE,
   BRANCH_DEFAULT_PERMISSIONS,
+  pickEffectiveBranchRoleKey,
 } from "../constants/branchRoles";
 const prisma = require("../../../infrastructure/db/prismaClient").default;
 
@@ -642,11 +643,7 @@ export async function resolveBranchAccessProfile(
     },
   });
 
-  // Prefer Role from join table (e.g. CLINIC_STAFF) when present; MemberRole enum does not include CLINIC_STAFF.
-  const roleKey =
-    member?.roles?.[0]?.role?.key ||
-    (member?.role as string) ||
-    BRANCH_DEFAULT_ROLE;
+  const roleKey = pickEffectiveBranchRoleKey(member, BRANCH_DEFAULT_ROLE);
   const basePermissions =
     BRANCH_ROLE_PERMISSIONS[roleKey] ||
     BRANCH_DEFAULT_PERMISSIONS;
@@ -693,11 +690,7 @@ export async function resolveBranchAccessProfileFromPermission(
     },
   });
 
-  // Prefer Role from join table (e.g. CLINIC_STAFF) when present.
-  const roleKey =
-    member?.roles?.[0]?.role?.key ||
-    (member?.role as string) ||
-    BRANCH_DEFAULT_ROLE;
+  const roleKey = pickEffectiveBranchRoleKey(member, BRANCH_DEFAULT_ROLE);
   const basePermissions =
     BRANCH_ROLE_PERMISSIONS[roleKey] ||
     BRANCH_DEFAULT_PERMISSIONS;

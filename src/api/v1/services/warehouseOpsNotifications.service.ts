@@ -196,6 +196,30 @@ export async function notifyDispatchReceiveSubmittedForConfirmation(params: {
 }): Promise<void> {
   const ownerId = await getOrgOwnerUserId(params.orgId);
   if (ownerId == null) return;
+  let actionUrl = `/owner/inventory/stock-requests`;
+  const meta: Record<string, unknown> = {
+    kind: "DISPATCH_RECEIVE_AWAITING_CONFIRMATION",
+    stockDispatchId: params.stockDispatchId,
+  };
+  try {
+    const d = await prisma.stockDispatch.findUnique({
+      where: { id: params.stockDispatchId },
+      select: {
+        stockRequestId: true,
+        toLocation: { select: { branchId: true } },
+      },
+    });
+    const toBranchId = d?.toLocation?.branchId ?? null;
+    if (d?.stockRequestId != null) {
+      meta.stockRequestId = d.stockRequestId;
+      actionUrl = `/owner/inventory/stock-requests/${d.stockRequestId}`;
+    }
+    if (toBranchId != null) {
+      meta.toBranchId = toBranchId;
+    }
+  } catch (_) {
+    /* optional enrichment */
+  }
   try {
     await createNotification({
       userId: ownerId,
@@ -206,12 +230,115 @@ export async function notifyDispatchReceiveSubmittedForConfirmation(params: {
       orgId: params.orgId,
       source: "warehouse_ops",
       severity: "warn",
-      actionUrl: `/owner/inventory/stock-requests`,
+      actionUrl,
       dedupeKey: `dispatch_receive_submit:${params.stockDispatchId}`,
-      meta: { kind: "DISPATCH_RECEIVE_AWAITING_CONFIRMATION", stockDispatchId: params.stockDispatchId },
+      meta,
       senderId: params.actorUserId,
     });
   } catch (e) {
     console.warn("[warehouseOpsNotifications] notifyDispatchReceiveSubmittedForConfirmation failed", (e as Error)?.message);
+  }
+}
+
+async function resolveStaffBranchIdForWarehouse(warehouseId: number): Promise<number | null> {
+  const wh = await prisma.warehouse.findUnique({
+    where: { id: warehouseId },
+    select: {
+      branchId: true,
+      locations: { take: 1, select: { branchId: true } },
+    },
+  });
+  return wh?.branchId ?? wh?.locations?.[0]?.branchId ?? null;
+}
+
+/** Notify active warehouse staff that a submitted stock request may need DC fulfillment (enterprise queue). */
+export async function notifyWarehouseStaffStockRequestSubmitted(params: {
+  orgId: number;
+  stockRequestId: number;
+}): Promise<void> {
+  const assignments = await prisma.warehouseStaffAssignment.findMany({
+    where: { isActive: true, warehouse: { orgId: params.orgId, isActive: true } },
+    select: {
+      userId: true,
+      warehouseId: true,
+    },
+  });
+  const notified = new Set<string>();
+  for (const a of assignments) {
+    const branchId = await resolveStaffBranchIdForWarehouse(a.warehouseId);
+    if (branchId == null) continue;
+    const key = `${a.userId}:${params.stockRequestId}`;
+    if (notified.has(key)) continue;
+    notified.add(key);
+    try {
+      await createNotification({
+        userId: a.userId,
+        type: "INVENTORY_STOCK_REQUEST",
+        title: "Stock request in warehouse queue",
+        message: `Request #${params.stockRequestId} needs fulfillment review.`,
+        priority: "P2",
+        orgId: params.orgId,
+        branchId,
+        source: "warehouse_ops",
+        severity: "info",
+        actionUrl: `/staff/branch/${branchId}/warehouse/requests/${params.stockRequestId}`,
+        dedupeKey: `warehouse_sr_queue:${params.stockRequestId}:${a.userId}`,
+        meta: { kind: "WAREHOUSE_STOCK_REQUEST_QUEUE", stockRequestId: params.stockRequestId, warehouseId: a.warehouseId },
+      });
+    } catch (e) {
+      console.warn("[warehouseOpsNotifications] notifyWarehouseStaffStockRequestSubmitted", (e as Error)?.message);
+    }
+  }
+}
+
+/** Notify warehouse staff that a pick list is ready (after allocation / wave generation). */
+export async function notifyWarehouseStaffPickListCreated(params: {
+  orgId: number;
+  pickListId: number;
+  allocationPlanId: number;
+}): Promise<void> {
+  const pl = await prisma.pickList.findUnique({
+    where: { id: params.pickListId },
+    select: {
+      orgId: true,
+      fromLocationId: true,
+      fromLocation: { select: { warehouseId: true } },
+    },
+  });
+  if (!pl?.fromLocation?.warehouseId) return;
+  const branchId = await resolveStaffBranchIdForWarehouse(pl.fromLocation.warehouseId);
+  if (branchId == null) return;
+
+  const assignments = await prisma.warehouseStaffAssignment.findMany({
+    where: {
+      isActive: true,
+      warehouseId: pl.fromLocation.warehouseId,
+    },
+    select: { userId: true },
+  });
+  const users = [...new Set(assignments.map((a) => a.userId))];
+  for (const userId of users) {
+    try {
+      await createNotification({
+        userId,
+        type: "SYSTEM",
+        title: "Pick list ready",
+        message: `Pick list #${params.pickListId} is ready for the allocation plan.`,
+        priority: "P2",
+        orgId: params.orgId,
+        branchId,
+        source: "warehouse_ops",
+        severity: "info",
+        actionUrl: `/staff/branch/${branchId}/warehouse/pick-lists/${params.pickListId}`,
+        dedupeKey: `warehouse_pick_ready:${params.pickListId}:${userId}`,
+        meta: {
+          kind: "WAREHOUSE_PICK_LIST_READY",
+          pickListId: params.pickListId,
+          allocationPlanId: params.allocationPlanId,
+        },
+      });
+    } catch (e) {
+      console.warn("[warehouseOpsNotifications] notifyWarehouseStaffPickListCreated", (e as Error)?.message);
+    }
   }
 }

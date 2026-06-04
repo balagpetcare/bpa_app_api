@@ -14,6 +14,7 @@ router.get("/animal-sizes", common.getAnimalSizes);
 router.get("/bd/divisions", common.getBdDivisions);
 router.get("/bd/districts", common.getBdDistricts);
 router.get("/bd/upazilas", common.getBdUpazilas);
+router.get("/bd/unions", common.getBdUnions);
 router.get("/bd/areas", common.getBdAreas);
 router.get("/bd/city-corporations", common.getBdCityCorporations);
 router.get("/bd/zones", common.getBdZones);

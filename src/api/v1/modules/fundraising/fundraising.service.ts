@@ -274,8 +274,8 @@ async function createCampaign({ userId, title, caption, targetAmount, deadline, 
   if (!account.presentAddress) missing.push('presentAddress');
   if (!account.permanentAddress) missing.push('permanentAddress');
 
-  // Location check: Either BD fields OR Global formattedAddress
-  const hasBdLocation = account.divisionId && account.districtId && account.areaId;
+  // Location check: Either BD hierarchy (division + district + upazila/area) OR Global formattedAddress
+  const hasBdLocation = account.divisionId && account.districtId && (account.upazilaId || account.areaId);
   const hasGlobalLocation = account.formattedAddress;
   if (!hasBdLocation && !hasGlobalLocation) missing.push('location');
 

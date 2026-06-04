@@ -171,6 +171,9 @@ async function getOrderById(orderId: number, branchId?: number) {
           variant: true,
         },
       },
+      orderPayments: {
+        orderBy: { id: "asc" },
+      },
     },
   });
 
@@ -182,17 +185,32 @@ async function getOrderById(orderId: number, branchId?: number) {
 }
 
 /**
- * Get branch's default InventoryLocation by type (SHOP or CLINIC). Fallback: first active of that type.
+ * Get branch's default InventoryLocation by type (SHOP or CLINIC).
+ * Prefers an active location; if none, reactivates the oldest inactive row of that type for the branch
+ * (avoids "no default SHOP" when stock still lives on a deactivated shop floor — no duplicate locations).
  */
 async function getDefaultFulfilmentLocationForBranch(
   branchId: number,
   type: "SHOP" | "CLINIC"
 ): Promise<number | null> {
-  const loc = await prisma.inventoryLocation.findFirst({
+  const active = await prisma.inventoryLocation.findFirst({
     where: { branchId, type, isActive: true },
     select: { id: true },
   });
-  return loc?.id ?? null;
+  if (active?.id) return active.id;
+
+  const inactive = await prisma.inventoryLocation.findFirst({
+    where: { branchId, type, isActive: false },
+    orderBy: { id: "asc" },
+    select: { id: true },
+  });
+  if (!inactive?.id) return null;
+
+  await prisma.inventoryLocation.update({
+    where: { id: inactive.id },
+    data: { isActive: true },
+  });
+  return inactive.id;
 }
 
 /**
@@ -216,14 +234,25 @@ async function createOrder(
     fulfilmentInventoryLocationId?: number | null;
     orderSource?: string | null;
     visitId?: number | null;
+    /** POS / checkout: persisted header totals (line sums may differ when order-level discount/tax applied). */
+    orderTotals?: {
+      subtotalAmount: number;
+      discountPercent?: number | null;
+      discountAmount: number;
+      taxPercent?: number | null;
+      taxAmount: number;
+      totalAmount: number;
+    } | null;
   },
   tx?: any
 ) {
   const db = tx || prisma;
   // Each item must have either productId or serviceId
-  const totalAmount = data.items.reduce((sum, item) => {
+  const lineSum = data.items.reduce((sum, item) => {
     return sum + item.price * item.quantity;
   }, 0);
+  const totals = data.orderTotals;
+  const totalAmount = totals != null ? totals.totalAmount : lineSum;
 
   const orderNumber = generateOrderNumber();
 
@@ -258,6 +287,13 @@ async function createOrder(
   if (data.visitId != null) {
     orderData.visitId = data.visitId;
   }
+  if (totals != null) {
+    orderData.subtotalAmount = totals.subtotalAmount;
+    orderData.discountPercent = totals.discountPercent ?? null;
+    orderData.discountAmount = totals.discountAmount;
+    orderData.taxPercent = totals.taxPercent ?? null;
+    orderData.taxAmount = totals.taxAmount;
+  }
 
   // Create order with items
   const order = await db.order.create({
@@ -285,6 +321,32 @@ async function createOrder(
   });
 
   return order;
+}
+
+/**
+ * Insert split-tender rows (POS). Sum of amounts should equal `Order.totalAmount` (caller validates).
+ */
+async function createOrderPaymentsInTx(
+  tx: any,
+  orderId: number,
+  rows: Array<{
+    method: string;
+    amount: number;
+    reference?: string | null;
+    paymentStatus?: string;
+  }>
+) {
+  for (const row of rows) {
+    await tx.orderPayment.create({
+      data: {
+        orderId,
+        method: row.method,
+        amount: row.amount,
+        reference: row.reference ?? null,
+        paymentStatus: row.paymentStatus || "PAID",
+      },
+    });
+  }
 }
 
 /**
@@ -453,6 +515,7 @@ module.exports = {
   getOrders,
   getOrderById,
   createOrder,
+  createOrderPaymentsInTx,
   updateOrderStatus,
   processPayment,
   cancelOrder,

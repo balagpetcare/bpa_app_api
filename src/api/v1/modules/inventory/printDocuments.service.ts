@@ -28,21 +28,44 @@ function fmtDate(d: Date | string | null | undefined): string {
   }
 }
 
+function fmtDateTime(d: Date | string | null | undefined): string {
+  if (!d) return "—";
+  try {
+    const x = typeof d === "string" ? new Date(d) : d;
+    return x.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+  } catch {
+    return "—";
+  }
+}
+
 const PRINT_CSS = `
+  @page { size: A4; margin: 10mm; }
   * { box-sizing: border-box; }
-  body { font-family: system-ui, Segoe UI, Roboto, Arial, sans-serif; font-size: 12px; color: #111; margin: 0; padding: 16px; max-width: 210mm; margin-left: auto; margin-right: auto; }
-  h1 { font-size: 18px; margin: 0 0 8px; }
-  h2 { font-size: 14px; margin: 16px 0 8px; border-bottom: 1px solid #ccc; padding-bottom: 4px; }
-  .meta { margin-bottom: 12px; line-height: 1.5; }
-  .meta strong { display: inline-block; min-width: 120px; }
-  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
-  th, td { border: 1px solid #ccc; padding: 6px 8px; text-align: left; vertical-align: top; }
+  html, body { height: auto; }
+  body {
+    font-family: system-ui, Segoe UI, Roboto, Arial, sans-serif;
+    font-size: 11px;
+    color: #111;
+    margin: 0 auto;
+    padding: 12px 14px;
+    max-width: 190mm;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  h1 { font-size: 17px; margin: 0 0 8px; }
+  h2 { font-size: 13px; margin: 14px 0 6px; border-bottom: 1px solid #ccc; padding-bottom: 4px; page-break-after: avoid; }
+  .meta { margin-bottom: 10px; line-height: 1.45; }
+  .meta strong { display: inline-block; min-width: 112px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 10px; }
+  thead { display: table-header-group; }
+  tr { page-break-inside: avoid; }
+  th, td { border: 1px solid #ccc; padding: 5px 6px; text-align: left; vertical-align: top; word-wrap: break-word; }
   th { background: #f5f5f5; font-weight: 600; }
-  .num { text-align: right; }
-  .sig { margin-top: 32px; display: flex; gap: 24px; flex-wrap: wrap; }
-  .sigbox { flex: 1; min-width: 140px; border-top: 1px solid #333; padding-top: 6px; margin-top: 40px; }
+  .num { text-align: right; white-space: nowrap; }
+  .sig { margin-top: 28px; display: flex; gap: 20px; flex-wrap: wrap; page-break-inside: avoid; }
+  .sigbox { flex: 1; min-width: 130px; border-top: 1px solid #333; padding-top: 6px; margin-top: 36px; }
   @media print {
-    body { padding: 12mm; }
+    body { padding: 0; max-width: none; }
     .no-print { display: none !important; }
   }
 `;
@@ -155,6 +178,84 @@ export async function renderGrnPrintHtml(grnId: number, orgId: number): Promise<
       <div class="sigbox">Warehouse receiving officer<br/><span style="font-size:10px;color:#888">Name &amp; signature</span></div>
       <div class="sigbox">Warehouse manager / Approver<br/><span style="font-size:10px;color:#888">Name &amp; signature</span></div>
       <div class="sigbox">Security / Gate check-off<br/><span style="font-size:10px;color:#888">Name &amp; signature (optional)</span></div>
+    </div>
+  `;
+  return wrapDoc(title, inner);
+}
+
+/** Carrier / gate copy — vendor inbound delivery note (GRN-scoped, not dispatch). */
+export async function renderGrnDeliveryNoteHtml(grnId: number, orgId: number): Promise<string> {
+  const grn = await prisma.grn.findFirst({
+    where: { id: grnId, orgId },
+    include: {
+      org: { select: { name: true } },
+      vendor: { select: { name: true, phone: true } },
+      purchaseOrder: { select: { id: true, poNumber: true, expectedDeliveryDate: true } },
+      location: { include: { branch: { select: { name: true, id: true } } } },
+      vendorReceiveSession: { select: { status: true, submittedAt: true } },
+      lines: {
+        include: {
+          variant: { select: { sku: true, title: true } },
+          purchaseOrderLine: { select: { orderedQty: true } },
+        },
+      },
+    },
+  });
+  if (!grn) throw new Error("GRN not found");
+
+  const wm = grnStatusWatermark(grn);
+  const title = `Delivery note — GRN #${grn.id}`;
+  const shipTo = `${grn.location?.branch?.name ?? "—"} — ${grn.location?.name ?? "—"}`;
+  const rows = grn.lines
+    .map((l) => {
+      const ordered = l.purchaseOrderLine?.orderedQty;
+      const shipQty = Number(l.quantity ?? 0) + Number((l as any).quantityExtra ?? 0);
+      return `<tr>
+        <td>${escapeHtml(l.variant.sku)}</td>
+        <td>${escapeHtml(l.variant.title)}</td>
+        <td class="num">${fmtQty(ordered as number)}</td>
+        <td class="num">${fmtQty(shipQty)}</td>
+      </tr>`;
+    })
+    .join("");
+
+  const inner = `
+    <div style="border:3px solid #1d4ed8;padding:6px 12px;margin-bottom:12px;text-align:center;font-size:13px;font-weight:700;color:#1d4ed8;">
+      DELIVERY NOTE (VENDOR INBOUND) — ${escapeHtml(wm.label)}
+    </div>
+    <h1 style="margin-top:0">${escapeHtml(title)}</h1>
+    <div class="meta">
+      <div><strong>Ship to (branch / location)</strong> ${escapeHtml(shipTo)}</div>
+      <div><strong>Organization</strong> ${escapeHtml(grn.org?.name ?? "—")}</div>
+      <div><strong>Vendor</strong> ${escapeHtml(grn.vendor?.name ?? "—")}${grn.vendor?.phone ? ` — ${escapeHtml(grn.vendor.phone)}` : ""}</div>
+      <div><strong>Purchase order</strong> ${grn.purchaseOrder ? escapeHtml(grn.purchaseOrder.poNumber) : "—"}</div>
+      <div><strong>Expected delivery (PO)</strong> ${fmtDate(grn.purchaseOrder?.expectedDeliveryDate ?? null)}</div>
+      <div><strong>GRN created</strong> ${fmtDateTime(grn.createdAt)}</div>
+      <div><strong>Invoice no.</strong> ${escapeHtml(grn.invoiceNo ?? "—")}</div>
+    </div>
+    <h2>Shipment lines</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>SKU</th><th>Description</th>
+          <th class="num">Ordered</th>
+          <th class="num">Qty for delivery / receive</th>
+        </tr>
+      </thead>
+      <tbody>${rows || "<tr><td colspan='4'>No lines</td></tr>"}</tbody>
+    </table>
+    <p style="font-size:11px;color:#555;margin-top:8px">
+      Qty for delivery = Accepted + Extra (same basis as stock posted on GRN). Driver to verify seals and count before handover.
+    </p>
+    <div class="meta" style="margin-top:16px">
+      <div><strong>Vehicle reg. / transporter</strong> ________________________________</div>
+      <div><strong>Driver name &amp; mobile</strong> ________________________________</div>
+      <div><strong>Gate-in time</strong> ________________________________</div>
+    </div>
+    <div class="sig">
+      <div class="sigbox">Driver / Transporter<br/><span style="font-size:10px;color:#888">Name &amp; signature</span></div>
+      <div class="sigbox">Security / Gate<br/><span style="font-size:10px;color:#888">Name &amp; signature</span></div>
+      <div class="sigbox">Warehouse receiving<br/><span style="font-size:10px;color:#888">Name &amp; signature</span></div>
     </div>
   `;
   return wrapDoc(title, inner);
@@ -327,11 +428,30 @@ export async function renderGrnDiscrepancyReportHtml(grnId: number, orgId: numbe
 }
 
 export async function renderDispatchChallanHtml(dispatchId: number, orgId: number): Promise<string> {
+  return renderDispatchChallanOrDeliveryNoteHtml(dispatchId, orgId, "challan");
+}
+
+/** Printable delivery note for carrier / driver — same line data as challan with carrier-copy banner. */
+export async function renderDeliveryNoteCarrierHtml(dispatchId: number, orgId: number): Promise<string> {
+  return renderDispatchChallanOrDeliveryNoteHtml(dispatchId, orgId, "carrier");
+}
+
+async function renderDispatchChallanOrDeliveryNoteHtml(
+  dispatchId: number,
+  orgId: number,
+  kind: "challan" | "carrier"
+): Promise<string> {
   const d = await prisma.stockDispatch.findFirst({
     where: { id: dispatchId, orgId },
     include: {
       org: { select: { name: true } },
-      fromLocation: { include: { branch: { select: { name: true } } } },
+      stockRequest: { select: { id: true } },
+      fromLocation: {
+        include: {
+          branch: { select: { name: true } },
+          warehouse: { select: { name: true } },
+        },
+      },
       toLocation: { include: { branch: { select: { name: true } } } },
       items: {
         include: {
@@ -343,7 +463,25 @@ export async function renderDispatchChallanHtml(dispatchId: number, orgId: numbe
   });
   if (!d) throw new Error("Dispatch not found");
 
-  const title = `Dispatch challan #${d.id}`;
+  const title =
+    kind === "carrier" ? `Delivery note (carrier copy) — Dispatch #${d.id}` : `Dispatch challan #${d.id}`;
+  const banner =
+    kind === "carrier"
+      ? `<div style="border:2px solid #1a5fb4;padding:10px;margin-bottom:14px;text-align:center;font-weight:700;color:#1a5fb4;font-size:13px;">DELIVERY NOTE — CARRIER / DRIVER COPY<br/><span style="font-weight:500;font-size:11px;">Take this copy to the branch; obtain receiver signature, date, and seal below.</span></div>`
+      : "";
+
+  const srLine =
+    d.stockRequestId != null
+      ? `<div><strong>Stock request</strong> SR #${d.stockRequestId}</div>`
+      : `<div><strong>Stock request</strong> —</div>`;
+
+  const sourceWarehouse = d.fromLocation?.warehouse?.name
+    ? escapeHtml(d.fromLocation.warehouse.name)
+    : escapeHtml(d.fromLocation?.name ?? "—");
+  const sourceBranch = d.fromLocation?.branch?.name ? escapeHtml(d.fromLocation.branch.name) : "—";
+  const destBranch = d.toLocation?.branch?.name ? escapeHtml(d.toLocation.branch.name) : "—";
+  const destLoc = escapeHtml(d.toLocation?.name ?? "—");
+
   const rows = d.items
     .map(
       (it) => `<tr>
@@ -357,29 +495,119 @@ export async function renderDispatchChallanHtml(dispatchId: number, orgId: numbe
     .join("");
 
   const inner = `
+    ${banner}
     <h1>${escapeHtml(title)}</h1>
     <div class="meta">
+      <div><strong>Dispatch no.</strong> #${d.id}</div>
+      ${srLine}
       <div><strong>Organization</strong> ${escapeHtml(d.org?.name ?? "—")}</div>
-      <div><strong>From (source)</strong> ${escapeHtml(d.fromLocation?.name ?? "—")} ${d.fromLocation?.branch?.name ? `— ${escapeHtml(d.fromLocation.branch.name)}` : ""}</div>
-      <div><strong>To (destination)</strong> ${escapeHtml(d.toLocation?.name ?? "—")} ${d.toLocation?.branch?.name ? `— ${escapeHtml(d.toLocation.branch.name)}` : ""}</div>
-      <div><strong>Status</strong> ${escapeHtml(d.status)}</div>
-      <div><strong>Created</strong> ${fmtDate(d.createdAt)}</div>
+      <div><strong>Source warehouse</strong> ${sourceWarehouse}</div>
+      <div><strong>Source branch / site</strong> ${sourceBranch}</div>
+      <div><strong>Destination branch</strong> ${destBranch}</div>
+      <div><strong>Destination location</strong> ${destLoc}</div>
+      <div><strong>Dispatch status</strong> ${escapeHtml(d.status)}</div>
+      <div><strong>Prepared</strong> ${fmtDateTime(d.createdAt)}</div>
+      <div><strong>Sent / in transit</strong> ${fmtDateTime(d.inTransitAt)}</div>
       ${d.note ? `<div><strong>Note</strong> ${escapeHtml(d.note)}</div>` : ""}
       ${d.vehicleNo ? `<div><strong>Vehicle</strong> ${escapeHtml(d.vehicleNo)}</div>` : ""}
-      ${d.driverName ? `<div><strong>Driver</strong> ${escapeHtml(d.driverName)}</div>` : ""}
+      ${d.driverName ? `<div><strong>Driver / delivered by</strong> ${escapeHtml(d.driverName)}</div>` : ""}
+      ${d.driverPhone ? `<div><strong>Driver phone</strong> ${escapeHtml(d.driverPhone)}</div>` : ""}
+      ${d.trackingId ? `<div><strong>Tracking</strong> ${escapeHtml(d.trackingId)}</div>` : ""}
     </div>
-    <h2>Lines (dispatched)</h2>
+    <h2>Lines (dispatched quantities)</h2>
     <table>
       <thead>
         <tr><th>SKU</th><th>Product</th><th class="num">Qty sent</th><th>Batch / lot</th><th>Expiry</th></tr>
       </thead>
       <tbody>${rows}</tbody>
     </table>
+    <p style="font-size:11px;color:#555;margin-top:12px">Received qty / damaged / short are recorded in the branch receive session and GRN after goods are checked in.</p>
     <div class="sig">
-      <div class="sigbox">Dispatched by</div>
-      <div class="sigbox">Driver / Carrier</div>
-      <div class="sigbox">Received at destination (name & date)</div>
+      <div class="sigbox">Prepared / dispatched by (name, date)<br/><span style="font-size:10px;color:#888">Signature</span></div>
+      <div class="sigbox">Carrier / driver (name, ID)<br/><span style="font-size:10px;color:#888">Signature</span></div>
+      <div class="sigbox">Received by — branch (name, role)<br/><span style="font-size:10px;color:#888">Signature &amp; date</span></div>
     </div>
+    <div class="sig" style="margin-top:8px">
+      <div class="sigbox">Branch seal / stamp<br/><span style="font-size:10px;color:#888">&nbsp;</span></div>
+      <div class="sigbox">Remarks<br/><span style="font-size:10px;color:#888">&nbsp;</span></div>
+    </div>
+  `;
+  return wrapDoc(title, inner);
+}
+
+/** Branch file copy: blank fields for physical verification at receive (before/while counting). */
+export async function renderBranchReceivingRecordHtml(dispatchId: number, orgId: number): Promise<string> {
+  const d = await prisma.stockDispatch.findFirst({
+    where: { id: dispatchId, orgId },
+    include: {
+      org: { select: { name: true } },
+      stockRequest: { select: { id: true } },
+      fromLocation: {
+        include: {
+          branch: { select: { name: true } },
+          warehouse: { select: { name: true } },
+        },
+      },
+      toLocation: { include: { branch: { select: { name: true } } } },
+      items: {
+        include: {
+          variant: { select: { sku: true, title: true } },
+          lot: { select: { lotCode: true, expDate: true } },
+        },
+      },
+    },
+  });
+  if (!d) throw new Error("Dispatch not found");
+
+  const title = `Branch receiving record (file copy) — Dispatch #${d.id}`;
+  const rows = d.items
+    .map(
+      (it) => `<tr>
+    <td>${escapeHtml(it.variant.sku)}</td>
+    <td>${escapeHtml(it.variant.title)}</td>
+    <td>${escapeHtml(it.lot?.lotCode ?? "—")}</td>
+    <td>${fmtDate(it.lot?.expDate)}</td>
+    <td class="num">${fmtQty(it.quantityDispatched)}</td>
+    <td></td><td></td><td></td><td></td><td></td>
+  </tr>`
+    )
+    .join("");
+
+  const srLine =
+    d.stockRequestId != null
+      ? `<div><strong>Stock request</strong> SR #${d.stockRequestId}</div>`
+      : `<div><strong>Stock request</strong> —</div>`;
+
+  const inner = `
+    <div style="border:2px solid #6b7280;padding:8px;margin-bottom:12px;text-align:center;font-weight:700;color:#374151;font-size:12px;">BRANCH RECEIVING — FILE / OFFICE COPY (retain with records)</div>
+    <h1>${escapeHtml(title)}</h1>
+    <div class="meta">
+      <div><strong>Dispatch no.</strong> #${d.id}</div>
+      ${srLine}
+      <div><strong>Organization</strong> ${escapeHtml(d.org?.name ?? "—")}</div>
+      <div><strong>Source warehouse</strong> ${escapeHtml(d.fromLocation?.warehouse?.name ?? d.fromLocation?.name ?? "—")}</div>
+      <div><strong>Destination branch</strong> ${escapeHtml(d.toLocation?.branch?.name ?? "—")}</div>
+      <div><strong>Destination location</strong> ${escapeHtml(d.toLocation?.name ?? "—")}</div>
+      <div><strong>Status</strong> ${escapeHtml(d.status)}</div>
+      <div><strong>Printed</strong> ${fmtDateTime(new Date())}</div>
+    </div>
+    <h2>Physical verification (fill on receipt)</h2>
+    <table style="font-size:11px">
+      <thead>
+        <tr>
+          <th>SKU</th><th>Product</th><th>Batch</th><th>Expiry</th>
+          <th class="num">Expected</th><th class="num">Counted</th><th class="num">Accepted</th>
+          <th class="num">Damaged</th><th class="num">Short</th><th>Note</th>
+        </tr>
+      </thead>
+      <tbody>${rows || "<tr><td colspan='10'>No lines</td></tr>"}</tbody>
+    </table>
+    <div class="sig">
+      <div class="sigbox">Received by (print name)<br/><span style="font-size:10px;color:#888">Signature &amp; date</span></div>
+      <div class="sigbox">Verified by<br/><span style="font-size:10px;color:#888">Signature</span></div>
+      <div class="sigbox">Branch manager<br/><span style="font-size:10px;color:#888">Signature (if required)</span></div>
+    </div>
+    <p style="font-size:11px;color:#555">System copy: use Receive Center to post quantities; GRN and ledger update on confirm.</p>
   `;
   return wrapDoc(title, inner);
 }

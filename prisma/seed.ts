@@ -22,6 +22,7 @@ import seedOrganizationCountries from "./seeders/seedOrganizationCountries";
 import seedVetRegulatoryBodies from "./seeders/seedVetRegulatoryBodies";
 import seedClinicalItemCategories from "./seeders/seedClinicalItemCategories";
 import seedMasterClinicalCatalog from "./seeders/seedMasterClinicalCatalog";
+import seedVaccineTypes from "./seeders/seedVaccineTypes";
 import seedMasterCatalog from "./seeds/seed-master-catalog";
 import seedAnimalTaxonomy from "./seeders/seedAnimalTaxonomy";
 import seedInboundReceiveQaFixtures from "./seeders/seedInboundReceiveQaFixtures";
@@ -96,6 +97,9 @@ async function main() {
 
   // 19) Master Clinical Catalog (global categories, items, templates for clinic catalog installer)
   await seedMasterClinicalCatalog(prisma);
+
+  // 20) Default vaccine type master rows used by vaccination and inventory mapping.
+  await seedVaccineTypes(prisma);
 
   // Optional: Receive Center / inbound-unified QA diagnostics (no writes; SEED_INBOUND_RECEIVE_QA=true)
   await seedInboundReceiveQaFixtures(prisma);

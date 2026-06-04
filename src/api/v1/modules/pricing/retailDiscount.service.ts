@@ -2,6 +2,7 @@
  * Retail (inventory) discount rules, validation, and approval workflow.
  */
 import prisma from "../../../../infrastructure/db/prismaClient";
+import { getAvailableLotsFEFO } from "../inventory/ledger.service";
 import { getOrCreateOrgPolicy, logPricingAudit } from "./pricingGovernance.service";
 
 function isRuleEffective(validFrom: Date | null, validTo: Date | null, at: Date): boolean {
@@ -189,22 +190,35 @@ export async function assertPosSalePricingGovernance(params: {
   if (!policy.posPricingGovernanceEnabled) return;
 
   // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { resolveSellingPrice } = require("./pricingEngine.service") as {
-    resolveSellingPrice: (p: {
+  const { resolveSellingPriceWithEnterprise } = require("./pricingEngine.service") as {
+    resolveSellingPriceWithEnterprise: (p: {
       orgId: number;
       variantId: number;
-      branchId?: number | null;
+      branchId: number | null;
       locationId?: number | null;
+      shopLocationId?: number | null;
+      lotId?: number | null;
     }) => Promise<{ price: number | null }>;
   };
 
   for (const item of params.items) {
     if (!item.variantId) continue;
-    const resolved = await resolveSellingPrice({
+    let lotId: number | null = null;
+    if (params.shopLocationId) {
+      try {
+        const lots = await getAvailableLotsFEFO(params.shopLocationId, item.variantId);
+        lotId = lots[0]?.lotId ?? null;
+      } catch {
+        lotId = null;
+      }
+    }
+    const resolved = await resolveSellingPriceWithEnterprise({
       orgId: params.orgId,
       variantId: item.variantId,
       branchId: params.branchId,
       locationId: params.shopLocationId,
+      shopLocationId: params.shopLocationId,
+      lotId,
     });
     const list = resolved.price;
     if (list == null || !(list > 0)) {
@@ -308,6 +322,7 @@ export async function upsertRetailRule(
     status: data.status ?? "ACTIVE",
     validFrom: data.validFrom ?? null,
     validTo: data.validTo ?? null,
+    updatedByUserId: actorUserId ?? undefined,
   };
 
   let before: unknown = null;
@@ -337,6 +352,26 @@ export async function upsertRetailRule(
     action: data.id ? "UPDATE" : "CREATE",
     actorUserId,
     payloadBefore: before,
+    payloadAfter: row,
+  });
+  return row;
+}
+
+export async function patchRetailRuleStatus(orgId: number, id: number, status: string, actorUserId: number | null) {
+  const ex = await prisma.retailDiscountRule.findFirst({ where: { id, orgId } });
+  if (!ex) throw new Error("Rule not found");
+  const row = await prisma.retailDiscountRule.update({
+    where: { id },
+    data: { status, updatedByUserId: actorUserId ?? undefined },
+    include: { variant: { select: { sku: true, title: true } } },
+  });
+  await logPricingAudit({
+    orgId,
+    entityType: "RETAIL_DISCOUNT_RULE",
+    entityKey: `rule:${id}`,
+    action: "STATUS",
+    actorUserId,
+    payloadBefore: ex,
     payloadAfter: row,
   });
   return row;

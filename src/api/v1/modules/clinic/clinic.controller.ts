@@ -2422,43 +2422,529 @@ exports.getPrescriptionOrderLines = async (req: any, res: any) => {
 };
 
 // --- Vaccination & Deworming ---
+function getRouteBranchId(req: any): number {
+  return Number(req.clinicBranchId ?? req.params.branchId);
+}
+
+function parseOptionalDateInput(value: any): Date | undefined {
+  if (value == null || value === "") return undefined;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+}
+
+function parseOptionalNumberInput(value: any): number | undefined {
+  if (value == null || value === "") return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function hasOwnBodyField(body: any, field: string): boolean {
+  return !!body && Object.prototype.hasOwnProperty.call(body, field);
+}
+
+function getVaccinationAuditContext(req: any): {
+  actorRole: string;
+  traceId: string | null;
+  ip: string | null;
+} {
+  const forwardedFor = req.headers?.["x-forwarded-for"];
+  const ip =
+    typeof forwardedFor === "string"
+      ? forwardedFor.split(",")[0]?.trim() || null
+      : req.ip || req.connection?.remoteAddress || null;
+  const requestId = req.headers?.["x-request-id"];
+  return {
+    actorRole: String(req.user?.role || "STAFF"),
+    traceId: requestId != null ? String(requestId) : null,
+    ip,
+  };
+}
+
+async function requireVaccinationPetInBranch(req: any, res: any, petId: number): Promise<boolean> {
+  const branchId = getRouteBranchId(req);
+  if (!Number.isFinite(branchId) || branchId <= 0) {
+    sendClinicError(res, 400, "Invalid branchId", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    return false;
+  }
+  if (!Number.isFinite(petId) || petId <= 0) {
+    sendClinicError(res, 400, "Invalid petId", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    return false;
+  }
+  const resolved = await patientService.resolvePatientForBranch(branchId, petId);
+  if (resolved.kind === "NOT_FOUND") {
+    sendClinicError(res, 404, "Patient not found", CLINIC_ERROR_CODES.PATIENT_NOT_FOUND);
+    return false;
+  }
+  if (resolved.kind === "NOT_IN_BRANCH") {
+    sendClinicError(res, 404, "Pet not linked to this branch", CLINIC_ERROR_CODES.PATIENT_NOT_IN_BRANCH);
+    return false;
+  }
+  return true;
+}
+
+exports.listVaccineTypes = async (req: any, res: any) => {
+  try {
+    const branchId = getRouteBranchId(req);
+    if (!Number.isFinite(branchId) || branchId <= 0) {
+      return sendClinicError(res, 400, "Invalid branchId", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+    const search = req.query.search ? String(req.query.search) : req.query.q ? String(req.query.q) : undefined;
+    const limit = req.query.limit ? Number(req.query.limit) : undefined;
+    const items = await vaccinationService.listVaccineTypes({ search, limit });
+    return sendClinicSuccess(res, 200, { items });
+  } catch (e: any) {
+    return sendClinicError(res, 500, e?.message || "Failed to list vaccine types", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+exports.getBranchVaccineInventoryMappings = async (req: any, res: any) => {
+  try {
+    const branchId = getRouteBranchId(req);
+    if (!Number.isFinite(branchId) || branchId <= 0) {
+      return sendClinicError(res, 400, "Invalid branchId", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+    const data = await vaccinationService.getBranchVaccineInventoryMappings(branchId);
+    return sendClinicSuccess(res, 200, data);
+  } catch (e: any) {
+    return sendClinicError(res, e?.statusCode ?? 500, e?.message || "Failed to load vaccine inventory mappings", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+exports.upsertBranchVaccineInventoryMapping = async (req: any, res: any) => {
+  try {
+    const branchId = getRouteBranchId(req);
+    const vaccineTypeId = req.params.vaccineTypeId != null ? Number(req.params.vaccineTypeId) : NaN;
+    const body = req.body || {};
+    const clinicalItemId = body.clinicalItemId != null ? Number(body.clinicalItemId) : NaN;
+    const clinicalItemVariantId = hasOwnBodyField(body, "clinicalItemVariantId")
+      ? parseOptionalNumberInput(body.clinicalItemVariantId) ?? null
+      : undefined;
+    const isActive = hasOwnBodyField(body, "isActive") ? body.isActive === true : undefined;
+    const notes = body.notes != null ? String(body.notes) : undefined;
+
+    if (!Number.isFinite(branchId) || branchId <= 0) {
+      return sendClinicError(res, 400, "Invalid branchId", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+    if (!Number.isFinite(vaccineTypeId) || vaccineTypeId <= 0) {
+      return sendClinicError(res, 400, "Invalid vaccineTypeId", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+    if (!Number.isFinite(clinicalItemId) || clinicalItemId <= 0) {
+      return sendClinicError(res, 400, "Invalid clinicalItemId", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+
+    const data = await vaccinationService.upsertVaccineInventoryMapping({
+      branchId,
+      vaccineTypeId,
+      clinicalItemId,
+      clinicalItemVariantId,
+      isActive,
+      notes,
+      actorUserId: req.user?.id != null ? Number(req.user.id) : null,
+    });
+    return sendClinicSuccess(res, 200, data);
+  } catch (e: any) {
+    return sendClinicError(res, e?.statusCode ?? 500, e?.message || "Failed to save vaccine inventory mapping", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+exports.getBranchVaccinationDashboard = async (req: any, res: any) => {
+  try {
+    const branchId = getRouteBranchId(req);
+    if (!Number.isFinite(branchId) || branchId <= 0) {
+      return sendClinicError(res, 400, "Invalid branchId", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+    const data = await vaccinationService.getBranchVaccinationDashboard(branchId);
+    return sendClinicSuccess(res, 200, data);
+  } catch (e: any) {
+    return sendClinicError(res, 500, e?.message || "Failed to load vaccination dashboard", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+exports.getBranchVaccinationReminders = async (req: any, res: any) => {
+  try {
+    const branchId = getRouteBranchId(req);
+    if (!Number.isFinite(branchId) || branchId <= 0) {
+      return sendClinicError(res, 400, "Invalid branchId", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+    const q = req.query || {};
+    const status = q.status ? String(q.status) : undefined;
+    const from = q.from ? parseOptionalDateInput(q.from) : null;
+    const to = q.to ? parseOptionalDateInput(q.to) : null;
+    if (q.from && !from) return sendClinicError(res, 400, "Invalid from date", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    if (q.to && !to) return sendClinicError(res, 400, "Invalid to date", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    const overdueOnly =
+      q.overdueOnly === true ||
+      q.overdueOnly === "true" ||
+      q.overdueOnly === "1" ||
+      String(q.overdueOnly || "").toLowerCase() === "yes";
+    const petId = q.petId != null ? Number(q.petId) : null;
+    if (q.petId != null && (!Number.isFinite(petId) || Number(petId) <= 0)) {
+      return sendClinicError(res, 400, "Invalid petId", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+    const data = await vaccinationService.listBranchVaccinationReminders(branchId, {
+      status,
+      from,
+      to,
+      overdueOnly,
+      petId,
+    });
+    return sendClinicSuccess(res, 200, data);
+  } catch (e: any) {
+    return sendClinicError(res, e?.statusCode ?? 500, e?.message || "Failed to load vaccination reminders", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+exports.getBranchVaccineStockCandidates = async (req: any, res: any) => {
+  try {
+    const branchId = getRouteBranchId(req);
+    const vaccineTypeId = req.query.vaccineTypeId != null ? Number(req.query.vaccineTypeId) : NaN;
+    if (!Number.isFinite(branchId) || branchId <= 0) {
+      return sendClinicError(res, 400, "Invalid branchId", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+    if (!Number.isFinite(vaccineTypeId) || vaccineTypeId <= 0) {
+      return sendClinicError(res, 400, "Invalid vaccineTypeId", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+    const data = await vaccinationService.getBranchVaccineStockCandidates({
+      branchId,
+      vaccineTypeId,
+      includeExpired: req.query.includeExpired === "true",
+      includeZeroStock: req.query.includeZeroStock === "true",
+      limit: req.query.limit != null ? Number(req.query.limit) : undefined,
+    });
+    return sendClinicSuccess(res, 200, data);
+  } catch (e: any) {
+    return sendClinicError(res, e?.statusCode ?? 500, e?.message || "Failed to load vaccine stock candidates", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+exports.getVaccinationBillingOptions = async (req: any, res: any) => {
+  try {
+    const branchId = getRouteBranchId(req);
+    if (!Number.isFinite(branchId) || branchId <= 0) {
+      return sendClinicError(res, 400, "Invalid branchId", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+    const data = await vaccinationService.listVaccinationBillingOptions(branchId);
+    return sendClinicSuccess(res, 200, data);
+  } catch (e: any) {
+    return sendClinicError(res, e?.statusCode ?? 500, e?.message || "Failed to load vaccination billing options", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
 exports.listPetVaccinations = async (req: any, res: any) => {
   try {
     const petId = Number(req.params.petId);
+    if (!(await requireVaccinationPetInBranch(req, res, petId))) return;
     const list = await vaccinationService.listByPet(petId);
     return sendClinicSuccess(res, 200, { vaccinations: list });
   } catch (e: any) {
-    return sendClinicError(res, 500, e?.message || "Failed", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    return sendClinicError(res, e?.statusCode ?? 500, e?.message || "Failed", CLINIC_ERROR_CODES.VALIDATION_ERROR);
   }
 };
 
 exports.getPetVaccinationNextDue = async (req: any, res: any) => {
   try {
     const petId = Number(req.params.petId);
+    if (!(await requireVaccinationPetInBranch(req, res, petId))) return;
     const list = await vaccinationService.getNextDueByPet(petId);
     return sendClinicSuccess(res, 200, { due: list });
   } catch (e: any) {
-    return sendClinicError(res, 500, e?.message || "Failed", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    return sendClinicError(res, e?.statusCode ?? 500, e?.message || "Failed", CLINIC_ERROR_CODES.VALIDATION_ERROR);
   }
 };
 
 exports.recordVaccination = async (req: any, res: any) => {
   try {
-    const body = req.body;
-    if (!body.petId || !body.vaccineTypeId) return sendClinicError(res, 400, "petId and vaccineTypeId required", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    const body = req.body || {};
+    const auditContext = getVaccinationAuditContext(req);
+    const petId = Number(body.petId);
+    const vaccineTypeId = Number(body.vaccineTypeId);
+    if (!Number.isFinite(petId) || petId <= 0 || !Number.isFinite(vaccineTypeId) || vaccineTypeId <= 0) {
+      return sendClinicError(res, 400, "petId and vaccineTypeId required", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+    if (!(await requireVaccinationPetInBranch(req, res, petId))) return;
+    const administeredAt = parseOptionalDateInput(body.administeredAt);
+    const nextDueDate = parseOptionalDateInput(body.nextDueDate);
+    if (body.administeredAt && !administeredAt) {
+      return sendClinicError(res, 400, "Invalid administeredAt", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+    if (body.nextDueDate && !nextDueDate) {
+      return sendClinicError(res, 400, "Invalid nextDueDate", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
     const v = await vaccinationService.recordVaccination({
-      petId: Number(body.petId),
-      vaccineTypeId: Number(body.vaccineTypeId),
-      administeredAt: body.administeredAt ? new Date(body.administeredAt) : undefined,
-      nextDueDate: body.nextDueDate ? new Date(body.nextDueDate) : undefined,
+      petId,
+      vaccineTypeId,
+      administeredAt,
+      nextDueDate,
       batchNumber: body.batchNumber,
       manufacturer: body.manufacturer,
       vetClinic: body.vetClinic,
       notes: body.notes,
+      actorId: req.user?.id != null ? Number(req.user.id) : null,
+      actorRole: auditContext.actorRole,
+      traceId: auditContext.traceId,
+      ip: auditContext.ip,
     });
     return sendClinicSuccess(res, 201, v, "Vaccination recorded");
   } catch (e: any) {
-    return sendClinicError(res, 500, e?.message || "Failed", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    return sendClinicError(res, e?.statusCode ?? 500, e?.message || "Failed", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+exports.administerVaccinationWithBatch = async (req: any, res: any) => {
+  try {
+    const branchId = getRouteBranchId(req);
+    const body = req.body || {};
+    const auditContext = getVaccinationAuditContext(req);
+    const petId = Number(body.petId);
+    const vaccineTypeId = Number(body.vaccineTypeId);
+    const batchId = Number(body.batchId);
+    if (!Number.isFinite(branchId) || branchId <= 0) {
+      return sendClinicError(res, 400, "Invalid branchId", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+    if (!Number.isFinite(petId) || petId <= 0) {
+      return sendClinicError(res, 400, "Invalid petId", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+    if (!Number.isFinite(vaccineTypeId) || vaccineTypeId <= 0) {
+      return sendClinicError(res, 400, "Invalid vaccineTypeId", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+    if (!Number.isFinite(batchId) || batchId <= 0) {
+      return sendClinicError(res, 400, "Invalid batchId", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+    if (!(await requireVaccinationPetInBranch(req, res, petId))) return;
+    const administeredAt = parseOptionalDateInput(body.administeredAt);
+    const nextDueDate = parseOptionalDateInput(body.nextDueDate);
+    if (body.administeredAt && !administeredAt) {
+      return sendClinicError(res, 400, "Invalid administeredAt", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+    if (body.nextDueDate && !nextDueDate) {
+      return sendClinicError(res, 400, "Invalid nextDueDate", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+    const createBilling = body.createBilling === true;
+    if (createBilling) {
+      const perms = Array.isArray(req.user?.permissions) ? req.user.permissions : [];
+      if (!perms.includes("clinic.billing.write")) {
+        return sendClinicError(
+          res,
+          403,
+          "clinic.billing.write permission is required to create billing from vaccination",
+          CLINIC_ERROR_CODES.UNAUTHORIZED,
+          { requiredPermission: "clinic.billing.write" }
+        );
+      }
+      if (body.unitPrice != null && (!Number.isFinite(Number(body.unitPrice)) || Number(body.unitPrice) < 0)) {
+        return sendClinicError(res, 400, "Invalid unitPrice", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+      }
+      if (body.quantity != null && (!Number.isFinite(Number(body.quantity)) || Number(body.quantity) <= 0)) {
+        return sendClinicError(res, 400, "Invalid quantity", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+      }
+      if (body.discountAmount != null && (!Number.isFinite(Number(body.discountAmount)) || Number(body.discountAmount) < 0)) {
+        return sendClinicError(res, 400, "Invalid discountAmount", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+      }
+      if (body.visitId != null && (!Number.isFinite(Number(body.visitId)) || Number(body.visitId) <= 0)) {
+        return sendClinicError(res, 400, "Invalid visitId", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+      }
+      if (body.appointmentId != null && (!Number.isFinite(Number(body.appointmentId)) || Number(body.appointmentId) <= 0)) {
+        return sendClinicError(res, 400, "Invalid appointmentId", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+      }
+      if (body.serviceId != null && (!Number.isFinite(Number(body.serviceId)) || Number(body.serviceId) <= 0)) {
+        return sendClinicError(res, 400, "Invalid serviceId", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+      }
+      if (body.pricingVariantId != null && (!Number.isFinite(Number(body.pricingVariantId)) || Number(body.pricingVariantId) <= 0)) {
+        return sendClinicError(res, 400, "Invalid pricingVariantId", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+      }
+    }
+    const data = await vaccinationService.administerVaccinationWithBatch({
+      branchId,
+      petId,
+      vaccineTypeId,
+      batchId,
+      administeredAt,
+      nextDueDate,
+      notes: body.notes,
+      actorId: req.user?.id,
+      createBilling,
+      visitId: body.visitId != null ? Number(body.visitId) : null,
+      appointmentId: body.appointmentId != null ? Number(body.appointmentId) : null,
+      serviceId: body.serviceId != null ? Number(body.serviceId) : null,
+      pricingVariantId: body.pricingVariantId != null ? Number(body.pricingVariantId) : null,
+      unitPrice: body.unitPrice != null ? Number(body.unitPrice) : null,
+      quantity: body.quantity != null ? Number(body.quantity) : null,
+      discountAmount: body.discountAmount != null ? Number(body.discountAmount) : null,
+      billingNotes: body.billingNotes != null ? String(body.billingNotes) : null,
+      idempotencyKey: body.idempotencyKey != null ? String(body.idempotencyKey) : null,
+      actorRole: auditContext.actorRole,
+      traceId: auditContext.traceId,
+      ip: auditContext.ip,
+    });
+    return sendClinicSuccess(res, 201, data, "Vaccination administered and stock deducted");
+  } catch (e: any) {
+    return sendClinicError(res, e?.statusCode ?? 500, e?.message || "Failed to administer vaccination", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+exports.correctVaccinationRecord = async (req: any, res: any) => {
+  try {
+    const branchId = getRouteBranchId(req);
+    const vaccinationId = Number(req.params.vaccinationId);
+    const body = req.body || {};
+    const auditContext = getVaccinationAuditContext(req);
+    if (!Number.isFinite(branchId) || branchId <= 0) {
+      return sendClinicError(res, 400, "Invalid branchId", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+    if (!Number.isFinite(vaccinationId) || vaccinationId <= 0) {
+      return sendClinicError(res, 400, "Invalid vaccinationId", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+    const forbiddenFields = [
+      "inventoryBatchId",
+      "stockLedgerId",
+      "orderId",
+      "invoiceId",
+      "petId",
+      "vaccineTypeId",
+      "clinicalItemId",
+      "clinicalItemVariantId",
+      "branchId",
+      "orgId",
+    ];
+    const forbiddenField = forbiddenFields.find((field) => hasOwnBodyField(body, field));
+    if (forbiddenField) {
+      return sendClinicError(
+        res,
+        400,
+        `${forbiddenField} cannot be changed through the correction API`,
+        CLINIC_ERROR_CODES.VALIDATION_ERROR
+      );
+    }
+    const correctionReason = String(body.correctionReason ?? "").trim();
+    if (!correctionReason) {
+      return sendClinicError(res, 400, "correctionReason is required", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+    if (correctionReason.length < 3) {
+      return sendClinicError(
+        res,
+        400,
+        "correctionReason must be at least 3 characters",
+        CLINIC_ERROR_CODES.VALIDATION_ERROR
+      );
+    }
+
+    const hasAdministeredAt = hasOwnBodyField(body, "administeredAt");
+    const hasNextDueDate = hasOwnBodyField(body, "nextDueDate");
+    const hasNotes = hasOwnBodyField(body, "notes");
+    const hasManufacturer = hasOwnBodyField(body, "manufacturer");
+    const hasBatchNumber = hasOwnBodyField(body, "batchNumber");
+    if (!hasAdministeredAt && !hasNextDueDate && !hasNotes && !hasManufacturer && !hasBatchNumber) {
+      return sendClinicError(
+        res,
+        400,
+        "At least one correctable field is required",
+        CLINIC_ERROR_CODES.VALIDATION_ERROR
+      );
+    }
+
+    let administeredAt: Date | undefined;
+    if (hasAdministeredAt) {
+      if (body.administeredAt == null || body.administeredAt === "") {
+        return sendClinicError(res, 400, "administeredAt cannot be empty", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+      }
+      administeredAt = parseOptionalDateInput(body.administeredAt);
+      if (!administeredAt) {
+        return sendClinicError(res, 400, "Invalid administeredAt", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+      }
+    }
+
+    let nextDueDate: Date | null | undefined;
+    if (hasNextDueDate) {
+      if (body.nextDueDate == null || body.nextDueDate === "") {
+        nextDueDate = null;
+      } else {
+        nextDueDate = parseOptionalDateInput(body.nextDueDate);
+        if (!nextDueDate) {
+          return sendClinicError(res, 400, "Invalid nextDueDate", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+        }
+      }
+    }
+
+    const result = await vaccinationService.correctVaccinationRecord({
+      branchId,
+      vaccinationId,
+      correctionReason,
+      administeredAt,
+      nextDueDate,
+      notes: hasNotes ? (body.notes == null || body.notes === "" ? null : String(body.notes)) : undefined,
+      manufacturer:
+        hasManufacturer ? (body.manufacturer == null || body.manufacturer === "" ? null : String(body.manufacturer)) : undefined,
+      batchNumber:
+        hasBatchNumber ? (body.batchNumber == null || body.batchNumber === "" ? null : String(body.batchNumber)) : undefined,
+      hasAdministeredAt,
+      hasNextDueDate,
+      hasNotes,
+      hasManufacturer,
+      hasBatchNumber,
+      actorId: req.user?.id != null ? Number(req.user.id) : null,
+      actorRole: auditContext.actorRole,
+      traceId: auditContext.traceId,
+      ip: auditContext.ip,
+    });
+    return sendClinicSuccess(res, 200, result, "Vaccination corrected");
+  } catch (e: any) {
+    return sendClinicError(res, e?.statusCode ?? 500, e?.message || "Failed to correct vaccination", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+exports.voidVaccinationRecord = async (req: any, res: any) => {
+  try {
+    const branchId = getRouteBranchId(req);
+    const vaccinationId = Number(req.params.vaccinationId);
+    const body = req.body || {};
+    const auditContext = getVaccinationAuditContext(req);
+    if (!Number.isFinite(branchId) || branchId <= 0) {
+      return sendClinicError(res, 400, "Invalid branchId", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+    if (!Number.isFinite(vaccinationId) || vaccinationId <= 0) {
+      return sendClinicError(res, 400, "Invalid vaccinationId", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+    const voidReason = String(body.voidReason ?? "").trim();
+    if (!voidReason) {
+      return sendClinicError(res, 400, "voidReason is required", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+    if (voidReason.length < 3) {
+      return sendClinicError(res, 400, "voidReason must be at least 3 characters", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+    const result = await vaccinationService.voidVaccinationRecord({
+      branchId,
+      vaccinationId,
+      voidReason,
+      actorId: req.user?.id != null ? Number(req.user.id) : null,
+      actorRole: auditContext.actorRole,
+      traceId: auditContext.traceId,
+      ip: auditContext.ip,
+    });
+    return sendClinicSuccess(
+      res,
+      200,
+      result,
+      result?.alreadyVoided ? "Vaccination was already voided" : "Vaccination voided"
+    );
+  } catch (e: any) {
+    return sendClinicError(res, e?.statusCode ?? 500, e?.message || "Failed to void vaccination", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+exports.getVaccinationAudit = async (req: any, res: any) => {
+  try {
+    const branchId = getRouteBranchId(req);
+    const vaccinationId = Number(req.params.vaccinationId);
+    if (!Number.isFinite(branchId) || branchId <= 0) {
+      return sendClinicError(res, 400, "Invalid branchId", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+    if (!Number.isFinite(vaccinationId) || vaccinationId <= 0) {
+      return sendClinicError(res, 400, "Invalid vaccinationId", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+    const data = await vaccinationService.getVaccinationAudit(branchId, vaccinationId);
+    return sendClinicSuccess(res, 200, data);
+  } catch (e: any) {
+    return sendClinicError(res, e?.statusCode ?? 500, e?.message || "Failed to load vaccination audit", CLINIC_ERROR_CODES.VALIDATION_ERROR);
   }
 };
 
@@ -2467,37 +2953,51 @@ exports.getVaccinationCertificate = async (req: any, res: any) => {
     const token = req.params.token;
     const v = await vaccinationService.getByCertificateToken(String(token));
     if (!v) return sendClinicError(res, 404, "Certificate not found", CLINIC_ERROR_CODES.NOT_FOUND);
+    if (!(await requireVaccinationPetInBranch(req, res, Number(v.petId)))) return;
     return sendClinicSuccess(res, 200, v);
   } catch (e: any) {
-    return sendClinicError(res, 500, e?.message || "Failed", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    return sendClinicError(res, e?.statusCode ?? 500, e?.message || "Failed", CLINIC_ERROR_CODES.VALIDATION_ERROR);
   }
 };
 
 exports.listPetDeworming = async (req: any, res: any) => {
   try {
     const petId = Number(req.params.petId);
+    if (!(await requireVaccinationPetInBranch(req, res, petId))) return;
     const list = await vaccinationService.listDewormingByPet(petId);
     return sendClinicSuccess(res, 200, { records: list });
   } catch (e: any) {
-    return sendClinicError(res, 500, e?.message || "Failed", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    return sendClinicError(res, e?.statusCode ?? 500, e?.message || "Failed", CLINIC_ERROR_CODES.VALIDATION_ERROR);
   }
 };
 
 exports.recordDeworming = async (req: any, res: any) => {
   try {
-    const body = req.body;
-    if (!body.petId || !body.medicationName) return sendClinicError(res, 400, "petId and medicationName required", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    const body = req.body || {};
+    const petId = Number(body.petId);
+    if (!Number.isFinite(petId) || petId <= 0 || !body.medicationName) {
+      return sendClinicError(res, 400, "petId and medicationName required", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+    if (!(await requireVaccinationPetInBranch(req, res, petId))) return;
+    const nextDueDate = parseOptionalDateInput(body.nextDueDate);
+    const weightAtTime = parseOptionalNumberInput(body.weightAtTime);
+    if (body.nextDueDate && !nextDueDate) {
+      return sendClinicError(res, 400, "Invalid nextDueDate", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
+    if (body.weightAtTime != null && body.weightAtTime !== "" && weightAtTime === undefined) {
+      return sendClinicError(res, 400, "Invalid weightAtTime", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    }
     const r = await vaccinationService.recordDeworming({
-      petId: Number(body.petId),
+      petId,
       medicationName: body.medicationName,
       dosage: body.dosage,
-      weightAtTime: body.weightAtTime,
-      nextDueDate: body.nextDueDate ? new Date(body.nextDueDate) : undefined,
+      weightAtTime,
+      nextDueDate,
       notes: body.notes,
     });
     return sendClinicSuccess(res, 201, r, "Deworming recorded");
   } catch (e: any) {
-    return sendClinicError(res, 500, e?.message || "Failed", CLINIC_ERROR_CODES.VALIDATION_ERROR);
+    return sendClinicError(res, e?.statusCode ?? 500, e?.message || "Failed", CLINIC_ERROR_CODES.VALIDATION_ERROR);
   }
 };
 

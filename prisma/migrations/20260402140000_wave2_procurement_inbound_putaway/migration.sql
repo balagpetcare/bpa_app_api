@@ -20,13 +20,23 @@ ALTER TABLE "vendors" ADD COLUMN IF NOT EXISTS "asnSupported" BOOLEAN NOT NULL D
 ALTER TABLE "vendors" ADD COLUMN IF NOT EXISTS "deliveryWindowsJson" JSONB;
 ALTER TABLE "vendors" ADD COLUMN IF NOT EXISTS "preferredWarehouseId" INTEGER;
 
--- AlterTable warehouse_bins
-ALTER TABLE "warehouse_bins" ADD COLUMN IF NOT EXISTS "maxUnits" INTEGER;
-ALTER TABLE "warehouse_bins" ADD COLUMN IF NOT EXISTS "allowMixedSku" BOOLEAN NOT NULL DEFAULT true;
-ALTER TABLE "warehouse_bins" ADD COLUMN IF NOT EXISTS "storageClass" VARCHAR(32);
+-- AlterTable warehouse_bins (skip if table not created yet — created in warehouse layout migrations)
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'warehouse_bins') THEN
+    ALTER TABLE "warehouse_bins" ADD COLUMN IF NOT EXISTS "maxUnits" INTEGER;
+    ALTER TABLE "warehouse_bins" ADD COLUMN IF NOT EXISTS "allowMixedSku" BOOLEAN NOT NULL DEFAULT true;
+    ALTER TABLE "warehouse_bins" ADD COLUMN IF NOT EXISTS "storageClass" VARCHAR(32);
+  END IF;
+END $$;
 
--- AlterTable purchase_orders
-ALTER TABLE "purchase_orders" ADD COLUMN IF NOT EXISTS "purchaseRequisitionId" INTEGER;
+-- AlterTable purchase_orders (table created in 20260429120000 — guard for shadow DB / ordering)
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'purchase_orders') THEN
+    ALTER TABLE "purchase_orders" ADD COLUMN IF NOT EXISTS "purchaseRequisitionId" INTEGER;
+  END IF;
+END $$;
 
 -- AlterTable grns
 ALTER TABLE "grns" ADD COLUMN IF NOT EXISTS "inboundShipmentId" INTEGER;
@@ -37,7 +47,9 @@ ALTER TABLE "grn_lines" ADD COLUMN IF NOT EXISTS "lineDiscrepancyNote" VARCHAR(5
 
 -- AddForeignKey vendors -> warehouses
 DO $$ BEGIN
- ALTER TABLE "vendors" ADD CONSTRAINT "vendors_preferredWarehouseId_fkey" FOREIGN KEY ("preferredWarehouseId") REFERENCES "warehouses"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'warehouses') THEN
+    ALTER TABLE "vendors" ADD CONSTRAINT "vendors_preferredWarehouseId_fkey" FOREIGN KEY ("preferredWarehouseId") REFERENCES "warehouses"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
 
@@ -67,7 +79,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS "purchase_requisitions_orgId_prNumber_key" ON 
 CREATE INDEX IF NOT EXISTS "purchase_requisitions_orgId_status_idx" ON "purchase_requisitions"("orgId", "status");
 
 ALTER TABLE "purchase_requisitions" ADD CONSTRAINT "purchase_requisitions_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "organizations"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-ALTER TABLE "purchase_requisitions" ADD CONSTRAINT "purchase_requisitions_warehouseId_fkey" FOREIGN KEY ("warehouseId") REFERENCES "warehouses"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'warehouses') THEN
+    ALTER TABLE "purchase_requisitions" ADD CONSTRAINT "purchase_requisitions_warehouseId_fkey" FOREIGN KEY ("warehouseId") REFERENCES "warehouses"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 ALTER TABLE "purchase_requisitions" ADD CONSTRAINT "purchase_requisitions_vendorId_fkey" FOREIGN KEY ("vendorId") REFERENCES "vendors"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 ALTER TABLE "purchase_requisitions" ADD CONSTRAINT "purchase_requisitions_requestedByUserId_fkey" FOREIGN KEY ("requestedByUserId") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 ALTER TABLE "purchase_requisitions" ADD CONSTRAINT "purchase_requisitions_approvedByUserId_fkey" FOREIGN KEY ("approvedByUserId") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE;
@@ -94,12 +111,19 @@ CREATE INDEX IF NOT EXISTS "purchase_requisition_lines_variantId_idx" ON "purcha
 ALTER TABLE "purchase_requisition_lines" ADD CONSTRAINT "purchase_requisition_lines_purchaseRequisitionId_fkey" FOREIGN KEY ("purchaseRequisitionId") REFERENCES "purchase_requisitions"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 ALTER TABLE "purchase_requisition_lines" ADD CONSTRAINT "purchase_requisition_lines_variantId_fkey" FOREIGN KEY ("variantId") REFERENCES "product_variants"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
--- FK purchase_orders -> purchase_requisitions
+-- FK purchase_orders -> purchase_requisitions (deferred until purchase_orders exists)
 DO $$ BEGIN
- ALTER TABLE "purchase_orders" ADD CONSTRAINT "purchase_orders_purchaseRequisitionId_fkey" FOREIGN KEY ("purchaseRequisitionId") REFERENCES "purchase_requisitions"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'purchase_orders') THEN
+    ALTER TABLE "purchase_orders" ADD CONSTRAINT "purchase_orders_purchaseRequisitionId_fkey" FOREIGN KEY ("purchaseRequisitionId") REFERENCES "purchase_requisitions"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
-CREATE INDEX IF NOT EXISTS "purchase_orders_purchaseRequisitionId_idx" ON "purchase_orders"("purchaseRequisitionId");
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'purchase_orders') THEN
+    CREATE INDEX IF NOT EXISTS "purchase_orders_purchaseRequisitionId_idx" ON "purchase_orders"("purchaseRequisitionId");
+  END IF;
+END $$;
 
 -- CreateTable inbound_shipments
 CREATE TABLE IF NOT EXISTS "inbound_shipments" (
@@ -126,8 +150,18 @@ CREATE INDEX IF NOT EXISTS "inbound_shipments_purchaseOrderId_idx" ON "inbound_s
 
 ALTER TABLE "inbound_shipments" ADD CONSTRAINT "inbound_shipments_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "organizations"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 ALTER TABLE "inbound_shipments" ADD CONSTRAINT "inbound_shipments_vendorId_fkey" FOREIGN KEY ("vendorId") REFERENCES "vendors"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
-ALTER TABLE "inbound_shipments" ADD CONSTRAINT "inbound_shipments_purchaseOrderId_fkey" FOREIGN KEY ("purchaseOrderId") REFERENCES "purchase_orders"("id") ON DELETE SET NULL ON UPDATE CASCADE;
-ALTER TABLE "inbound_shipments" ADD CONSTRAINT "inbound_shipments_shipToWarehouseId_fkey" FOREIGN KEY ("shipToWarehouseId") REFERENCES "warehouses"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'purchase_orders') THEN
+    ALTER TABLE "inbound_shipments" ADD CONSTRAINT "inbound_shipments_purchaseOrderId_fkey" FOREIGN KEY ("purchaseOrderId") REFERENCES "purchase_orders"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'warehouses') THEN
+    ALTER TABLE "inbound_shipments" ADD CONSTRAINT "inbound_shipments_shipToWarehouseId_fkey" FOREIGN KEY ("shipToWarehouseId") REFERENCES "warehouses"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
 -- CreateTable inbound_shipment_lines
 CREATE TABLE IF NOT EXISTS "inbound_shipment_lines" (
@@ -149,7 +183,12 @@ CREATE INDEX IF NOT EXISTS "inbound_shipment_lines_variantId_idx" ON "inbound_sh
 
 ALTER TABLE "inbound_shipment_lines" ADD CONSTRAINT "inbound_shipment_lines_inboundShipmentId_fkey" FOREIGN KEY ("inboundShipmentId") REFERENCES "inbound_shipments"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 ALTER TABLE "inbound_shipment_lines" ADD CONSTRAINT "inbound_shipment_lines_variantId_fkey" FOREIGN KEY ("variantId") REFERENCES "product_variants"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
-ALTER TABLE "inbound_shipment_lines" ADD CONSTRAINT "inbound_shipment_lines_purchaseOrderLineId_fkey" FOREIGN KEY ("purchaseOrderLineId") REFERENCES "purchase_order_lines"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'purchase_order_lines') THEN
+    ALTER TABLE "inbound_shipment_lines" ADD CONSTRAINT "inbound_shipment_lines_purchaseOrderLineId_fkey" FOREIGN KEY ("purchaseOrderLineId") REFERENCES "purchase_order_lines"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
 -- CreateTable putaway_tasks
 CREATE TABLE IF NOT EXISTS "putaway_tasks" (
@@ -181,7 +220,12 @@ CREATE INDEX IF NOT EXISTS "putaway_tasks_orgId_status_idx" ON "putaway_tasks"("
 CREATE INDEX IF NOT EXISTS "putaway_tasks_warehouseId_status_idx" ON "putaway_tasks"("warehouseId", "status");
 
 ALTER TABLE "putaway_tasks" ADD CONSTRAINT "putaway_tasks_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "organizations"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-ALTER TABLE "putaway_tasks" ADD CONSTRAINT "putaway_tasks_warehouseId_fkey" FOREIGN KEY ("warehouseId") REFERENCES "warehouses"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'warehouses') THEN
+    ALTER TABLE "putaway_tasks" ADD CONSTRAINT "putaway_tasks_warehouseId_fkey" FOREIGN KEY ("warehouseId") REFERENCES "warehouses"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 ALTER TABLE "putaway_tasks" ADD CONSTRAINT "putaway_tasks_grnId_fkey" FOREIGN KEY ("grnId") REFERENCES "grns"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 ALTER TABLE "putaway_tasks" ADD CONSTRAINT "putaway_tasks_grnLineId_fkey" FOREIGN KEY ("grnLineId") REFERENCES "grn_lines"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 ALTER TABLE "putaway_tasks" ADD CONSTRAINT "putaway_tasks_variantId_fkey" FOREIGN KEY ("variantId") REFERENCES "product_variants"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
@@ -219,7 +263,12 @@ CREATE INDEX IF NOT EXISTS "inbound_discrepancies_grnId_idx" ON "inbound_discrep
 ALTER TABLE "inbound_discrepancies" ADD CONSTRAINT "inbound_discrepancies_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "organizations"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 ALTER TABLE "inbound_discrepancies" ADD CONSTRAINT "inbound_discrepancies_grnId_fkey" FOREIGN KEY ("grnId") REFERENCES "grns"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 ALTER TABLE "inbound_discrepancies" ADD CONSTRAINT "inbound_discrepancies_grnLineId_fkey" FOREIGN KEY ("grnLineId") REFERENCES "grn_lines"("id") ON DELETE SET NULL ON UPDATE CASCADE;
-ALTER TABLE "inbound_discrepancies" ADD CONSTRAINT "inbound_discrepancies_purchaseOrderLineId_fkey" FOREIGN KEY ("purchaseOrderLineId") REFERENCES "purchase_order_lines"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'purchase_order_lines') THEN
+    ALTER TABLE "inbound_discrepancies" ADD CONSTRAINT "inbound_discrepancies_purchaseOrderLineId_fkey" FOREIGN KEY ("purchaseOrderLineId") REFERENCES "purchase_order_lines"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 ALTER TABLE "inbound_discrepancies" ADD CONSTRAINT "inbound_discrepancies_variantId_fkey" FOREIGN KEY ("variantId") REFERENCES "product_variants"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 ALTER TABLE "inbound_discrepancies" ADD CONSTRAINT "inbound_discrepancies_resolvedByUserId_fkey" FOREIGN KEY ("resolvedByUserId") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 

@@ -9,45 +9,23 @@
  * Core Principle: All staff are branch staff. Branch type determines available roles.
  */
 
-import { PrismaClient } from "@prisma/client";
+import { PrismaClient, type Prisma } from "@prisma/client";
+import type { WarehouseStaffRole } from "@prisma/client";
 import { createStaffInvite } from "./staffInvite.service";
 import { isStaffInviteDuplicatePendingError } from "./staffInvite.errors";
+import { getAllowedInviteRolesForBranch, normalizeRole } from "../constants/branchRoleMatrix";
+import { branchAccessPermissionUpsertDataForInviteAccept } from "./branchAccessPermissionInviteAccept";
 
-// Role definitions by branch type
-const ROLES_BY_BRANCH_TYPE: Record<string, string[]> = {
-  CLINIC: ["BRANCH_MANAGER", "BRANCH_STAFF", "SELLER", "DOCTOR"],
-  PHARMACY: ["BRANCH_MANAGER", "BRANCH_STAFF", "SELLER", "PHARMACIST"],
-  SHOP: ["BRANCH_MANAGER", "BRANCH_STAFF", "SELLER"],
-  DELIVERY_HUB: ["DELIVERY_MANAGER", "DELIVERY_STAFF"],
-  WAREHOUSE: [
-    "BRANCH_MANAGER",
-    "WAREHOUSE_MANAGER",
-    "RECEIVING_STAFF",
-    "DISPATCH_STAFF",
-    "INVENTORY_CONTROLLER",
-    "QC_OFFICER",
-    "AUDIT_OFFICER",
-  ],
-  CENTRAL_WAREHOUSE: [
-    "BRANCH_MANAGER",
-    "WAREHOUSE_MANAGER",
-    "RECEIVING_STAFF",
-    "DISPATCH_STAFF",
-    "INVENTORY_CONTROLLER",
-    "QC_OFFICER",
-    "AUDIT_OFFICER",
-  ],
-  DEFAULT: ["BRANCH_MANAGER", "BRANCH_STAFF", "SELLER"],
-};
+function branchShimFromTypeCodes(branchTypeCodes: string[]) {
+  return { types: branchTypeCodes.map((code) => ({ type: { code } })) };
+}
 
-// Warehouse-specific roles that need WarehouseStaffAssignment
-const WAREHOUSE_ROLES = [
+/** MemberRole values that should auto-link a warehouse when inviting on a warehouse-capable branch. */
+const WAREHOUSE_LINK_MEMBER_ROLES = [
   "WAREHOUSE_MANAGER",
   "RECEIVING_STAFF",
   "DISPATCH_STAFF",
-  "INVENTORY_CONTROLLER",
-  "QC_OFFICER",
-  "AUDIT_OFFICER",
+  "DELIVERY_STAFF",
 ];
 
 interface CreateStaffInvitationInput {
@@ -93,43 +71,23 @@ interface AcceptInvitationResult {
  * Validate if a role is allowed for a given branch type
  */
 export function isRoleAllowedForBranchType(role: string, branchTypeCodes: string[]): boolean {
-  const normalizedRole = role.toUpperCase().trim();
-
-  // Collect all allowed roles for the branch types
-  const allowedRoles = new Set<string>();
-
-  for (const typeCode of branchTypeCodes) {
-    const typeRoles = ROLES_BY_BRANCH_TYPE[typeCode] || ROLES_BY_BRANCH_TYPE.DEFAULT;
-    typeRoles.forEach((r) => allowedRoles.add(r));
-  }
-
-  // If no specific types, allow default roles
-  if (branchTypeCodes.length === 0) {
-    ROLES_BY_BRANCH_TYPE.DEFAULT.forEach((r) => allowedRoles.add(r));
-  }
-
-  return allowedRoles.has(normalizedRole);
+  const allowed = getAllowedInviteRolesForBranch(branchShimFromTypeCodes(branchTypeCodes));
+  return allowed.includes(normalizeRole(role));
 }
 
 /**
  * Get available roles for a branch type
  */
 export function getRolesForBranchType(branchTypeCodes: string[]): string[] {
-  const roles = new Set<string>();
-
-  for (const typeCode of branchTypeCodes) {
-    const typeRoles = ROLES_BY_BRANCH_TYPE[typeCode] || ROLES_BY_BRANCH_TYPE.DEFAULT;
-    typeRoles.forEach((r) => roles.add(r));
-  }
-
-  return Array.from(roles);
+  return getAllowedInviteRolesForBranch(branchShimFromTypeCodes(branchTypeCodes));
 }
 
 /**
- * Check if a role requires warehouse assignment
+ * Check if a role should auto-resolve warehouseId on branch invite (MemberRole warehouse/delivery ops only).
+ * QC/INVENTORY_CONTROLLER etc. use warehouse-target invites, not branch MemberRole.
  */
 export function isWarehouseRole(role: string): boolean {
-  return WAREHOUSE_ROLES.includes(role.toUpperCase().trim());
+  return WAREHOUSE_LINK_MEMBER_ROLES.includes(normalizeRole(role));
 }
 
 /**
@@ -148,11 +106,27 @@ function normalizePhone(phone: string | null | undefined): string | null {
   return phone.trim().replace(/\D/g, "");
 }
 
+/** Coerce invite / member role string to a WarehouseStaffRole for assignment rows. */
+function toWarehouseStaffRole(role: string | undefined | null): WarehouseStaffRole {
+  const u = String(role || "").toUpperCase();
+  if (
+    u === "WAREHOUSE_MANAGER" ||
+    u === "RECEIVING_STAFF" ||
+    u === "DISPATCH_STAFF" ||
+    u === "INVENTORY_CONTROLLER" ||
+    u === "QC_OFFICER" ||
+    u === "AUDIT_OFFICER"
+  ) {
+    return u as WarehouseStaffRole;
+  }
+  return "WAREHOUSE_MANAGER";
+}
+
 /**
  * Generate unique username from email/phone/displayName
  */
 async function generateUniqueUsername(
-  prisma: PrismaClient,
+  prisma: Prisma.TransactionClient | PrismaClient,
   input: { emailNorm: string; phoneNorm: string; displayName: string }
 ): Promise<string> {
   const base = input.displayName
@@ -428,7 +402,13 @@ export async function acceptStaffInvitation(
       },
     });
 
-    // Create or update BranchAccessPermission
+    // Create or update BranchAccessPermission (typed payload; no stray Prisma keys)
+    const bapInvitePayload = branchAccessPermissionUpsertDataForInviteAccept({
+      branchId: invite.branchId,
+      userId,
+      invitedByUserId: invite.invitedByUserId,
+      memberRole: invite.role ?? undefined,
+    });
     await tx.branchAccessPermission.upsert({
       where: {
         branchId_userId: {
@@ -436,16 +416,8 @@ export async function acceptStaffInvitation(
           userId: userId,
         },
       },
-      update: {
-        status: "APPROVED",
-        invitedByUserId: invite.invitedByUserId,
-      },
-      create: {
-        branchId: invite.branchId,
-        userId: userId,
-        status: "APPROVED",
-        invitedByUserId: invite.invitedByUserId,
-      },
+      create: bapInvitePayload.create,
+      update: bapInvitePayload.update,
     });
 
     // Create WarehouseStaffAssignment if warehouse role
@@ -477,11 +449,12 @@ export async function acceptStaffInvitation(
         }
 
         // Create or reactivate assignment
+        const whRole = toWarehouseStaffRole(invite.role);
         const existingAssignment = await tx.warehouseStaffAssignment.findFirst({
           where: {
             warehouseId: actualWarehouseId,
             userId: userId,
-            role: invite.role?.toUpperCase(),
+            role: whRole,
           },
         });
 
@@ -495,7 +468,7 @@ export async function acceptStaffInvitation(
             data: {
               warehouseId: actualWarehouseId,
               userId: userId,
-              role: invite.role?.toUpperCase(),
+              role: whRole,
               isActive: true,
             },
           });
@@ -663,27 +636,34 @@ export async function getStaffForBranch(
         include: {
           profile: true,
           auth: { select: { email: true, phone: true } },
-          warehouseAssignments: {
+          warehouseStaffAssignments: {
             where: { isActive: true },
             select: { role: true, warehouseId: true },
           },
+          branchAccessPermissions: {
+            where: { branchId },
+            take: 1,
+          },
         },
       },
-      accessPermission: true,
     },
   });
 
-  return branchMembers.map((bm) => ({
-    userId: bm.userId,
-    displayName: bm.user.profile?.displayName || null,
-    email: bm.user.auth?.email || null,
-    phone: bm.user.auth?.phone || null,
-    role: bm.role,
-    status: bm.status,
-    accessStatus: bm.accessPermission?.status || "PENDING",
-    isWarehouseStaff: bm.user.warehouseAssignments.length > 0,
-    warehouseRoles: bm.user.warehouseAssignments.map((wa) => wa.role),
-  }));
+  return branchMembers.map((bm) => {
+    const bap = bm.user.branchAccessPermissions[0];
+    const wa = bm.user.warehouseStaffAssignments;
+    return {
+      userId: bm.userId,
+      displayName: bm.user.profile?.displayName || null,
+      email: bm.user.auth?.email || null,
+      phone: bm.user.auth?.phone || null,
+      role: bm.role,
+      status: bm.status,
+      accessStatus: bap?.status ?? "PENDING",
+      isWarehouseStaff: wa.length > 0,
+      warehouseRoles: wa.map((w) => w.role),
+    };
+  });
 }
 
 /**

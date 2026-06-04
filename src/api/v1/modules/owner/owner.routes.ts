@@ -29,6 +29,7 @@ router.use(auth);
 router.get('/me', ctrl.getOwnerMe);
 router.get('/me/pets', ctrl.listMyPets);
 router.get('/me/pets/:petId', ctrl.getMyPet);
+router.get('/me/pets/:petId/vaccination-card', ctrl.getMyPetVaccinationCard);
 router.get('/me/pending-appointments', ctrl.getMyPendingAppointments);
 router.get('/profile', ctrl.getOwnerProfile);
 router.put('/profile', ctrl.upsertOwnerProfile);
@@ -89,6 +90,7 @@ router.post('/organizations/:id/cancel', ctrl.cancelOrganization);
 router.get('/branches', ctrl.listOwnerBranchesAll);
 
 // Branch Members (staff, sellers, delivery hub staff)
+router.get('/branches/:id/members/invite-allowed-roles', ctrl.getOwnerBranchInviteAllowedRoles);
 // Branch Member Invites (token-based; no temp password in API response) — requires VERIFIED KYC
 router.post('/branches/:id/members/invite', requireOwnerKycVerified, ctrl.inviteBranchMember);
 
@@ -138,6 +140,8 @@ router.use('/clinic/branches/:branchId/catalog/import', catalogImportRouter);
 router.get('/clinic/branches', requireOwnerPermission('clinic.overview.read', null), clinicCtrl.listClinicBranches);
 router.get('/clinic/network-stats', requireOwnerPermission('clinic.overview.read', null), clinicCtrl.getClinicNetworkStats);
 router.get('/clinic/branches/:branchId/dashboard-stats', requireOwnerPermission('clinic.overview.read', 'branch'), clinicCtrl.getClinicDashboardStats);
+router.get('/clinic/branches/:branchId/vaccine-inventory-mappings', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.getVaccineInventoryMappings);
+router.put('/clinic/branches/:branchId/vaccine-inventory-mappings/:vaccineTypeId', requireOwnerPermission('clinic.services.manage', 'branch'), clinicCtrl.upsertVaccineInventoryMapping);
 router.get('/clinic/branches/:branchId/modules/clinic', requireOwnerPermission('clinic.settings.read', 'branch'), clinicCtrl.getClinicModule);
 router.patch('/clinic/branches/:branchId/modules/clinic', requireOwnerPermission('clinic.settings.write', 'branch'), clinicCtrl.updateClinicModule);
 router.get('/clinic/branches/:branchId/settings', requireOwnerPermission('clinic.settings.read', 'branch'), clinicCtrl.getClinicSettings);
@@ -417,6 +421,8 @@ router.get('/hubs', ctrl.getHubs);
 // Central Warehouse (resolve or designate)
 router.get('/central-warehouse', ctrl.getCentralWarehouse);
 router.post('/central-warehouse', ctrl.postCentralWarehouse);
+// Enterprise: internal-transfer fulfillment queue (canonical summaries; excludes procurement intent)
+router.get('/warehouse/fulfillment-queue', ctrl.getWarehouseFulfillmentQueue);
 
 // Inventory locations: idempotent ensure default location per branch (for receipts dropdown)
 router.post('/inventory/locations/ensure-defaults', ctrl.ensureDefaultInventoryLocations);

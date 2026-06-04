@@ -185,8 +185,8 @@ DROP TABLE "producer_org_staff_factories";
 -- DropTable
 DROP TABLE "producer_permission_templates";
 
--- CreateTable
-CREATE TABLE "owner_discount_cards" (
+-- CreateTable (idempotent — canonical DDL also in 20260416140000 before POS FK; see governance docs)
+CREATE TABLE IF NOT EXISTS "owner_discount_cards" (
     "id" SERIAL NOT NULL,
     "userId" INTEGER NOT NULL,
     "orgId" INTEGER NOT NULL,
@@ -197,9 +197,9 @@ CREATE TABLE "owner_discount_cards" (
     "issuedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "expiresAt" TIMESTAMP(3),
     "issuedByUserId" INTEGER NOT NULL,
+    "membershipTierId" INTEGER,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
-
     CONSTRAINT "owner_discount_cards_pkey" PRIMARY KEY ("id")
 );
 
@@ -220,19 +220,19 @@ CREATE TABLE "emergency_doctor_approvals" (
 );
 
 -- CreateIndex
-CREATE UNIQUE INDEX "owner_discount_cards_cardNumber_key" ON "owner_discount_cards"("cardNumber");
+CREATE UNIQUE INDEX IF NOT EXISTS "owner_discount_cards_cardNumber_key" ON "owner_discount_cards"("cardNumber");
 
 -- CreateIndex
-CREATE INDEX "owner_discount_cards_userId_idx" ON "owner_discount_cards"("userId");
+CREATE INDEX IF NOT EXISTS "owner_discount_cards_userId_idx" ON "owner_discount_cards"("userId");
 
 -- CreateIndex
-CREATE INDEX "owner_discount_cards_orgId_idx" ON "owner_discount_cards"("orgId");
+CREATE INDEX IF NOT EXISTS "owner_discount_cards_orgId_idx" ON "owner_discount_cards"("orgId");
 
 -- CreateIndex
-CREATE INDEX "owner_discount_cards_branchId_idx" ON "owner_discount_cards"("branchId");
+CREATE INDEX IF NOT EXISTS "owner_discount_cards_branchId_idx" ON "owner_discount_cards"("branchId");
 
 -- CreateIndex
-CREATE INDEX "owner_discount_cards_cardNumber_idx" ON "owner_discount_cards"("cardNumber");
+CREATE INDEX IF NOT EXISTS "owner_discount_cards_cardNumber_idx" ON "owner_discount_cards"("cardNumber");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "emergency_doctor_approvals_appointmentId_key" ON "emergency_doctor_approvals"("appointmentId");
@@ -265,17 +265,22 @@ ALTER TABLE "products" ADD CONSTRAINT "products_medicineListingId_fkey" FOREIGN 
 -- AddForeignKey
 ALTER TABLE "stock_request_items" ADD CONSTRAINT "stock_request_items_cancelledByUserId_fkey" FOREIGN KEY ("cancelledByUserId") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
--- AddForeignKey
-ALTER TABLE "owner_discount_cards" ADD CONSTRAINT "owner_discount_cards_userId_fkey" FOREIGN KEY ("userId") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "owner_discount_cards" ADD CONSTRAINT "owner_discount_cards_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "organizations"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "owner_discount_cards" ADD CONSTRAINT "owner_discount_cards_branchId_fkey" FOREIGN KEY ("branchId") REFERENCES "branches"("id") ON DELETE SET NULL ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "owner_discount_cards" ADD CONSTRAINT "owner_discount_cards_issuedByUserId_fkey" FOREIGN KEY ("issuedByUserId") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+-- AddForeignKey (guarded — constraints may already exist when table was created in 20260416140000)
+DO $$ BEGIN
+  ALTER TABLE "owner_discount_cards" ADD CONSTRAINT "owner_discount_cards_userId_fkey" FOREIGN KEY ("userId") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  ALTER TABLE "owner_discount_cards" ADD CONSTRAINT "owner_discount_cards_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "organizations"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  ALTER TABLE "owner_discount_cards" ADD CONSTRAINT "owner_discount_cards_branchId_fkey" FOREIGN KEY ("branchId") REFERENCES "branches"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  ALTER TABLE "owner_discount_cards" ADD CONSTRAINT "owner_discount_cards_issuedByUserId_fkey" FOREIGN KEY ("issuedByUserId") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  ALTER TABLE "owner_discount_cards" ADD CONSTRAINT "owner_discount_cards_membershipTierId_fkey" FOREIGN KEY ("membershipTierId") REFERENCES "membership_tiers"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- AddForeignKey
 ALTER TABLE "emergency_doctor_approvals" ADD CONSTRAINT "emergency_doctor_approvals_appointmentId_fkey" FOREIGN KEY ("appointmentId") REFERENCES "appointments"("id") ON DELETE CASCADE ON UPDATE CASCADE;

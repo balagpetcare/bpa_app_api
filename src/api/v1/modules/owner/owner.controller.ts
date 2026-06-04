@@ -22,6 +22,7 @@ const {
   getEffectiveOrgIdsForOwnerPanel,
   getEffectiveBranchIdsForOwnerPanel,
 } = require('../../services/ownerPanelAccess.service');
+const centralizedLocationService = require('../../../../modules/location/location.service');
 
 const REQUIRED_OWNER_KYC_DOCS = ['NID_FRONT', 'NID_BACK', 'SELFIE_WITH_NID'];
 const KYC_EXPIRY_DAYS = Number(process.env.KYC_EXPIRY_DAYS || 45);
@@ -258,25 +259,27 @@ async function upsertBranchProfileDetails(prisma, branchId, data) {
   return prisma.branchProfileDetails.create({ data: { branchId, ...data } });
 }
 
-async function validateBdLocationRefs(prisma, { divisionId, districtId, upazilaId, areaId }) {
-  // All args optional; if provided must exist.
-  if (divisionId) {
-    const ok = await prisma.bdDivision.findUnique({ where: { id: divisionId } });
-    if (!ok) return { ok: false, message: 'Invalid divisionId' };
+async function validateBdLocationRefs(prisma, { divisionId, districtId, upazilaId, unionId, areaId }) {
+  const validated = await centralizedLocationService.validateSelection(prisma, {
+    divisionId,
+    districtId,
+    upazilaId,
+    unionId,
+    areaId,
+  });
+  if (!validated?.ok) {
+    return {
+      ok: false,
+      message: validated?.message || 'Invalid location selection',
+      errorCode: validated?.errorCode || 'INVALID_LOCATION',
+    };
   }
-  if (districtId) {
-    const ok = await prisma.bdDistrict.findUnique({ where: { id: districtId } });
-    if (!ok) return { ok: false, message: 'Invalid districtId' };
-  }
-  if (upazilaId) {
-    const ok = await prisma.bdUpazila.findUnique({ where: { id: upazilaId } });
-    if (!ok) return { ok: false, message: 'Invalid upazilaId' };
-  }
-  if (areaId) {
-    const ok = await prisma.bdArea.findUnique({ where: { id: areaId } });
-    if (!ok) return { ok: false, message: 'Invalid areaId' };
-  }
-  return { ok: true };
+  return {
+    ok: true,
+    normalized: validated.normalized,
+    pathEn: validated.pathEn,
+    pathBn: validated.pathBn,
+  };
 }
 
 // ----------------------------
@@ -401,6 +404,61 @@ exports.listMyPets = async (req, res) => {
   }
 };
 
+function startOfLocalDay(date) {
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function toSafeDateOrNull(value) {
+  if (!value) return null;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function mapOwnerVaccinationCardPet(pet) {
+  if (!pet) return null;
+  return {
+    id: pet.id,
+    name: pet.name ?? null,
+    sex: pet.sex ?? null,
+    dateOfBirth: pet.dateOfBirth ?? null,
+    animalTypeNameSnapshot: pet.animalTypeNameSnapshot ?? null,
+    breedNameSnapshot: pet.breedNameSnapshot ?? null,
+    subBreedNameSnapshot: pet.subBreedNameSnapshot ?? null,
+    colorNameSnapshot: pet.colorNameSnapshot ?? null,
+    sizeNameSnapshot: pet.sizeNameSnapshot ?? null,
+    animalType: pet.animalType ? { id: pet.animalType.id, name: pet.animalType.name ?? null } : null,
+    breed: pet.breed ? { id: pet.breed.id, name: pet.breed.name ?? null } : null,
+    subBreed: pet.subBreed ? { id: pet.subBreed.id, name: pet.subBreed.name ?? null } : null,
+    color: pet.color ? { id: pet.color.id, name: pet.color.name ?? null } : null,
+    size: pet.size ? { id: pet.size.id, name: pet.size.name ?? null } : null,
+  };
+}
+
+function buildOwnerVaccinationCardEntry(record, branchNameById, todayStart) {
+  const nextDueDate = toSafeDateOrNull(record?.nextDueDate);
+  const dueStatus =
+    nextDueDate == null
+      ? null
+      : nextDueDate < todayStart
+        ? 'OVERDUE'
+        : 'UPCOMING';
+
+  return {
+    vaccinationId: record.id,
+    vaccineTypeId: record.vaccineTypeId ?? null,
+    vaccineName: record.vaccineType?.name ?? null,
+    administeredAt: record.administeredAt ?? null,
+    nextDueDate,
+    manufacturer: record.manufacturer ?? null,
+    batchNumber: record.batchNumber ?? null,
+    branchName: record.branchId != null ? branchNameById.get(Number(record.branchId)) ?? null : null,
+    status: record.status || 'ACTIVE',
+    dueStatus,
+  };
+}
+
 /** GET /owner/me/pets/:petId — get one pet for current owner. */
 exports.getMyPet = async (req, res) => {
   try {
@@ -424,6 +482,80 @@ exports.getMyPet = async (req, res) => {
   }
 };
 
+/** GET /owner/me/pets/:petId/vaccination-card — owner-safe vaccination card for current owner. */
+exports.getMyPetVaccinationCard = async (req, res) => {
+  try {
+    const prisma = getPrisma(req);
+    const ownerUserId = asIntId(req.user?.id || req.auth?.userId);
+    const petId = asIntId(req.params.petId);
+    if (!ownerUserId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+    if (!petId) return res.status(400).json({ success: false, message: 'petId is required' });
+
+    const pet = await prisma.pet.findFirst({
+      where: { id: petId, userId: ownerUserId, deleted: false },
+      include: {
+        animalType: { select: { id: true, name: true } },
+        breed: { select: { id: true, name: true } },
+        subBreed: { select: { id: true, name: true } },
+        color: { select: { id: true, name: true } },
+        size: { select: { id: true, name: true } },
+      },
+    });
+    if (!pet) return res.status(404).json({ success: false, message: 'Pet not found' });
+
+    const vaccinationRows = await prisma.vaccination.findMany({
+      where: {
+        petId,
+        status: { not: 'VOIDED' },
+      },
+      include: {
+        vaccineType: { select: { id: true, name: true } },
+      },
+      orderBy: [
+        { administeredAt: 'desc' },
+        { id: 'desc' },
+      ],
+    });
+
+    const branchIds = [...new Set(vaccinationRows.map((row) => asIntId(row.branchId)).filter(Boolean))];
+    const branchRows =
+      branchIds.length > 0
+        ? await prisma.branch.findMany({
+            where: { id: { in: branchIds } },
+            select: { id: true, name: true },
+          })
+        : [];
+    const branchNameById = new Map(branchRows.map((row) => [Number(row.id), row.name ?? null]));
+    const todayStart = startOfLocalDay(new Date());
+
+    const vaccinations = vaccinationRows.map((row) =>
+      buildOwnerVaccinationCardEntry(row, branchNameById, todayStart)
+    );
+
+    const nextDue = vaccinations
+      .filter((row) => row.nextDueDate != null)
+      .sort((a, b) => new Date(a.nextDueDate).getTime() - new Date(b.nextDueDate).getTime());
+
+    const overdueCount = nextDue.filter((row) => row.dueStatus === 'OVERDUE').length;
+    const upcomingCount = nextDue.filter((row) => row.dueStatus === 'UPCOMING').length;
+
+    res.json({
+      success: true,
+      data: {
+        pet: mapOwnerVaccinationCardPet(pet),
+        card: {
+          vaccinations,
+          nextDue,
+          overdueCount,
+          upcomingCount,
+        },
+      },
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e?.message || 'Server error' });
+  }
+};
+
 exports.upsertOwnerProfile = async (req, res) => {
   try {
     const prisma = getPrisma(req);
@@ -439,12 +571,21 @@ exports.upsertOwnerProfile = async (req, res) => {
     const divisionId = asIntId(req.body?.divisionId);
     const districtId = asIntId(req.body?.districtId);
     const upazilaId = asIntId(req.body?.upazilaId);
+    const unionId = asIntId(req.body?.unionId);
     const areaId = asIntId(req.body?.areaId);
 
     // Only validate BD refs when legacy division/district/upazila/area are provided
-    if (divisionId || districtId || upazilaId || areaId) {
-      const vr = await validateBdLocationRefs(prisma, { divisionId, districtId, upazilaId, areaId });
+    let normalizedLocation = {
+      divisionId: divisionId || null,
+      districtId: districtId || null,
+      upazilaId: upazilaId || null,
+      unionId: unionId || null,
+      areaId: areaId || null,
+    };
+    if (divisionId || districtId || upazilaId || unionId || areaId) {
+      const vr = await validateBdLocationRefs(prisma, { divisionId, districtId, upazilaId, unionId, areaId });
       if (!vr.ok) return res.status(400).json({ success: false, message: vr.message });
+      normalizedLocation = vr.normalized || normalizedLocation;
     }
 
     const before = await prisma.ownerProfile.findUnique({ where: { userId: ownerUserId } });
@@ -464,17 +605,19 @@ exports.upsertOwnerProfile = async (req, res) => {
       create: {
         userId: ownerUserId,
         ...baseData,
-        divisionId: divisionId || null,
-        districtId: districtId || null,
-        upazilaId: upazilaId || null,
-        areaId: areaId || null,
+        divisionId: normalizedLocation.divisionId,
+        districtId: normalizedLocation.districtId,
+        upazilaId: normalizedLocation.upazilaId,
+        unionId: normalizedLocation.unionId,
+        areaId: normalizedLocation.areaId,
       },
       update: {
         ...baseData,
-        divisionId: divisionId !== undefined ? divisionId : undefined,
-        districtId: districtId !== undefined ? districtId : undefined,
-        upazilaId: upazilaId !== undefined ? upazilaId : undefined,
-        areaId: areaId !== undefined ? areaId : undefined,
+        divisionId: normalizedLocation.divisionId,
+        districtId: normalizedLocation.districtId,
+        upazilaId: normalizedLocation.upazilaId,
+        unionId: normalizedLocation.unionId,
+        areaId: normalizedLocation.areaId,
       }
     });
 
@@ -885,6 +1028,31 @@ exports.createOrganization = async (req, res) => {
     // This project already uses Organization.status = PartnerStatus
     // We'll store location + extra fields inside addressJson to keep DB stable.
     const addressJson = req.body?.addressJson && typeof req.body.addressJson === 'object' ? req.body.addressJson : {};
+    const requestedLocation = {
+      divisionId: asIntId(req.body?.divisionId) ?? asIntId(addressJson?.divisionId),
+      districtId: asIntId(req.body?.districtId) ?? asIntId(addressJson?.districtId),
+      upazilaId: asIntId(req.body?.upazilaId) ?? asIntId(addressJson?.upazilaId),
+      unionId: asIntId(req.body?.unionId) ?? asIntId(addressJson?.unionId),
+      areaId: asIntId(req.body?.bdAreaId) ?? asIntId(req.body?.areaId) ?? asIntId(addressJson?.bdAreaId) ?? asIntId(addressJson?.areaId),
+    };
+    let normalizedLocation = {
+      divisionId: requestedLocation.divisionId || null,
+      districtId: requestedLocation.districtId || null,
+      upazilaId: requestedLocation.upazilaId || null,
+      unionId: requestedLocation.unionId || null,
+      areaId: requestedLocation.areaId || null,
+    };
+    if (
+      requestedLocation.divisionId ||
+      requestedLocation.districtId ||
+      requestedLocation.upazilaId ||
+      requestedLocation.unionId ||
+      requestedLocation.areaId
+    ) {
+      const validatedLocation = await validateBdLocationRefs(prisma, requestedLocation);
+      if (!validatedLocation.ok) return res.status(400).json({ success: false, message: validatedLocation.message });
+      normalizedLocation = validatedLocation.normalized || normalizedLocation;
+    }
     const { validateAndNormalizeLocation, locationFromAddressJson } = require('./utils/locationValidation');
     let locationData = null;
     if (req.body?.location && typeof req.body.location === 'object') {
@@ -920,6 +1088,11 @@ exports.createOrganization = async (req, res) => {
         // email is not in current Organization model; keep inside addressJson
         status: 'NOT_APPLIED',
         countryId,
+        divisionId: normalizedLocation.divisionId,
+        districtId: normalizedLocation.districtId,
+        upazilaId: normalizedLocation.upazilaId,
+        unionId: normalizedLocation.unionId,
+        areaId: normalizedLocation.areaId,
         addressJson: {
           ...addressJson,
           email: req.body?.email ? String(req.body.email).trim() : null,
@@ -928,10 +1101,11 @@ exports.createOrganization = async (req, res) => {
           dhakaAreaId: asIntId(req.body?.areaId) || asIntId(req.body?.dhakaAreaId),
 
           // National BD hierarchy (preferred)
-          divisionId: asIntId(req.body?.divisionId),
-          districtId: asIntId(req.body?.districtId),
-          upazilaId: asIntId(req.body?.upazilaId),
-          bdAreaId: asIntId(req.body?.bdAreaId),
+          divisionId: normalizedLocation.divisionId,
+          districtId: normalizedLocation.districtId,
+          upazilaId: normalizedLocation.upazilaId,
+          unionId: normalizedLocation.unionId,
+          bdAreaId: normalizedLocation.areaId,
 
           // Cached text for UI
           fullPathText: req.body?.fullPathText ? String(req.body.fullPathText) : addressJson?.fullPathText || null,
@@ -1120,6 +1294,7 @@ exports.updateOrganization = async (req, res) => {
     if (req.body?.divisionId !== undefined) mergedAddress.divisionId = asIntId(req.body.divisionId);
     if (req.body?.districtId !== undefined) mergedAddress.districtId = asIntId(req.body.districtId);
     if (req.body?.upazilaId !== undefined) mergedAddress.upazilaId = asIntId(req.body.upazilaId);
+    if (req.body?.unionId !== undefined) mergedAddress.unionId = asIntId(req.body.unionId);
     if (req.body?.bdAreaId !== undefined) mergedAddress.bdAreaId = asIntId(req.body.bdAreaId);
 
     if (req.body?.fullPathText !== undefined) mergedAddress.fullPathText = req.body.fullPathText ? String(req.body.fullPathText) : null;
@@ -1128,12 +1303,41 @@ exports.updateOrganization = async (req, res) => {
     // so the owner explicitly re-submits the latest info.
     const nextStatus = org.status === 'PENDING_REVIEW' ? 'NOT_APPLIED' : org.status;
 
+    let normalizedLocation = {
+      divisionId: asIntId(mergedAddress.divisionId),
+      districtId: asIntId(mergedAddress.districtId),
+      upazilaId: asIntId(mergedAddress.upazilaId),
+      unionId: asIntId(mergedAddress.unionId),
+      areaId: asIntId(mergedAddress.bdAreaId) ?? asIntId(mergedAddress.areaId),
+    };
+    if (
+      normalizedLocation.divisionId ||
+      normalizedLocation.districtId ||
+      normalizedLocation.upazilaId ||
+      normalizedLocation.unionId ||
+      normalizedLocation.areaId
+    ) {
+      const validatedLocation = await validateBdLocationRefs(prisma, normalizedLocation);
+      if (!validatedLocation.ok) return res.status(400).json({ success: false, message: validatedLocation.message });
+      normalizedLocation = validatedLocation.normalized || normalizedLocation;
+      mergedAddress.divisionId = normalizedLocation.divisionId;
+      mergedAddress.districtId = normalizedLocation.districtId;
+      mergedAddress.upazilaId = normalizedLocation.upazilaId;
+      mergedAddress.unionId = normalizedLocation.unionId;
+      mergedAddress.bdAreaId = normalizedLocation.areaId;
+    }
+
     const updated = await prisma.organization.update({
       where: { id },
       data: {
         name: req.body?.name ? String(req.body.name).trim() : org.name,
         supportPhone: req.body?.supportPhone !== undefined ? (req.body.supportPhone ? String(req.body.supportPhone).trim() : null) : org.supportPhone,
         status: nextStatus,
+        divisionId: normalizedLocation.divisionId || null,
+        districtId: normalizedLocation.districtId || null,
+        upazilaId: normalizedLocation.upazilaId || null,
+        unionId: normalizedLocation.unionId || null,
+        areaId: normalizedLocation.areaId || null,
         addressJson: mergedAddress
       }
     });
@@ -1413,6 +1617,31 @@ exports.createBranch = async (req, res) => {
     const typeCodes = Array.isArray(req.body?.typeCodes) ? req.body.typeCodes.map(String) : [];
 
     const addressJson = req.body?.addressJson && typeof req.body.addressJson === 'object' ? req.body.addressJson : {};
+    const requestedLocation = {
+      divisionId: asIntId(req.body?.divisionId) ?? asIntId(addressJson?.divisionId),
+      districtId: asIntId(req.body?.districtId) ?? asIntId(addressJson?.districtId),
+      upazilaId: asIntId(req.body?.upazilaId) ?? asIntId(addressJson?.upazilaId),
+      unionId: asIntId(req.body?.unionId) ?? asIntId(addressJson?.unionId),
+      areaId: asIntId(req.body?.bdAreaId) ?? asIntId(req.body?.areaId) ?? asIntId(addressJson?.bdAreaId) ?? asIntId(addressJson?.areaId),
+    };
+    let normalizedLocation = {
+      divisionId: requestedLocation.divisionId || null,
+      districtId: requestedLocation.districtId || null,
+      upazilaId: requestedLocation.upazilaId || null,
+      unionId: requestedLocation.unionId || null,
+      areaId: requestedLocation.areaId || null,
+    };
+    if (
+      requestedLocation.divisionId ||
+      requestedLocation.districtId ||
+      requestedLocation.upazilaId ||
+      requestedLocation.unionId ||
+      requestedLocation.areaId
+    ) {
+      const validatedLocation = await validateBdLocationRefs(prisma, requestedLocation);
+      if (!validatedLocation.ok) return res.status(400).json({ success: false, message: validatedLocation.message });
+      normalizedLocation = validatedLocation.normalized || normalizedLocation;
+    }
 
     const created = await prisma.branch.create({
       data: {
@@ -1420,6 +1649,11 @@ exports.createBranch = async (req, res) => {
         name,
         status: 'DRAFT',
         verificationStatus: 'UNSUBMITTED',
+        divisionId: normalizedLocation.divisionId,
+        districtId: normalizedLocation.districtId,
+        upazilaId: normalizedLocation.upazilaId,
+        unionId: normalizedLocation.unionId,
+        areaId: normalizedLocation.areaId,
         addressJson: {
           ...addressJson,
           // Dhaka (optional)
@@ -1427,10 +1661,11 @@ exports.createBranch = async (req, res) => {
           dhakaAreaId: asIntId(req.body?.areaId) || asIntId(req.body?.dhakaAreaId),
 
           // National BD hierarchy (preferred)
-          divisionId: asIntId(req.body?.divisionId),
-          districtId: asIntId(req.body?.districtId),
-          upazilaId: asIntId(req.body?.upazilaId),
-          bdAreaId: asIntId(req.body?.bdAreaId),
+          divisionId: normalizedLocation.divisionId,
+          districtId: normalizedLocation.districtId,
+          upazilaId: normalizedLocation.upazilaId,
+          unionId: normalizedLocation.unionId,
+          bdAreaId: normalizedLocation.areaId,
 
           // Cached text for UI
           fullPathText: req.body?.fullPathText ? String(req.body.fullPathText) : addressJson?.fullPathText || null,
@@ -1534,6 +1769,7 @@ exports.listOwnerBranchesAll = async (req, res) => {
       orderBy: { createdAt: 'desc' },
       include: {
         org: { select: { id: true, name: true } },
+        types: { include: { type: { select: { code: true, nameEn: true } } } },
       },
     });
 
@@ -1654,11 +1890,45 @@ exports.updateBranch = async (req, res) => {
     };
     if (req.body?.cityCorporationId !== undefined) mergedAddress.cityCorporationId = asIntId(req.body.cityCorporationId);
     if (req.body?.areaId !== undefined) mergedAddress.areaId = asIntId(req.body.areaId);
+    if (req.body?.divisionId !== undefined) mergedAddress.divisionId = asIntId(req.body.divisionId);
+    if (req.body?.districtId !== undefined) mergedAddress.districtId = asIntId(req.body.districtId);
+    if (req.body?.upazilaId !== undefined) mergedAddress.upazilaId = asIntId(req.body.upazilaId);
+    if (req.body?.unionId !== undefined) mergedAddress.unionId = asIntId(req.body.unionId);
+    if (req.body?.bdAreaId !== undefined) mergedAddress.bdAreaId = asIntId(req.body.bdAreaId);
+
+    let normalizedLocation = {
+      divisionId: asIntId(mergedAddress.divisionId),
+      districtId: asIntId(mergedAddress.districtId),
+      upazilaId: asIntId(mergedAddress.upazilaId),
+      unionId: asIntId(mergedAddress.unionId),
+      areaId: asIntId(mergedAddress.bdAreaId) ?? asIntId(mergedAddress.areaId),
+    };
+    if (
+      normalizedLocation.divisionId ||
+      normalizedLocation.districtId ||
+      normalizedLocation.upazilaId ||
+      normalizedLocation.unionId ||
+      normalizedLocation.areaId
+    ) {
+      const validatedLocation = await validateBdLocationRefs(prisma, normalizedLocation);
+      if (!validatedLocation.ok) return res.status(400).json({ success: false, message: validatedLocation.message });
+      normalizedLocation = validatedLocation.normalized || normalizedLocation;
+      mergedAddress.divisionId = normalizedLocation.divisionId;
+      mergedAddress.districtId = normalizedLocation.districtId;
+      mergedAddress.upazilaId = normalizedLocation.upazilaId;
+      mergedAddress.unionId = normalizedLocation.unionId;
+      mergedAddress.bdAreaId = normalizedLocation.areaId;
+    }
 
     const updated = await prisma.branch.update({
       where: { id },
       data: {
         name: req.body?.name ? String(req.body.name).trim() : branch.name,
+        divisionId: normalizedLocation.divisionId || null,
+        districtId: normalizedLocation.districtId || null,
+        upazilaId: normalizedLocation.upazilaId || null,
+        unionId: normalizedLocation.unionId || null,
+        areaId: normalizedLocation.areaId || null,
         addressJson: mergedAddress
       }
     });
@@ -1738,6 +2008,7 @@ exports.saveBranchProfileDraft = async (req, res) => {
             divisionId: asIntId(addressJson.divisionId),
             districtId: asIntId(addressJson.districtId),
             upazilaId: asIntId(addressJson.upazilaId),
+            unionId: asIntId(addressJson.unionId),
             areaId: areaId,
           });
           if (!vr.ok) return res.status(400).json({ success: false, message: vr.message });
@@ -1962,18 +2233,13 @@ exports.cancelBranch = async (req, res) => {
  * ================================ */
 
 const prismaClient = require("../../../../infrastructure/db/prismaClient");
-
-function hasDeliveryHubType(branch) {
-  const links = branch?.types || [];
-  return links.some((x) => String(x?.type?.code || "").toUpperCase() === "DELIVERY_HUB");
-}
-
-function isRoleAllowedForBranch(isDeliveryHub, role) {
-  const r = String(role || "");
-  if (["OWNER", "ORG_ADMIN"].includes(r)) return false;
-  if (isDeliveryHub) return ["DELIVERY_MANAGER", "DELIVERY_STAFF"].includes(r);
-  return ["BRANCH_MANAGER", "BRANCH_STAFF", "SELLER"].includes(r);
-}
+const {
+  canInviteRole,
+  normalizeRole,
+  getAllowedInviteRolesForBranch,
+  getPrimaryBranchTypeCode,
+  labelsForInviteRoles,
+} = require("../../constants/branchRoleMatrix");
 
 // GET /api/v1/owner/branches/:id/members
 exports.listBranchMembers = async (req, res) => {
@@ -2043,9 +2309,13 @@ exports.addBranchMember = async (req, res) => {
     });
     if (!branch) return res.status(404).json({ success: false, message: "Branch not found" });
 
-    const isDeliveryHub = hasDeliveryHubType(branch);
-    if (!isRoleAllowedForBranch(isDeliveryHub, role)) {
-      return res.status(400).json({ success: false, message: "Invalid role for this branch type" });
+    const roleNorm = normalizeRole(role);
+    const inviteCheck = canInviteRole("OWNER", roleNorm, branch);
+    if (!inviteCheck.allowed) {
+      return res.status(400).json({
+        success: false,
+        message: inviteCheck.message || "Invalid role for this branch type",
+      });
     }
 
     const row = await prismaClient.branchMember.create({
@@ -2053,7 +2323,7 @@ exports.addBranchMember = async (req, res) => {
         orgId: branch.orgId,
         branchId,
         userId: Number(userId),
-        role: String(role),
+        role: roleNorm,
         status: status ? String(status) : "ACTIVE",
         invitedByUserId: req.user.id,
       },
@@ -2083,15 +2353,21 @@ exports.updateBranchMember = async (req, res) => {
     });
     if (!branch) return res.status(404).json({ success: false, message: "Branch not found" });
 
-    const isDeliveryHub = hasDeliveryHubType(branch);
-    if (role && !isRoleAllowedForBranch(isDeliveryHub, role)) {
-      return res.status(400).json({ success: false, message: "Invalid role for this branch type" });
+    if (role) {
+      const roleNorm = normalizeRole(role);
+      const inviteCheck = canInviteRole("OWNER", roleNorm, branch);
+      if (!inviteCheck.allowed) {
+        return res.status(400).json({
+          success: false,
+          message: inviteCheck.message || "Invalid role for this branch type",
+        });
+      }
     }
 
     const updated = await prismaClient.branchMember.update({
       where: { id: memberId },
       data: {
-        ...(role ? { role: String(role) } : {}),
+        ...(role ? { role: normalizeRole(role) } : {}),
         ...(status ? { status: String(status) } : {}),
       },
     });
@@ -2773,7 +3049,7 @@ exports.updateOwnerInvitation = async (req, res) => {
 
     const invite = await prisma.staffInvite.findFirst({
       where: { id, org: { ownerUserId } },
-      select: { id: true, status: true, branchId: true, orgId: true },
+      select: { id: true, status: true, branchId: true, orgId: true, targetType: true },
     });
 
     if (!invite) return res.status(404).json({ success: false, message: 'Invitation not found' });
@@ -2784,7 +3060,25 @@ exports.updateOwnerInvitation = async (req, res) => {
     const { role, displayName, email, phone, inviteAsDoctor } = req.body;
     const updateData: any = {};
 
-    if (role !== undefined) updateData.role = String(role);
+    if (role !== undefined) {
+      const roleNorm = normalizeRole(role);
+      if (invite.targetType === "BRANCH" && invite.branchId) {
+        const branchForRole = await prisma.branch.findUnique({
+          where: { id: invite.branchId },
+          select: { types: { select: { type: { select: { code: true } } } } },
+        });
+        if (branchForRole) {
+          const check = canInviteRole("OWNER", roleNorm, branchForRole);
+          if (!check.allowed) {
+            return res.status(400).json({
+              success: false,
+              message: check.message || "Invalid role for this branch type",
+            });
+          }
+        }
+      }
+      updateData.role = roleNorm;
+    }
     if (displayName !== undefined) updateData.displayName = String(displayName || '').trim();
     if (email !== undefined) updateData.email = String(email || '').trim();
     if (phone !== undefined) updateData.phone = String(phone || '').trim();
@@ -2938,6 +3232,44 @@ exports.markOwnerNotificationRead = async (req, res) => {
     return res.json({ success: true });
   } catch (e) {
     return res.status(500).json({ success: false, message: e?.message || 'Server error' });
+  }
+};
+
+/**
+ * GET /api/v1/owner/branches/:id/members/invite-allowed-roles
+ * Roles the owner may assign when inviting to this branch (matches branchRoleMatrix).
+ */
+exports.getOwnerBranchInviteAllowedRoles = async (req, res) => {
+  try {
+    const branchId = Number(req.params.id);
+    const ownerUserId = asIntId(req.user?.id || req.auth?.userId);
+    if (!ownerUserId) return res.status(401).json({ success: false, message: "Unauthorized" });
+
+    const branchIds = await getEffectiveBranchIdsForOwnerPanel(prismaClient, ownerUserId);
+    if (!branchIds.includes(branchId)) {
+      return res.status(404).json({ success: false, message: "Branch not found" });
+    }
+
+    const branch = await prismaClient.branch.findUnique({
+      where: { id: branchId },
+      select: { id: true, types: { select: { type: { select: { code: true, nameEn: true } } } } },
+    });
+    if (!branch) return res.status(404).json({ success: false, message: "Branch not found" });
+
+    const allowedRoles = getAllowedInviteRolesForBranch(branch);
+    const primaryBranchTypeCode = getPrimaryBranchTypeCode(branch);
+    const roleLabels = labelsForInviteRoles(allowedRoles);
+
+    return res.json({
+      success: true,
+      data: { allowedRoles, primaryBranchTypeCode, roleLabels },
+    });
+  } catch (e) {
+    const isProd = String(process.env.NODE_ENV || "").toLowerCase() === "production";
+    return res.status(500).json({
+      success: false,
+      message: isProd ? "Server error" : e?.message || "Server error",
+    });
   }
 };
 
@@ -4008,6 +4340,25 @@ exports.getCentralWarehouse = async (req, res) => {
  * POST /api/v1/owner/central-warehouse
  * Designate/create a central warehouse location. Body: branchId, name?, code?
  */
+exports.getWarehouseFulfillmentQueue = async (req, res) => {
+  try {
+    const prisma = getPrisma(req);
+    const userId = asIntId(req.user?.id || req.auth?.userId);
+    if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+    const orgIds = await getEffectiveOrgIdsForOwnerPanel(prisma, userId);
+    if (!orgIds.length) return res.json({ success: true, data: { items: [] } });
+    const { listWarehouseFulfillmentQueue } = require('../../services/warehouseFulfillmentQueue.service');
+    const segRaw = String(req.query?.segment || 'INTERNAL_TRANSFER').toUpperCase();
+    const segment =
+      segRaw === 'ALL' || segRaw === 'PROCUREMENT' || segRaw === 'INTERNAL_TRANSFER' ? segRaw : 'INTERNAL_TRANSFER';
+    const items = await listWarehouseFulfillmentQueue(orgIds, { segment });
+    return res.json({ success: true, data: { items } });
+  } catch (e) {
+    console.error('getWarehouseFulfillmentQueue error:', e);
+    return res.status(500).json({ success: false, message: e?.message || 'Server error' });
+  }
+};
+
 exports.postCentralWarehouse = async (req, res) => {
   try {
     const prisma = getPrisma(req);

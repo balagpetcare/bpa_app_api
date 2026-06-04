@@ -6,6 +6,11 @@ const prisma =
   require("../../../../infrastructure/db/prismaClient").default ??
   require("../../../../infrastructure/db/prismaClient");
 const clinicalStockLedgerService = require("./clinicalStockLedger.service");
+const { createBranchItemBatchInTx } = require("./clinicalItemStock.service");
+const {
+  isVaccineClinicalItem,
+  isExpiredLotDate,
+} = require("./vaccineInventoryBridge.service");
 
 async function generateTransferNo(orgId: number): Promise<string> {
   const count = await prisma.clinicalStockTransfer.count({
@@ -142,18 +147,60 @@ export async function receiveTransfer(
       }))?.id;
       if (!variantId) continue;
 
-      await clinicalStockLedgerService.recordClinicalLedgerEntry(tx, {
-        orgId: transfer.orgId,
-        branchId: transfer.toBranchId,
-        clinicalItemId: line.clinicalItemId,
-        variantId,
-        txnType: "TRANSFER_IN",
-        quantityDelta: netReceived,
-        refType: "TRANSFER",
-        refId: String(transfer.id),
-        note: `Received from transfer ${transfer.transferNo}`,
-        actorId: receivedById,
+      const clinicalItem = await tx.clinicalItem.findUnique({
+        where: { id: line.clinicalItemId },
+        include: { category: true },
       });
+      const useBatchReceive =
+        clinicalItem &&
+        (clinicalItem.requiresBatch === true ||
+          clinicalItem.requiresExpiry === true ||
+          isVaccineClinicalItem(clinicalItem));
+
+      const existingMirror = await tx.branchItemBatch.findFirst({
+        where: { sourceClinicalTransferItemId: line.id },
+      });
+      if (existingMirror) {
+        await tx.clinicalStockTransferItem.update({
+          where: { id: line.id },
+          data: { qtyReceived: netReceived, qtyDamaged: qtyDamaged || undefined },
+        });
+        continue;
+      }
+
+      if (useBatchReceive) {
+        const allowExpired = String(process.env.ALLOW_EXPIRED_VACCINE_CLINICAL_SYNC || "").toLowerCase() === "true";
+        if (line.expiryDate && !allowExpired && isExpiredLotDate(line.expiryDate)) {
+          throw new Error(
+            "Expired vaccine batch cannot be received unless ALLOW_EXPIRED_VACCINE_CLINICAL_SYNC is enabled"
+          );
+        }
+        const batchNo =
+          line.batchNo != null && String(line.batchNo).trim().length > 0
+            ? String(line.batchNo).trim()
+            : `CST-${transfer.id}-${line.id}`;
+        await createBranchItemBatchInTx(tx, transfer.toBranchId, line.clinicalItemId, variantId, {
+          batchNo,
+          expiryDate: line.expiryDate ?? undefined,
+          receivedQty: netReceived,
+          purchaseCost: null,
+          actorId: receivedById,
+          sourceClinicalTransferItemId: line.id,
+        });
+      } else {
+        await clinicalStockLedgerService.recordClinicalLedgerEntry(tx, {
+          orgId: transfer.orgId,
+          branchId: transfer.toBranchId,
+          clinicalItemId: line.clinicalItemId,
+          variantId,
+          txnType: "TRANSFER_IN",
+          quantityDelta: netReceived,
+          refType: "TRANSFER",
+          refId: String(transfer.id),
+          note: `Received from transfer ${transfer.transferNo}`,
+          actorId: receivedById,
+        });
+      }
 
       await tx.clinicalStockTransferItem.update({
         where: { id: line.id },

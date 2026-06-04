@@ -131,3 +131,11 @@ ALTER TABLE "inventory_locations" ADD COLUMN "warehouseId" INTEGER;
 CREATE INDEX "inventory_locations_warehouseId_idx" ON "inventory_locations"("warehouseId");
 
 ALTER TABLE "inventory_locations" ADD CONSTRAINT "inventory_locations_warehouseId_fkey" FOREIGN KEY ("warehouseId") REFERENCES "warehouses"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- Composite indexes deferred from 20260402180000 (that migration runs before warehouseId / warehouses exist)
+CREATE INDEX IF NOT EXISTS "inventory_locations_warehouseId_isActive_idx"
+  ON "inventory_locations" ("warehouseId", "isActive");
+CREATE INDEX IF NOT EXISTS "inventory_locations_branchId_warehouseId_idx"
+  ON "inventory_locations" ("branchId", "warehouseId");
+CREATE INDEX IF NOT EXISTS "warehouses_orgId_isActive_idx"
+  ON "warehouses" ("orgId", "isActive");

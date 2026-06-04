@@ -92,12 +92,21 @@ router.use("/ads", require("./modules/ads/ads.routes"));
 
 // Locations (legacy BD hierarchy – UI uses /geo for unified; these kept for backward compat)
 router.use("/locations", require("./modules/locations/locations.routes"));
+// Centralized location-master module (normalized hierarchy + coverage + validation)
+router.use("/location-master", require("../../modules/location/location.routes"));
 
 // Geo (static countries/states + Nominatim proxy - no DB for dropdowns)
 router.use("/geo", require("./modules/geo/geo.routes"));
 
 // Public master data (dropdowns)
 router.use("/meta", require("./modules/meta/meta.routes"));
+
+// 2026 Vaccination Campaign (public booking, staff ops, admin)
+mountWith503("/campaign", "./modules/campaign/campaign.routes");
+// Unified payment gateway (Strategy Pattern — PAYMENT_PROVIDER env)
+mountWith503("/payments", "./payments/payment.routes");
+// BPA app campaign linking (authenticated)
+router.use("/campaign-link", require("./modules/campaign/campaignLink.routes").default);
 
 // Planning/docs (served for Next.js admin panel) – mount explicitly so /docs/list and /docs/:slug are registered
 const docsController = require("./modules/docs/docs.controller");
@@ -185,6 +194,9 @@ router.use("/workspace", countryScopeGuard, require("./modules/workspace/workspa
 router.use("/country/access-invites", require("./modules/country_access_invites/country_access_invites.routes"));
 router.use("/country/staff", require("./modules/country_staff/country_staff.routes"));
 
+// Staff panel queues (branch-scoped; auth + branch access in handler)
+router.use("/staff", countryScopeGuard, require("./modules/staff_branch/staffBranchQueues.routes"));
+
 // Branch namespace (staff actions)
 router.use("/branches", countryScopeGuard, require("./modules/branches/branches.routes"));
 
@@ -240,6 +252,9 @@ router.use("/orders", countryScopeGuard, require("./modules/orders/orders.routes
 
 // POS System (MVP Core Feature)
 router.use("/pos", countryScopeGuard, require("./modules/pos/pos.routes"));
+
+// Barcode resolve + label payloads (branch-scoped; batch-first POS uses pos.service + barcodeResolve.service)
+router.use("/barcodes", countryScopeGuard, require("./modules/barcodes/barcodes.routes"));
 
 // Clinic (Appointment + Queue) — staff panel: /api/v1/clinic/branches/:branchId/...
 // Patient clinical overview — **sole** registration for this path (not in clinic.routes.ts; avoids stale partial dist).
@@ -387,6 +402,7 @@ router.use("/medicine-requisitions", countryScopeGuard, require("./modules/medic
 
 // Central Warehouse Module (warehouse CRUD, staff, delivery assignments) - REMOVED: Duplicate registration, using line 231 instead
 router.use("/purchase-orders", countryScopeGuard, require("./modules/purchase_orders/purchaseOrder.routes"));
+router.use("/procurement-demand", countryScopeGuard, require("./modules/procurement_demand/procurementDemand.routes"));
 router.use("/purchase-requisitions", countryScopeGuard, require("./modules/purchase_requisitions/purchaseRequisition.routes"));
 router.use("/inbound-shipments", countryScopeGuard, require("./modules/inbound_shipments/inboundShipment.routes"));
 router.use("/inbound-discrepancies", countryScopeGuard, require("./modules/inbound_discrepancies/inboundDiscrepancy.routes"));
@@ -394,6 +410,8 @@ router.use("/putaway", countryScopeGuard, require("./modules/putaway/putaway.rou
 router.use("/allocation-plans", countryScopeGuard, require("./modules/allocation_plans/allocationPlan.routes"));
 router.use("/fulfillment", countryScopeGuard, require("./modules/fulfillment/fulfillment.routes"));
 router.use("/pick-lists", countryScopeGuard, require("./modules/pick_lists/pickList.routes"));
+router.use("/availability", countryScopeGuard, require("./modules/availability/availability.routes"));
+router.use("/backorders", countryScopeGuard, require("./modules/backorders/backorder.routes"));
 router.use("/qc-inspections", countryScopeGuard, require("./modules/qc_inspections/qcInspection.routes"));
 
 // Online Store (aggregated ONLINE_HUB stock)

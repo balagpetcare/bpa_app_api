@@ -1,9 +1,21 @@
 const service = require("./pos.service");
 const prisma = require("../../../../infrastructure/db/prismaClient");
 const orderService = require("../orders/orders.service");
-const ledgerService = require("../inventory/ledger.service");
+const { restoreInventoryAfterOrderCancel } = require("../orders/ordersCancelInventory.service");
+const posCartService = require("./posCart.service");
 const { sendPosError, sendPosSuccess, POS_ERROR_CODES } = require("./pos.responses");
 const { writePosAudit, POS_AUDIT_ACTIONS } = require("./pos.audit");
+
+function missingPosPriceMeta(reason = "NO_POS_PRICE_CONFIGURED") {
+  return {
+    price: null,
+    sellPrice: null,
+    effectiveSellPrice: null,
+    priceSource: "NONE",
+    priceMissing: true,
+    priceMissingReason: reason,
+  };
+}
 
 /**
  * POST /api/v1/pos/sale
@@ -43,7 +55,26 @@ exports.createSale = async (req, res) => {
           POS_ERROR_CODES.INVALID_CART
         );
       }
+      const price = Number(item.price);
+      if (!Number.isFinite(price) || price <= 0) {
+        return sendPosError(
+          res,
+          400,
+          "Each item must have a configured positive price",
+          POS_ERROR_CODES.INVALID_CART
+        );
+      }
     }
+
+    const paymentSplits = Array.isArray(req.body?.paymentSplits)
+      ? req.body.paymentSplits
+          .filter((p: any) => p && p.method != null && p.amount != null)
+          .map((p: any) => ({
+            method: String(p.method),
+            amount: Number(p.amount),
+            reference: p.reference != null ? String(p.reference) : undefined,
+          }))
+      : undefined;
 
     const order = await service.createSale({
       branchId,
@@ -59,6 +90,7 @@ exports.createSale = async (req, res) => {
             : undefined,
       })),
       paymentMethod,
+      paymentSplits,
       notes: notes || "POS Sale",
       createdByUserId: userId,
       discountPercent: discountPercent != null ? parseFloat(discountPercent) : undefined,
@@ -251,91 +283,123 @@ exports.getProducts = async (req, res) => {
     const branchId = req.posBranchId;
     const shopLocationId = await orderService.getDefaultFulfilmentLocationForBranch(branchId, "SHOP");
 
-    const products = await prisma.product.findMany({
-      where: {
-        status: "ACTIVE",
-        org: {
-          branches: {
-            some: { id: branchId },
-          },
+    const qRaw = req.query.q;
+    const q = typeof qRaw === "string" && qRaw.trim() ? qRaw.trim() : "";
+
+    const productWhere: Record<string, unknown> = {
+      status: "ACTIVE",
+      org: {
+        branches: {
+          some: { id: branchId },
         },
       },
+    };
+    if (q) {
+      productWhere.OR = [
+        { name: { contains: q, mode: "insensitive" } },
+        { slug: { contains: q, mode: "insensitive" } },
+        {
+          category: {
+            name: { contains: q, mode: "insensitive" },
+          },
+        },
+        {
+          variants: {
+            some: {
+              isActive: true,
+              OR: [
+                { sku: { contains: q, mode: "insensitive" } },
+                { barcode: { contains: q, mode: "insensitive" } },
+                { title: { contains: q, mode: "insensitive" } },
+              ],
+            },
+          },
+        },
+      ];
+    }
+
+    const products = await prisma.product.findMany({
+      where: productWhere,
       include: {
         variants: {
           where: { isActive: true },
         },
+        category: {
+          select: { id: true, name: true },
+        },
+        media: {
+          orderBy: { sortOrder: "asc" },
+          take: 1,
+          select: {
+            id: true,
+            media: { select: { url: true } },
+          },
+        },
       },
-      take: 100,
+      take: q ? 60 : 100,
+      orderBy: { name: "asc" },
     });
 
     const allVariantIds = products.flatMap((p) => (p.variants || []).map((v) => v.id));
-    let locationPriceMap = {};
-    if (shopLocationId && allVariantIds.length > 0) {
-      const prices = await prisma.locationPrice.findMany({
-        where: {
-          locationId: shopLocationId,
-          variantId: { in: allVariantIds },
-          effectiveTo: null,
-        },
-        select: { variantId: true, price: true },
+    const branchVariantStockMap = await service.getBranchVariantStockMap(branchId, allVariantIds);
+    /** SHOP-shelf stock: matches checkout availability at default SHOP (avoids false branch-wide in-stock). */
+    const shopVariantStockMap =
+      shopLocationId && allVariantIds.length > 0
+        ? await service.getLocationVariantStockMap(shopLocationId, allVariantIds)
+        : null;
+
+    const branchRow = await prisma.branch.findUnique({
+      where: { id: branchId },
+      select: { orgId: true },
+    });
+    let resolvedPriceMap = new Map();
+    if (branchRow && allVariantIds.length > 0) {
+      const { getOrCreateOrgPolicy } = require("../pricing/pricingGovernance.service");
+      const { resolvePosBranchVariantListPricesMetaBulk } = require("../pricing/posListPriceResolution.service");
+      const policy = await getOrCreateOrgPolicy(branchRow.orgId);
+      resolvedPriceMap = await resolvePosBranchVariantListPricesMetaBulk({
+        orgId: branchRow.orgId,
+        branchId,
+        shopLocationId: shopLocationId ?? null,
+        variantIds: allVariantIds,
+        policy,
       });
-      locationPriceMap = prices.reduce((acc, row) => {
-        acc[row.variantId] = Number(row.price);
-        return acc;
-      }, {});
     }
 
     const productsWithStock = await Promise.all(
       products.map(async (product) => {
         const variantsWithStock = await Promise.all(
           (product.variants || []).map(async (variant) => {
-            let stock = 0;
-            let minStock = 10;
-            if (shopLocationId) {
-              try {
-                const balance = await ledgerService.getStockBalance(shopLocationId, variant.id);
-                stock = balance.onHandQty - balance.reservedQty;
-              } catch {
-                const inventory = await prisma.inventory.findFirst({
-                  where: { branchId, productId: product.id, variantId: variant.id },
-                });
-                stock = inventory?.quantity || 0;
-                minStock = inventory?.minStock ?? 10;
-              }
-            } else {
-              const inventory = await prisma.inventory.findFirst({
-                where: { branchId, productId: product.id, variantId: variant.id },
-              });
-              stock = inventory?.quantity || 0;
-              minStock = inventory?.minStock ?? 10;
-            }
-            const locationPrice = locationPriceMap[variant.id];
+            const stock =
+              shopVariantStockMap != null
+                ? Math.max(0, Number(shopVariantStockMap.get(variant.id)?.availableQty || 0))
+                : Math.max(0, Number(branchVariantStockMap.get(variant.id)?.availableQty || 0));
+            const minStock = 10;
+            const priceMeta = resolvedPriceMap.get(variant.id) ?? missingPosPriceMeta();
             return {
               ...variant,
               stock,
               minStock,
-              price: locationPrice !== undefined ? locationPrice : undefined,
+              ...priceMeta,
             };
           })
         );
 
-        const baseInventory = await prisma.inventory.findFirst({
-          where: {
-            branchId,
-            productId: product.id,
-            variantId: null,
-          },
+        const availableVariants = variantsWithStock.filter((variant) => {
+          const stock = Number(variant?.stock || 0);
+          return variant?.id != null && stock > 0;
         });
 
         return {
           ...product,
-          variants: variantsWithStock,
-          baseStock: baseInventory?.quantity || 0,
+          variants: availableVariants,
+          baseStock: availableVariants.reduce((sum, variant) => sum + Number(variant.stock || 0), 0),
         };
       })
     );
 
-    return sendPosSuccess(res, 200, productsWithStock);
+    const availableProducts = productsWithStock.filter((product) => Array.isArray(product.variants) && product.variants.length > 0);
+    return sendPosSuccess(res, 200, availableProducts);
   } catch (error) {
     console.error("getProducts error:", error);
     return sendPosError(
@@ -475,6 +539,400 @@ exports.getZReport = async (req, res) => {
       error.message || "Failed to get Z-report",
       POS_ERROR_CODES.VALIDATION_ERROR
     );
+  }
+};
+
+/** GET /api/v1/pos/carts?branchId= */
+exports.listPosCarts = async (req, res) => {
+  try {
+    const branchId = req.posBranchId;
+    const userId = req.user?.id;
+    const rows = await posCartService.listCarts(branchId, userId);
+    const enriched = await service.enrichPosCartListForDisplay(rows, branchId);
+    return sendPosSuccess(res, 200, enriched);
+  } catch (error) {
+    console.error("listPosCarts error:", error);
+    return sendPosError(res, 500, (error as Error).message || "Failed to list carts", POS_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+/** POST /api/v1/pos/carts */
+exports.createPosCart = async (req, res) => {
+  try {
+    const branchId = req.posBranchId;
+    const userId = req.user?.id;
+    const shiftId = req.body?.posShiftId != null ? parseInt(String(req.body.posShiftId), 10) : null;
+    const row = await posCartService.createCart(branchId, userId, Number.isFinite(shiftId) ? shiftId : null);
+    await writePosAudit({
+      req,
+      action: POS_AUDIT_ACTIONS.POS_CART_CREATED,
+      entityType: "POS_SALE",
+      entityId: row.id,
+      after: { cartId: row.id, cartNumber: row.cartNumber, branchId },
+    });
+    return sendPosSuccess(res, 201, row, "Cart created");
+  } catch (error) {
+    console.error("createPosCart error:", error);
+    return sendPosError(res, 400, (error as Error).message || "Failed to create cart", POS_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+/** GET /api/v1/pos/carts/:cartId?branchId= */
+exports.getPosCart = async (req, res) => {
+  try {
+    const branchId = req.posBranchId;
+    const userId = req.user?.id;
+    const cartId = parseInt(req.params.cartId, 10);
+    const row = await posCartService.getCart(cartId, branchId, userId);
+    if (!row) return sendPosError(res, 404, "Cart not found", POS_ERROR_CODES.NOT_FOUND);
+    const enriched = await service.enrichPosCartForDisplay(row, branchId);
+    return sendPosSuccess(res, 200, enriched);
+  } catch (error) {
+    console.error("getPosCart error:", error);
+    return sendPosError(res, 500, (error as Error).message || "Failed to load cart", POS_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+/** PATCH /api/v1/pos/carts/:cartId */
+exports.patchPosCart = async (req, res) => {
+  try {
+    const branchId = req.posBranchId;
+    const userId = req.user?.id;
+    const cartId = parseInt(req.params.cartId, 10);
+    const body = req.body || {};
+    const row = await posCartService.patchCart(cartId, branchId, userId, {
+      version: body.version != null ? parseInt(String(body.version), 10) : undefined,
+      status: body.status,
+      customerUserId: body.customerUserId !== undefined ? body.customerUserId : undefined,
+      ownerDiscountCardId: body.ownerDiscountCardId !== undefined ? body.ownerDiscountCardId : undefined,
+      memberNameSnapshot: body.memberNameSnapshot !== undefined ? body.memberNameSnapshot : undefined,
+      cardNumberSnapshot: body.cardNumberSnapshot !== undefined ? body.cardNumberSnapshot : undefined,
+      discountPercentSnapshot:
+        body.discountPercentSnapshot !== undefined
+          ? body.discountPercentSnapshot === null || body.discountPercentSnapshot === ""
+            ? null
+            : parseFloat(String(body.discountPercentSnapshot))
+          : undefined,
+      metadataJson: body.metadataJson,
+    });
+    if (body.ownerDiscountCardId != null && body.ownerDiscountCardId !== "") {
+      await writePosAudit({
+        req,
+        action: POS_AUDIT_ACTIONS.POS_MEMBERSHIP_ATTACHED,
+        entityType: "POS_SALE",
+        entityId: cartId,
+        after: { cartId, branchId, ownerDiscountCardId: body.ownerDiscountCardId },
+      });
+    }
+    const enriched = await service.enrichPosCartForDisplay(row, branchId);
+    return sendPosSuccess(res, 200, enriched);
+  } catch (error) {
+    console.error("patchPosCart error:", error);
+    return sendPosError(res, 400, (error as Error).message || "Failed to update cart", POS_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+/** POST /api/v1/pos/carts/:cartId/lines */
+exports.addPosCartLine = async (req, res) => {
+  try {
+    const branchId = req.posBranchId;
+    const userId = req.user?.id;
+    const cartId = parseInt(req.params.cartId, 10);
+    const b = req.body || {};
+    const unitListPrice = parseFloat(b.unitListPrice);
+    const unitSellPrice = parseFloat(b.unitSellPrice);
+    if (!Number.isFinite(unitListPrice) || unitListPrice <= 0 || !Number.isFinite(unitSellPrice) || unitSellPrice <= 0) {
+      return sendPosError(res, 400, "Price is not configured for this product.", POS_ERROR_CODES.INVALID_CART);
+    }
+    const line = await posCartService.addLine(cartId, branchId, userId, {
+      productId: parseInt(b.productId, 10),
+      variantId: b.variantId != null ? parseInt(b.variantId, 10) : null,
+      quantity: parseInt(b.quantity, 10) || 1,
+      unitListPrice,
+      unitSellPrice,
+      retailDiscountApprovalId:
+        b.retailDiscountApprovalId != null && b.retailDiscountApprovalId !== ""
+          ? parseInt(String(b.retailDiscountApprovalId), 10)
+          : null,
+    });
+    return sendPosSuccess(res, 201, line);
+  } catch (error) {
+    console.error("addPosCartLine error:", error);
+    return sendPosError(res, 400, (error as Error).message || "Failed to add line", POS_ERROR_CODES.INVALID_CART);
+  }
+};
+
+/** PATCH /api/v1/pos/carts/:cartId/lines/:lineId */
+exports.patchPosCartLine = async (req, res) => {
+  try {
+    const branchId = req.posBranchId;
+    const userId = req.user?.id;
+    const cartId = parseInt(req.params.cartId, 10);
+    const lineId = parseInt(req.params.lineId, 10);
+    const qtyRaw = req.body?.quantity;
+    const quantity =
+      qtyRaw !== undefined && qtyRaw !== null && String(qtyRaw).trim() !== ""
+        ? parseInt(String(qtyRaw), 10)
+        : undefined;
+    const sellRaw = req.body?.unitSellPrice;
+    const unitSellPrice =
+      sellRaw !== undefined && sellRaw !== null && String(sellRaw).trim() !== ""
+        ? parseFloat(String(sellRaw))
+        : undefined;
+    if (quantity === undefined && unitSellPrice === undefined) {
+      return sendPosError(res, 400, "quantity or unitSellPrice is required", POS_ERROR_CODES.VALIDATION_ERROR);
+    }
+    const row = await posCartService.updateLine(lineId, cartId, branchId, userId, {
+      quantity,
+      unitSellPrice,
+    });
+    return sendPosSuccess(res, 200, row);
+  } catch (error) {
+    console.error("patchPosCartLine error:", error);
+    return sendPosError(res, 400, (error as Error).message || "Failed to update line", POS_ERROR_CODES.INVALID_CART);
+  }
+};
+
+/** DELETE /api/v1/pos/carts/:cartId/lines/:lineId */
+exports.deletePosCartLine = async (req, res) => {
+  try {
+    const branchId = req.posBranchId;
+    const userId = req.user?.id;
+    const cartId = parseInt(req.params.cartId, 10);
+    const lineId = parseInt(req.params.lineId, 10);
+    await posCartService.deleteLine(lineId, cartId, branchId, userId);
+    return sendPosSuccess(res, 200, { ok: true });
+  } catch (error) {
+    console.error("deletePosCartLine error:", error);
+    return sendPosError(res, 400, (error as Error).message || "Failed to delete line", POS_ERROR_CODES.INVALID_CART);
+  }
+};
+
+exports.holdPosCart = async (req, res) => {
+  try {
+    const branchId = req.posBranchId;
+    const userId = req.user?.id;
+    const cartId = parseInt(req.params.cartId, 10);
+    const row = await posCartService.holdCart(cartId, branchId, userId, req.body?.version);
+    await writePosAudit({
+      req,
+      action: POS_AUDIT_ACTIONS.POS_CART_HELD,
+      entityType: "POS_SALE",
+      entityId: cartId,
+      after: { cartId, branchId },
+    });
+    return sendPosSuccess(res, 200, row);
+  } catch (error) {
+    console.error("holdPosCart error:", error);
+    return sendPosError(res, 400, (error as Error).message || "Failed to hold cart", POS_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+exports.resumePosCart = async (req, res) => {
+  try {
+    const branchId = req.posBranchId;
+    const userId = req.user?.id;
+    const cartId = parseInt(req.params.cartId, 10);
+    const row = await posCartService.resumeCart(cartId, branchId, userId, req.body?.version);
+    await writePosAudit({
+      req,
+      action: POS_AUDIT_ACTIONS.POS_CART_RESUMED,
+      entityType: "POS_SALE",
+      entityId: cartId,
+      after: { cartId, branchId },
+    });
+    return sendPosSuccess(res, 200, row);
+  } catch (error) {
+    console.error("resumePosCart error:", error);
+    return sendPosError(res, 400, (error as Error).message || "Failed to resume cart", POS_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+exports.previewPosCart = async (req, res) => {
+  try {
+    const branchId = req.posBranchId;
+    const userId = req.user?.id;
+    const cartId = parseInt(req.params.cartId, 10);
+    const cart = await posCartService.getCart(cartId, branchId, userId);
+    if (!cart) return sendPosError(res, 404, "Cart not found", POS_ERROR_CODES.NOT_FOUND);
+    const membershipPct = Number(cart.discountPercentSnapshot || 0);
+    const manualPct = req.body?.discountPercent != null ? parseFloat(String(req.body.discountPercent)) : 0;
+    const taxPct = req.body?.taxPercent != null ? parseFloat(String(req.body.taxPercent)) : 0;
+    const combinedDisc = Math.min(100, membershipPct + manualPct);
+    const preview = posCartService.previewCartTotals(cart.lines, combinedDisc, taxPct);
+    return sendPosSuccess(res, 200, preview);
+  } catch (error) {
+    console.error("previewPosCart error:", error);
+    return sendPosError(res, 500, (error as Error).message || "Failed to preview cart", POS_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+exports.finalizePosCart = async (req, res) => {
+  try {
+    const branchId = req.posBranchId;
+    const userId = req.user?.id;
+    const cartId = parseInt(req.params.cartId, 10);
+    const payments = Array.isArray(req.body?.payments) ? req.body.payments : [];
+    if (payments.length === 0) {
+      return sendPosError(res, 400, "payments array is required", POS_ERROR_CODES.INVALID_CART);
+    }
+    const normalized = payments.map((p: any) => ({
+      method: String(p.method || "").toUpperCase(),
+      amount: parseFloat(p.amount),
+      reference: p.reference != null ? String(p.reference) : undefined,
+    }));
+    const order = await service.finalizePosCart({
+      cartId,
+      branchId,
+      staffUserId: userId,
+      payments: normalized,
+      discountPercent: req.body?.discountPercent != null ? parseFloat(String(req.body.discountPercent)) : undefined,
+      taxPercent: req.body?.taxPercent != null ? parseFloat(String(req.body.taxPercent)) : undefined,
+      customerId: req.body?.customerId != null ? parseInt(String(req.body.customerId), 10) : undefined,
+      notes: req.body?.notes,
+    });
+    await writePosAudit({
+      req,
+      action: POS_AUDIT_ACTIONS.POS_CART_FINALIZED,
+      entityType: "POS_SALE",
+      entityId: order?.id ?? cartId,
+      after: { orderId: order?.id, cartId, branchId },
+    });
+    return sendPosSuccess(res, 201, order, "Sale completed");
+  } catch (error) {
+    console.error("finalizePosCart error:", error);
+    return sendPosError(res, 400, (error as Error).message || "Failed to finalize cart", POS_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+exports.abandonPosCart = async (req, res) => {
+  try {
+    const branchId = req.posBranchId;
+    const userId = req.user?.id;
+    const cartId = parseInt(req.params.cartId, 10);
+    const row = await posCartService.abandonCart(cartId, branchId, userId);
+    return sendPosSuccess(res, 200, row);
+  } catch (error) {
+    console.error("abandonPosCart error:", error);
+    return sendPosError(res, 400, (error as Error).message || "Failed to abandon cart", POS_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+/** GET /api/v1/pos/membership/card?branchId=&code= */
+exports.getMembershipCardForPos = async (req, res) => {
+  try {
+    const branchId = req.posBranchId;
+    const code = String(req.query.code || "").trim();
+    const result = await service.resolveMembershipCardForPos(branchId, code);
+    if (!result.ok) {
+      await writePosAudit({
+        req,
+        action: POS_AUDIT_ACTIONS.POS_MEMBERSHIP_DENIED,
+        entityType: "POS_SALE",
+        entityId: branchId,
+        after: { branchId, code: code ? "***" : "", reason: result.code },
+      });
+      return sendPosError(res, 400, result.message || "Invalid card", POS_ERROR_CODES.VALIDATION_ERROR);
+    }
+    return sendPosSuccess(res, 200, result.data);
+  } catch (error) {
+    console.error("getMembershipCardForPos error:", error);
+    return sendPosError(res, 500, (error as Error).message || "Lookup failed", POS_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+/** GET /api/v1/pos/customers/lookup?branchId=&q= */
+exports.lookupPosCustomer = async (req, res) => {
+  try {
+    const branchId = req.posBranchId;
+    const q = String(req.query.q || req.query.phone || "").trim();
+    if (!q) {
+      return sendPosError(res, 400, "q or phone is required", POS_ERROR_CODES.VALIDATION_ERROR);
+    }
+    const data = await service.lookupCustomerForPos(branchId, q);
+    if (!data) return sendPosError(res, 404, "Customer not found", POS_ERROR_CODES.NOT_FOUND);
+    return sendPosSuccess(res, 200, data);
+  } catch (error) {
+    console.error("lookupPosCustomer error:", error);
+    return sendPosError(res, 500, (error as Error).message || "Lookup failed", POS_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+/** POST /api/v1/pos/customers/ensure */
+exports.ensurePosCustomer = async (req, res) => {
+  try {
+    const branchId = req.posBranchId;
+    const body = req.body || {};
+    const data = await service.ensureCustomerForPos(branchId, {
+      phone: body.phone != null ? String(body.phone).trim() : null,
+      email: body.email != null ? String(body.email).trim() : null,
+      displayName: body.displayName != null ? String(body.displayName).trim() : null,
+    });
+    return sendPosSuccess(res, 200, data, "Customer found or created");
+  } catch (error) {
+    console.error("ensurePosCustomer error:", error);
+    return sendPosError(res, 400, (error as Error).message || "Failed to resolve customer", POS_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+/** GET /api/v1/pos/membership/resolve?branchId=&code=&customerUserId=&phone= */
+exports.resolveMembershipForPos = async (req, res) => {
+  try {
+    const branchId = req.posBranchId;
+    const result = await service.resolveMembershipLookupForPos(branchId, {
+      code: req.query.code != null ? String(req.query.code) : null,
+      customerUserId:
+        req.query.customerUserId != null && req.query.customerUserId !== ""
+          ? parseInt(String(req.query.customerUserId), 10)
+          : null,
+      phone: req.query.phone != null ? String(req.query.phone) : null,
+    });
+    if (!result.ok) {
+      return sendPosError(res, 404, result.message || "Membership not found", POS_ERROR_CODES.NOT_FOUND);
+    }
+    return sendPosSuccess(res, 200, result.data);
+  } catch (error) {
+    console.error("resolveMembershipForPos error:", error);
+    return sendPosError(res, 500, (error as Error).message || "Lookup failed", POS_ERROR_CODES.VALIDATION_ERROR);
+  }
+};
+
+/**
+ * POST /api/v1/pos/orders/:orderId/cancel
+ * POS-scoped full cancel/refund: requires `pos.refund` on order's branch (see pos.middleware).
+ * Reuses `orders.service.cancelOrder` + shared inventory restore (same as /api/v1/orders/:id/cancel).
+ */
+exports.cancelPosOrder = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    const orderId = req.posOrderId;
+    const branchId = req.posBranchId;
+    const reason = typeof req.body?.reason === "string" ? req.body.reason : "POS refund";
+
+    const result = await orderService.cancelOrder(orderId, reason, branchId);
+    const order = result.order;
+    const performedCancel = result.performedCancel === true;
+
+    await restoreInventoryAfterOrderCancel(userId, order, performedCancel, branchId);
+
+    await writePosAudit({
+      req,
+      action: POS_AUDIT_ACTIONS.POS_REFUND_FULL,
+      entityType: "POS_SALE",
+      entityId: orderId,
+      after: { orderId, branchId, performedCancel, status: order.status },
+    });
+
+    return sendPosSuccess(
+      res,
+      200,
+      order,
+      performedCancel ? "Order cancelled successfully" : "Order already cancelled"
+    );
+  } catch (error) {
+    console.error("cancelPosOrder error:", error);
+    const status = error.message === "Order not found" ? 404 : 400;
+    return sendPosError(res, status, error.message || "Failed to cancel order", POS_ERROR_CODES.REFUND_NOT_ALLOWED);
   }
 };
 

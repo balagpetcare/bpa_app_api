@@ -980,6 +980,41 @@ router.get(
 
 // --- Vaccination & Deworming ---
 router.get(
+  "/branches/:branchId/vaccine-types",
+  requireClinicPermission("clinic.patients.read", "clinic.emr.read"),
+  ctrl.listVaccineTypes
+);
+router.get(
+  "/branches/:branchId/vaccine-inventory-mappings",
+  requireClinicPermission("clinic.patients.read", "clinic.emr.read", "clinic.emr.write"),
+  ctrl.getBranchVaccineInventoryMappings
+);
+router.put(
+  "/branches/:branchId/vaccine-inventory-mappings/:vaccineTypeId",
+  requireClinicPermission("clinic.emr.write"),
+  ctrl.upsertBranchVaccineInventoryMapping
+);
+router.get(
+  "/branches/:branchId/vaccinations/reminders",
+  requireClinicPermission("clinic.patients.read", "clinic.emr.read"),
+  ctrl.getBranchVaccinationReminders
+);
+router.get(
+  "/branches/:branchId/vaccinations/dashboard",
+  requireClinicPermission("clinic.patients.read", "clinic.emr.read"),
+  ctrl.getBranchVaccinationDashboard
+);
+router.get(
+  "/branches/:branchId/vaccinations/stock-candidates",
+  requireClinicPermission("clinic.patients.read", "clinic.emr.read"),
+  ctrl.getBranchVaccineStockCandidates
+);
+router.get(
+  "/branches/:branchId/vaccinations/billing-options",
+  requireClinicPermission("clinic.patients.read", "clinic.emr.read", "clinic.billing.read", "clinic.emr.write"),
+  ctrl.getVaccinationBillingOptions
+);
+router.get(
   "/branches/:branchId/patients/:petId/vaccinations",
   requireClinicPermission("clinic.patients.read", "clinic.emr.read"),
   ctrl.listPetVaccinations
@@ -993,6 +1028,26 @@ router.post(
   "/branches/:branchId/vaccinations",
   requireClinicPermission("clinic.emr.write"),
   ctrl.recordVaccination
+);
+router.post(
+  "/branches/:branchId/vaccinations/administer",
+  requireClinicPermission("clinic.emr.write"),
+  ctrl.administerVaccinationWithBatch
+);
+router.patch(
+  "/branches/:branchId/vaccinations/:vaccinationId/correct",
+  requireClinicPermission("clinic.emr.write"),
+  ctrl.correctVaccinationRecord
+);
+router.post(
+  "/branches/:branchId/vaccinations/:vaccinationId/void",
+  requireClinicPermission("clinic.emr.write"),
+  ctrl.voidVaccinationRecord
+);
+router.get(
+  "/branches/:branchId/vaccinations/:vaccinationId/audit",
+  requireClinicPermission("clinic.patients.read", "clinic.emr.read", "clinic.audit.view"),
+  ctrl.getVaccinationAudit
 );
 router.get(
   "/branches/:branchId/vaccinations/certificate/:token",

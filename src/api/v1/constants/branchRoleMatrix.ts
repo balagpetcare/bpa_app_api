@@ -1,7 +1,10 @@
 /**
  * Branch type → allowed invite roles (single source of truth).
- * Used by staff invite validation and by UI to show role dropdown.
+ * Used by staff invite validation and by UI (via invite-allowed-roles API).
  * Align with Prisma MemberRole enum.
+ *
+ * Multi-type branches: allowed roles = union of roles for each linked BranchType.code
+ * (after normalizing aliases → canonical keys below).
  */
 
 /** Prisma select fragment: Branch has no scalar `type`; use `types` → BranchType. */
@@ -19,31 +22,124 @@ export function normalizeRole(role: string | null | undefined): string {
   return r;
 }
 
-/** Branch type codes (from BranchType.code / BranchTypeCode). */
-export const BRANCH_TYPE_CODES = ["SHOP", "PET_SHOP", "CLINIC", "DELIVERY_HUB", "DELIVERY", "HUB"] as const;
+function normalizeTypeCode(code: string | null | undefined): string {
+  return String(code || "")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "_");
+}
 
 /**
- * Allowed invite roles per branch type.
- * Keys: normalized branch type (primary type of branch).
- * Values: roles that are valid for that branch type (for display + validation).
+ * Map DB / legacy BranchType.code → key in ALLOWED_INVITE_ROLES_BY_BRANCH_TYPE.
+ * Seeded codes: CLINIC, PET_SHOP, DELIVERY_HUB, WAREHOUSE_DC, … plus optional aliases.
+ */
+export const BRANCH_TYPE_CODE_ALIASES: Record<string, string> = {
+  PHARMACY: "PHARMACY_DIAGNOSTICS",
+  WAREHOUSE: "WAREHOUSE_DC",
+  CENTRAL_WAREHOUSE: "WAREHOUSE_DC",
+  DISTRIBUTION_CENTER: "WAREHOUSE_DC",
+  DELIVERY: "DELIVERY_HUB",
+  HUB: "DELIVERY_HUB",
+};
+
+/** Canonical matrix keys (each must have an entry in ALLOWED_INVITE_ROLES_BY_BRANCH_TYPE). */
+export const BRANCH_TYPE_CODES = [
+  "SHOP",
+  "PET_SHOP",
+  "CLINIC",
+  "PHARMACY_DIAGNOSTICS",
+  "DELIVERY_HUB",
+  "WAREHOUSE_DC",
+  "GROOMING_SPA",
+  "BOARDING_DAYCARE",
+  "FOSTER_SHELTER",
+  "TRAINING_BEHAVIOR",
+] as const;
+
+/**
+ * Allowed invite roles per canonical branch type.
+ * Warehouse operational roles INVENTORY_CONTROLLER / QC_OFFICER / AUDIT_OFFICER stay on WarehouseStaffRole + warehouse invite only.
  */
 export const ALLOWED_INVITE_ROLES_BY_BRANCH_TYPE: Record<string, string[]> = {
   SHOP: ["BRANCH_MANAGER", "BRANCH_STAFF", "SELLER"],
   PET_SHOP: ["BRANCH_MANAGER", "BRANCH_STAFF", "SELLER"],
-  /** Align with unified staff orchestration (doctor onboarding via inviteAsDoctor). */
-  CLINIC: ["BRANCH_MANAGER", "BRANCH_STAFF", "SELLER", "DOCTOR"],
-  PHARMACY: ["BRANCH_MANAGER", "BRANCH_STAFF", "SELLER", "PHARMACIST"],
+  CLINIC: [
+    "BRANCH_MANAGER",
+    "CLINIC_STAFF",
+    "CLINIC_RECEPTION",
+    "CLINIC_INVENTORY_STAFF",
+    "BRANCH_STAFF",
+    "SELLER",
+    "DOCTOR",
+  ],
+  PHARMACY_DIAGNOSTICS: [
+    "BRANCH_MANAGER",
+    "BRANCH_STAFF",
+    "PHARMACIST",
+    "CLINIC_INVENTORY_STAFF",
+    "SELLER",
+  ],
   DELIVERY_HUB: ["DELIVERY_MANAGER", "DELIVERY_STAFF"],
-  DELIVERY: ["DELIVERY_MANAGER", "DELIVERY_STAFF"],
-  HUB: ["DELIVERY_MANAGER", "DELIVERY_STAFF"],
-  WAREHOUSE: ["WAREHOUSE_MANAGER", "RECEIVING_STAFF", "DISPATCH_STAFF", "DELIVERY_STAFF"],
-  CENTRAL_WAREHOUSE: ["WAREHOUSE_MANAGER", "RECEIVING_STAFF", "DISPATCH_STAFF", "DELIVERY_STAFF"],
+  WAREHOUSE_DC: ["WAREHOUSE_MANAGER", "RECEIVING_STAFF", "DISPATCH_STAFF", "DELIVERY_STAFF"],
+  GROOMING_SPA: ["BRANCH_MANAGER", "GROOMING_STAFF", "BRANCH_STAFF"],
+  BOARDING_DAYCARE: ["BRANCH_MANAGER", "BOARDING_STAFF", "BRANCH_STAFF"],
+  FOSTER_SHELTER: ["BRANCH_MANAGER", "BOARDING_STAFF", "BRANCH_STAFF"],
+  TRAINING_BEHAVIOR: ["BRANCH_MANAGER", "TRAINING_STAFF", "BRANCH_STAFF"],
 };
 
-/** Default when branch type is unknown: allow same as SHOP. */
+/** Default when no known type on branch. */
 const DEFAULT_ALLOWED_ROLES = ["BRANCH_MANAGER", "BRANCH_STAFF", "SELLER"];
 
-/** Roles that a Branch Manager / Delivery Manager cannot invite (manager/owner level). */
+/** Stable dropdown order for any union of roles (UX). */
+const INVITE_ROLE_DISPLAY_ORDER: string[] = [
+  "BRANCH_MANAGER",
+  "DELIVERY_MANAGER",
+  "WAREHOUSE_MANAGER",
+  "DOCTOR",
+  "PHARMACIST",
+  "CLINIC_STAFF",
+  "CLINIC_RECEPTION",
+  "CLINIC_INVENTORY_STAFF",
+  "GROOMING_STAFF",
+  "BOARDING_STAFF",
+  "TRAINING_STAFF",
+  "BRANCH_STAFF",
+  "SELLER",
+  "DELIVERY_STAFF",
+  "RECEIVING_STAFF",
+  "DISPATCH_STAFF",
+];
+
+/** Human-readable labels for invite dropdowns and APIs (single backend source for owner panel). */
+export const INVITE_ROLE_LABELS: Record<string, string> = {
+  BRANCH_MANAGER: "Branch Manager",
+  BRANCH_STAFF: "Branch Staff",
+  SELLER: "Seller",
+  DOCTOR: "Doctor",
+  DELIVERY_MANAGER: "Delivery Manager",
+  DELIVERY_STAFF: "Delivery Staff",
+  WAREHOUSE_MANAGER: "Warehouse Manager",
+  RECEIVING_STAFF: "Receiving Staff",
+  DISPATCH_STAFF: "Dispatch Staff",
+  PHARMACIST: "Pharmacist",
+  CLINIC_STAFF: "Clinic Staff",
+  CLINIC_RECEPTION: "Clinic Reception",
+  CLINIC_INVENTORY_STAFF: "Clinic Inventory Staff",
+  GROOMING_STAFF: "Grooming Staff",
+  BOARDING_STAFF: "Boarding / Daycare Staff",
+  TRAINING_STAFF: "Training Staff",
+};
+
+/** Map allowed role keys → display label (falls back to key). */
+export function labelsForInviteRoles(allowedRoles: string[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const r of allowedRoles) {
+    out[r] = INVITE_ROLE_LABELS[r] || r;
+  }
+  return out;
+}
+
+/** Roles that a Branch Manager / Delivery Manager / Warehouse Manager cannot invite. */
 export const ROLES_MANAGER_CANNOT_INVITE: string[] = [
   "BRANCH_MANAGER",
   "DELIVERY_MANAGER",
@@ -56,41 +152,106 @@ export const ROLES_MANAGER_CANNOT_INVITE: string[] = [
   "STATE_ADMIN",
 ];
 
-/** Roles that a manager can invite (staff/seller only). */
+/** Roles a manager may invite if also allowed for the branch type(s). */
 export const ROLES_MANAGER_CAN_INVITE: string[] = [
   "BRANCH_STAFF",
   "SELLER",
   "DELIVERY_STAFF",
   "RECEIVING_STAFF",
   "DISPATCH_STAFF",
+  "CLINIC_STAFF",
+  "CLINIC_RECEPTION",
+  "CLINIC_INVENTORY_STAFF",
+  "PHARMACIST",
+  "DOCTOR",
+  "GROOMING_STAFF",
+  "BOARDING_STAFF",
+  "TRAINING_STAFF",
 ];
 
-/** Resolve primary branch type code from branch.types[].type.code. */
+function canonicalBranchTypeKey(rawCode: string): string {
+  const u = normalizeTypeCode(rawCode);
+  if (!u) return "";
+  return BRANCH_TYPE_CODE_ALIASES[u] || u;
+}
+
+function rolesForRawTypeCode(rawCode: string): string[] | null {
+  const u = normalizeTypeCode(rawCode);
+  if (!u) return null;
+  const key = BRANCH_TYPE_CODE_ALIASES[u] || u;
+  return ALLOWED_INVITE_ROLES_BY_BRANCH_TYPE[key] ?? null;
+}
+
+/**
+ * Union of allowed invite roles for all branch types linked to the branch.
+ */
+export function getAllowedInviteRolesForBranch(branch: {
+  types?: Array<{ type?: { code?: string } }>;
+}): string[] {
+  const links = branch?.types || [];
+  if (links.length === 0) return DEFAULT_ALLOWED_ROLES;
+
+  const set = new Set<string>();
+  for (const x of links) {
+    const raw = String(x?.type?.code || "");
+    const list = rolesForRawTypeCode(raw);
+    if (list) list.forEach((r) => set.add(r));
+  }
+
+  if (set.size === 0) return DEFAULT_ALLOWED_ROLES;
+
+  const ordered: string[] = [];
+  for (const r of INVITE_ROLE_DISPLAY_ORDER) {
+    if (set.has(r)) ordered.push(r);
+  }
+  for (const r of set) {
+    if (!ordered.includes(r)) ordered.push(r);
+  }
+  return ordered;
+}
+
+/**
+ * Primary type label for logging/UI (first match by priority when multiple types).
+ */
 export function getPrimaryBranchTypeCode(branch: {
   types?: Array<{ type?: { code?: string } }>;
 }): string {
   const links = branch?.types || [];
+  const present = new Set<string>();
   for (const x of links) {
-    const code = String(x?.type?.code || "").toUpperCase().replace(/\s+/g, "_");
-    if (code && (ALLOWED_INVITE_ROLES_BY_BRANCH_TYPE as Record<string, unknown>)[code]) return code;
+    const key = canonicalBranchTypeKey(String(x?.type?.code || ""));
+    if (key) present.add(key);
+    const raw = normalizeTypeCode(x?.type?.code);
+    if (raw) present.add(raw);
   }
-  if (links.some((x) => String(x?.type?.code || "").toUpperCase() === "DELIVERY_HUB")) return "DELIVERY_HUB";
-  if (links.some((x) => ["DELIVERY", "HUB"].includes(String(x?.type?.code || "").toUpperCase()))) return "DELIVERY_HUB";
-  return "SHOP";
-}
 
-/** Allowed invite roles for this branch (by type). */
-export function getAllowedInviteRolesForBranch(branch: {
-  types?: Array<{ type?: { code?: string } }>;
-}): string[] {
-  const code = getPrimaryBranchTypeCode(branch);
-  return ALLOWED_INVITE_ROLES_BY_BRANCH_TYPE[code] ?? DEFAULT_ALLOWED_ROLES;
+  const priority = [
+    "WAREHOUSE_DC",
+    "PHARMACY_DIAGNOSTICS",
+    "CLINIC",
+    "DELIVERY_HUB",
+    "GROOMING_SPA",
+    "BOARDING_DAYCARE",
+    "FOSTER_SHELTER",
+    "TRAINING_BEHAVIOR",
+    "PET_SHOP",
+    "SHOP",
+  ];
+
+  for (const p of priority) {
+    if (present.has(p)) return p;
+  }
+
+  if (links.some((x) => normalizeTypeCode(x?.type?.code) === "DELIVERY_HUB")) return "DELIVERY_HUB";
+  if (links.some((x) => ["DELIVERY", "HUB"].includes(normalizeTypeCode(x?.type?.code)))) return "DELIVERY_HUB";
+
+  return "SHOP";
 }
 
 /**
  * Roles this inviter can invite for this branch.
- * - OWNER / ORG_OWNER / ORG_ADMIN: any role in allowedInviteRoles for branch type.
- * - BRANCH_MANAGER / DELIVERY_MANAGER: only ROLES_MANAGER_CAN_INVITE, and only if in allowedInviteRoles.
+ * - OWNER / ORG_OWNER / ORG_ADMIN: any role in allowed set for branch type(s).
+ * - BRANCH_MANAGER / DELIVERY_MANAGER / WAREHOUSE_MANAGER: ROLES_MANAGER_CAN_INVITE ∩ allowed.
  */
 export function getInviteableRolesForInviter(
   inviterRole: string | null | undefined,
@@ -116,7 +277,6 @@ export function getInviteableRolesForInviter(
 
 /**
  * Check if this inviter can invite this target role to this branch.
- * Returns { allowed: boolean, message?: string }.
  */
 export function canInviteRole(
   inviterRole: string | null | undefined,

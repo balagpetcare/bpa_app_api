@@ -1,5 +1,6 @@
 import * as service from "./fulfillment.service";
 import { getOrgIdsForUser } from "../grn/grn.service";
+import { parseMultiWarehouseError } from "../../services/multiWarehouseFulfillment.errors";
 
 function getUserId(req: any): number | null {
   const id = req?.user?.id ?? req?.user?.userId;
@@ -23,7 +24,10 @@ export async function startFromStockRequest(req: any, res: any) {
     const ctx = await resolveOrg(req);
     if (!ctx) return res.status(403).json({ success: false, message: "No organization access" });
     const stockRequestId = Number(req.params.id);
-    const { fromLocationId, warehouseId, skipAutoAllocation } = req.body || {};
+    const {
+      fromLocationId, warehouseId, skipAutoAllocation,
+      allocationScope, sourceLocationIds, autoBackorder,
+    } = req.body || {};
     if (!fromLocationId) {
       return res.status(400).json({ success: false, message: "fromLocationId required" });
     }
@@ -34,6 +38,11 @@ export async function startFromStockRequest(req: any, res: any) {
       warehouseId: warehouseId != null ? Number(warehouseId) : undefined,
       createdByUserId: ctx.userId,
       skipAutoAllocation: Boolean(skipAutoAllocation),
+      allocationScope: allocationScope === "MULTI_SOURCE" ? "MULTI_SOURCE" : undefined,
+      sourceLocationIds: Array.isArray(sourceLocationIds)
+        ? sourceLocationIds.map(Number).filter(Number.isFinite)
+        : undefined,
+      autoBackorder: autoBackorder != null ? Boolean(autoBackorder) : undefined,
     });
     return res.status(isExisting ? 200 : 201).json({
       success: true,
@@ -42,7 +51,13 @@ export async function startFromStockRequest(req: any, res: any) {
     });
   } catch (e: any) {
     console.error("fulfillment.startFromStockRequest", e);
-    return res.status(400).json({ success: false, message: e?.message || "Failed" });
+    const p = parseMultiWarehouseError(e);
+    return res.status(p.httpStatus).json({
+      success: false,
+      message: p.message,
+      code: p.code,
+      details: p.details ?? null,
+    });
   }
 }
 

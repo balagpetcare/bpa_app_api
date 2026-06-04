@@ -172,6 +172,14 @@ exports.listOrgPricing = async (req, res) => {
     const orgId = req.query.orgId ? parseInt(req.query.orgId) : undefined;
     const page = parseInt(req.query.page || "1");
     const limit = parseInt(req.query.limit || "50");
+    const q = req.query.q ? String(req.query.q) : undefined;
+    const categoryId = req.query.categoryId ? parseInt(String(req.query.categoryId), 10) : undefined;
+    const unpricedOnly = String(req.query.unpriced || "") === "1" || String(req.query.unpriced || "") === "true";
+    const sortByRaw = req.query.sortBy ? String(req.query.sortBy) : undefined;
+    const sortBy =
+      sortByRaw === "sku" || sortByRaw === "basePrice" || sortByRaw === "updatedAt" ? sortByRaw : "updatedAt";
+    const sortOrderRaw = req.query.sortOrder ? String(req.query.sortOrder).toLowerCase() : "desc";
+    const sortOrder = sortOrderRaw === "asc" ? "asc" : "desc";
 
     if (!orgId) {
       return res.status(400).json({
@@ -180,7 +188,16 @@ exports.listOrgPricing = async (req, res) => {
       });
     }
 
-    const result = await service.listOrgPricing({ orgId, page, limit });
+    const result = await service.listOrgPricing({
+      orgId,
+      page,
+      limit,
+      q,
+      categoryId: Number.isFinite(categoryId) ? categoryId : undefined,
+      unpricedOnly,
+      sortBy,
+      sortOrder,
+    });
 
     return res.status(200).json({
       success: true,
@@ -202,6 +219,26 @@ exports.listOrgPricing = async (req, res) => {
 };
 
 /**
+ * GET /api/v1/pricing/org/meta
+ * Category options and other lightweight filter metadata for org pricing workspace.
+ */
+exports.listOrgPricingMeta = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const orgId = req.query.orgId ? parseInt(String(req.query.orgId), 10) : NaN;
+    if (!Number.isFinite(orgId)) {
+      return res.status(400).json({ success: false, message: "orgId is required" });
+    }
+    const meta = await service.listOrgPricingMeta(orgId);
+    return res.status(200).json({ success: true, data: meta });
+  } catch (error: any) {
+    console.error("listOrgPricingMeta error:", error);
+    return res.status(500).json({ success: false, message: error?.message || "Failed to load meta" });
+  }
+};
+
+/**
  * POST /api/v1/pricing/org
  * Set org-level product pricing
  */
@@ -212,7 +249,7 @@ exports.setOrgPricing = async (req, res) => {
       return res.status(401).json({ success: false, message: "Unauthorized" });
     }
 
-    const { orgId, variantId, basePrice, markupPercent, minPrice, maxPrice, effectiveFrom, effectiveTo } = req.body;
+    const { orgId, variantId, basePrice, markupPercent, minPrice, maxPrice, mrp, effectiveFrom, effectiveTo } = req.body;
 
     if (!orgId || !variantId) {
       return res.status(400).json({
@@ -235,6 +272,7 @@ exports.setOrgPricing = async (req, res) => {
       markupPercent: markupPercent != null ? parseFloat(markupPercent) : null,
       minPrice: minPrice != null ? parseFloat(minPrice) : null,
       maxPrice: maxPrice != null ? parseFloat(maxPrice) : null,
+      mrp: mrp != null && mrp !== "" ? parseFloat(mrp) : null,
     };
     validateCentralPricingBand(payload);
 
@@ -245,7 +283,11 @@ exports.setOrgPricing = async (req, res) => {
     const pricing = await service.setOrgPricing({
       orgId: oid,
       variantId: vid,
-      ...payload,
+      basePrice: payload.basePrice,
+      markupPercent: payload.markupPercent,
+      minPrice: payload.minPrice,
+      maxPrice: payload.maxPrice,
+      mrp: payload.mrp,
       effectiveFrom: effectiveFrom ? new Date(effectiveFrom) : undefined,
       effectiveTo: effectiveTo ? new Date(effectiveTo) : null,
     });
@@ -409,6 +451,12 @@ exports.resolvePrice = async (req, res) => {
     const variantId = req.query.variantId ? parseInt(req.query.variantId) : undefined;
     const branchId = req.query.branchId ? parseInt(req.query.branchId) : null;
     const locationId = req.query.locationId ? parseInt(req.query.locationId) : null;
+    const enterprise = req.query.enterprise === "1";
+    let membershipTierId: number | null = null;
+    if (req.query.membershipTierId != null) {
+      const n = parseInt(String(req.query.membershipTierId), 10);
+      if (Number.isFinite(n)) membershipTierId = n;
+    }
 
     if (!orgId || !variantId) {
       return res.status(400).json({
@@ -417,12 +465,32 @@ exports.resolvePrice = async (req, res) => {
       });
     }
 
-    const resolved = await service.getResolvedSellingPrice({
-      orgId,
-      variantId,
-      branchId,
-      locationId,
-    });
+    let lotId: number | null = null;
+    if (req.query.lotId != null) {
+      const ln = parseInt(String(req.query.lotId), 10);
+      if (Number.isFinite(ln)) lotId = ln;
+    }
+
+    let resolved;
+    if (enterprise && branchId != null) {
+      const { resolveSellingPriceWithEnterprise } = require("./pricingEngine.service");
+      resolved = await resolveSellingPriceWithEnterprise({
+        orgId,
+        variantId,
+        branchId,
+        locationId,
+        shopLocationId: locationId,
+        membershipTierId,
+        lotId,
+      });
+    } else {
+      resolved = await service.getResolvedSellingPrice({
+        orgId,
+        variantId,
+        branchId,
+        locationId,
+      });
+    }
 
     return res.status(200).json({
       success: true,
@@ -430,6 +498,7 @@ exports.resolvePrice = async (req, res) => {
         price: resolved.price,
         source: resolved.source,
         breakdown: resolved.breakdown,
+        enterpriseTrace: resolved.enterpriseTrace ?? undefined,
       },
     });
   } catch (error) {
@@ -437,6 +506,66 @@ exports.resolvePrice = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: error.message || "Failed to resolve price",
+    });
+  }
+};
+
+/**
+ * POST /api/v1/pricing/org/bulk
+ * Bulk upsert org product pricing (rows validated individually).
+ */
+exports.bulkOrgPricing = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+    }
+    if (!canPrice(req, "pricing.central.write", "pricing.bulk.import")) {
+      return res.status(403).json({
+        success: false,
+        message: "pricing.central.write or pricing.bulk.import required",
+      });
+    }
+    const { orgId, rows } = req.body || {};
+    if (!orgId || !Array.isArray(rows) || rows.length === 0) {
+      return res.status(400).json({ success: false, message: "orgId and non-empty rows[] required" });
+    }
+    const oid = parseInt(orgId, 10);
+    const capped = rows.slice(0, 500);
+    for (const r of capped) {
+      const has =
+        r.basePrice != null ||
+        r.markupPercent != null ||
+        r.minPrice != null ||
+        r.maxPrice != null ||
+        (r.mrp != null && r.mrp !== "");
+      if (!has) continue;
+      const payload = {
+        basePrice: r.basePrice != null ? parseFloat(r.basePrice) : null,
+        markupPercent: r.markupPercent != null ? parseFloat(r.markupPercent) : null,
+        minPrice: r.minPrice != null ? parseFloat(r.minPrice) : null,
+        maxPrice: r.maxPrice != null ? parseFloat(r.maxPrice) : null,
+        mrp: r.mrp != null && r.mrp !== "" ? parseFloat(r.mrp) : null,
+      };
+      validateCentralPricingBand(payload);
+    }
+    const result = await service.bulkUpsertOrgPricing(
+      oid,
+      capped.map((r: any) => ({
+        variantId: parseInt(r.variantId, 10),
+        basePrice: r.basePrice != null ? parseFloat(r.basePrice) : null,
+        markupPercent: r.markupPercent != null ? parseFloat(r.markupPercent) : null,
+        minPrice: r.minPrice != null ? parseFloat(r.minPrice) : null,
+        maxPrice: r.maxPrice != null ? parseFloat(r.maxPrice) : null,
+        mrp: r.mrp != null && r.mrp !== "" ? parseFloat(r.mrp) : null,
+      }))
+    );
+    return res.status(200).json({ success: true, data: result });
+  } catch (error: any) {
+    console.error("bulkOrgPricing error:", error);
+    return res.status(400).json({
+      success: false,
+      message: error.message || "Failed bulk pricing update",
     });
   }
 };

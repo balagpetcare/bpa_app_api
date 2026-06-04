@@ -5,16 +5,38 @@ import path from 'path';
 type DivisionSeed = { code: string; nameEn: string; nameBn?: string };
 type DistrictSeed = { code: string; divisionCode: string; nameEn: string; nameBn?: string };
 type UpazilaSeed = { code: string; districtCode: string; nameEn: string; nameBn?: string };
-type AreaSeed = { code: string; upazilaCode?: string; nameEn: string; nameBn?: string; type: string };
+type AreaSeed = {
+  code: string;
+  upazilaCode?: string;
+  districtCode?: string;
+  unionCode?: string;
+  parentCode?: string;
+  nameEn: string;
+  nameBn?: string;
+  type: string;
+};
+
+function resolveSeedDataDir(): string {
+  const candidates = [
+    path.join(__dirname, '..', 'seed-data'),
+    path.join(__dirname, '..', 'schema_final_clean', 'seed-data'),
+  ];
+  for (const dir of candidates) {
+    if (fs.existsSync(path.join(dir, 'bd.divisions.json'))) return dir;
+  }
+  return candidates[0];
+}
+
+const SEED_DATA_DIR = resolveSeedDataDir();
 
 function readJson<T>(fileName: string): T {
-  const p = path.join(__dirname, '..', 'seed-data', fileName);
+  const p = path.join(SEED_DATA_DIR, fileName);
   return JSON.parse(fs.readFileSync(p, 'utf-8')) as T;
 }
 
 function readJsonIfExists<T>(fileName: string): T | null {
   try {
-    const p = path.join(__dirname, '..', 'seed-data', fileName);
+    const p = path.join(SEED_DATA_DIR, fileName);
     if (!fs.existsSync(p)) return null;
     return JSON.parse(fs.readFileSync(p, 'utf-8')) as T;
   } catch {
@@ -31,6 +53,7 @@ function readJsonIfExists<T>(fileName: string): T | null {
  * Skips gracefully if seed-data folder or any file is missing.
  */
 export default async function seedBaseBdLocations(prisma: PrismaClient) {
+  const prismaAny: any = prisma;
   const divisions = readJsonIfExists<DivisionSeed[]>('bd.divisions.json');
   if (!divisions || divisions.length === 0) {
     console.warn('⚠️ seedBaseBdLocations skipped: prisma/seed-data/bd.divisions.json not found or empty');
@@ -82,17 +105,50 @@ export default async function seedBaseBdLocations(prisma: PrismaClient) {
   const upzRows = await prisma.bdUpazila.findMany({ select: { id: true, code: true } });
   const upzIdByCode = new Map(upzRows.map((r) => [r.code, r.id] as const));
 
-  // 4) Legacy areas (union/area under upazila)
+  // 4) Canonical unions (new centralized level)
+  const unionSeeds = areas.filter((a) => String(a.type || '').toUpperCase() === 'UNION');
+  if (prismaAny.bdUnion && typeof prismaAny.bdUnion.upsert === 'function') {
+    for (const u of unionSeeds) {
+      const upazilaId = u.upazilaCode ? (upzIdByCode.get(u.upazilaCode) ?? null) : null;
+      if (!upazilaId) continue;
+      await prismaAny.bdUnion.upsert({
+        where: { code: u.code },
+        update: {
+          nameEn: u.nameEn,
+          nameBn: u.nameBn ?? null,
+          upazilaId,
+        },
+        create: {
+          code: u.code,
+          nameEn: u.nameEn,
+          nameBn: u.nameBn ?? null,
+          upazilaId,
+        },
+      });
+    }
+  }
+
+  const unionRows = prismaAny.bdUnion && typeof prismaAny.bdUnion.findMany === 'function'
+    ? await prismaAny.bdUnion.findMany({ select: { id: true, code: true } })
+    : [];
+  const unionIdByCode = new Map(unionRows.map((r: { id: number; code: string }) => [r.code, r.id] as const));
+
+  // 5) Legacy-compatible bd_areas (kept for backward compatibility)
   for (const a of areas) {
     const upazilaId = a.upazilaCode ? (upzIdByCode.get(a.upazilaCode) ?? null) : null;
+    const districtId = a.districtCode ? (disIdByCode.get(a.districtCode) ?? null) : null;
+    const unionId = a.unionCode
+      ? (unionIdByCode.get(a.unionCode) ?? null)
+      : (String(a.type || '').toUpperCase() === 'UNION' ? (unionIdByCode.get(a.code) ?? null) : null);
     await prisma.bdArea.upsert({
       where: { code: a.code },
       update: {
         nameEn: a.nameEn,
         nameBn: a.nameBn ?? null,
         type: a.type,
+        unionId,
         upazilaId,
-        districtId: null,
+        districtId,
         parentId: null,
       },
       create: {
@@ -100,8 +156,9 @@ export default async function seedBaseBdLocations(prisma: PrismaClient) {
         nameEn: a.nameEn,
         nameBn: a.nameBn ?? null,
         type: a.type,
+        unionId,
         upazilaId,
-        districtId: null,
+        districtId,
         parentId: null,
       },
     });

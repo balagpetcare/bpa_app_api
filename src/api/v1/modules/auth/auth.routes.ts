@@ -12,6 +12,9 @@ router.get("/health", (req, res) =>
 router.post("/register", authLimiter, auth.register);
 router.post("/login", authLimiter, auth.login);
 
+// OAuth (Google id_token sign-in; other providers stubbed until configured)
+router.use("/oauth", require("./oauth.routes"));
+
 // Staff-specific login and context
 router.post("/staff/login", authLimiter, auth.staffLogin);
 router.get("/staff/context", authenticateToken, auth.getStaffContext);

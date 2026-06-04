@@ -7,8 +7,13 @@ EXCEPTION
   WHEN duplicate_object THEN NULL;
 END $$;
 
--- warehouses
-ALTER TABLE "warehouses" ADD COLUMN IF NOT EXISTS "poOverReceiptTolerancePercent" DECIMAL(5,2);
+-- warehouses (table created in 20260428150000; this migration timestamp runs earlier)
+DO $$
+BEGIN
+  IF to_regclass('public.warehouses') IS NOT NULL THEN
+    ALTER TABLE "warehouses" ADD COLUMN IF NOT EXISTS "poOverReceiptTolerancePercent" DECIMAL(5,2);
+  END IF;
+END $$;
 
 -- grns
 ALTER TABLE "grns" ADD COLUMN IF NOT EXISTS "receiveIdempotencyKey" VARCHAR(64);
@@ -36,9 +41,11 @@ ALTER TABLE "grn_lines" ADD COLUMN IF NOT EXISTS "supplierBarcode" VARCHAR(128);
 ALTER TABLE "grn_lines" ADD COLUMN IF NOT EXISTS "receiveBarcode" VARCHAR(128);
 ALTER TABLE "grn_lines" ADD COLUMN IF NOT EXISTS "lineRemarks" TEXT;
 
+-- FK target `purchase_order_lines` is created in 20260429120000 (this migration is dated earlier).
 DO $$
 BEGIN
-  IF NOT EXISTS (
+  IF to_regclass('public.purchase_order_lines') IS NOT NULL
+     AND NOT EXISTS (
     SELECT 1 FROM pg_constraint WHERE conname = 'grn_lines_purchaseOrderLineId_fkey'
   ) THEN
     ALTER TABLE "grn_lines" ADD CONSTRAINT "grn_lines_purchaseOrderLineId_fkey"

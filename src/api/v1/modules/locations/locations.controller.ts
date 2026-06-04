@@ -5,6 +5,7 @@
 
 const axios = require('axios');
 const { matchCoordinatesToLocation } = require('./locationMatcher.service');
+const locationService = require('../../../../modules/location/location.service');
 
 // Phase 3: Redis cache when available, else in-memory (TTL: 1 hour in-memory, 24h Redis)
 const CACHE_TTL_MS = 60 * 60 * 1000;
@@ -227,12 +228,13 @@ exports.searchAreas = async (req, res) => {
 
 exports.listDivisions = async (req, res) => {
   try {
-    const prisma = getPrisma(req);
-    const rows = await prisma.bdDivision.findMany({
-      orderBy: { nameEn: 'asc' },
-      select: { id: true, code: true, nameEn: true, nameBn: true }
+    const result = await locationService.listDivisions(getPrisma(req), {
+      q: req.query?.q,
+      page: req.query?.page,
+      pageSize: req.query?.pageSize || req.query?.limit,
+      locale: req.query?.locale,
     });
-    res.json({ success: true, data: rows });
+    res.json({ success: true, ...result });
   } catch (e) {
     res.status(500).json({ success: false, message: e?.message || 'Server error' });
   }
@@ -240,24 +242,14 @@ exports.listDivisions = async (req, res) => {
 
 exports.listDistricts = async (req, res) => {
   try {
-    const prisma = getPrisma(req);
-    const divisionId = asInt(req.query.divisionId);
-    const q = safeStr(req.query.q).trim();
-    const limit = Math.min(parseInt(req.query.limit || '100', 10) || 100, 200);
-
-    const rows = await prisma.bdDistrict.findMany({
-      where: {
-        ...(divisionId ? { divisionId } : {}),
-        ...(q
-          ? { OR: [{ nameEn: { contains: q, mode: 'insensitive' } }, { nameBn: { contains: q, mode: 'insensitive' } }] }
-          : {})
-      },
-      orderBy: { nameEn: 'asc' },
-      take: limit,
-      select: { id: true, code: true, nameEn: true, nameBn: true, divisionId: true }
+    const result = await locationService.listDistricts(getPrisma(req), {
+      divisionId: req.query?.divisionId,
+      q: req.query?.q,
+      page: req.query?.page,
+      pageSize: req.query?.pageSize || req.query?.limit,
+      locale: req.query?.locale,
     });
-
-    res.json({ success: true, data: rows });
+    res.json({ success: true, ...result });
   } catch (e) {
     res.status(500).json({ success: false, message: e?.message || 'Server error' });
   }
@@ -265,24 +257,29 @@ exports.listDistricts = async (req, res) => {
 
 exports.listUpazilas = async (req, res) => {
   try {
-    const prisma = getPrisma(req);
-    const districtId = asInt(req.query.districtId);
-    const q = safeStr(req.query.q).trim();
-    const limit = Math.min(parseInt(req.query.limit || '200', 10) || 200, 300);
-
-    const rows = await prisma.bdUpazila.findMany({
-      where: {
-        ...(districtId ? { districtId } : {}),
-        ...(q
-          ? { OR: [{ nameEn: { contains: q, mode: 'insensitive' } }, { nameBn: { contains: q, mode: 'insensitive' } }] }
-          : {})
-      },
-      orderBy: { nameEn: 'asc' },
-      take: limit,
-      select: { id: true, code: true, nameEn: true, nameBn: true, districtId: true }
+    const result = await locationService.listUpazilas(getPrisma(req), {
+      districtId: req.query?.districtId,
+      q: req.query?.q,
+      page: req.query?.page,
+      pageSize: req.query?.pageSize || req.query?.limit,
+      locale: req.query?.locale,
     });
+    res.json({ success: true, ...result });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e?.message || 'Server error' });
+  }
+};
 
-    res.json({ success: true, data: rows });
+exports.listUnions = async (req, res) => {
+  try {
+    const result = await locationService.listUnions(getPrisma(req), {
+      upazilaId: req.query?.upazilaId,
+      q: req.query?.q,
+      page: req.query?.page,
+      pageSize: req.query?.pageSize || req.query?.limit,
+      locale: req.query?.locale,
+    });
+    res.json({ success: true, ...result });
   } catch (e) {
     res.status(500).json({ success: false, message: e?.message || 'Server error' });
   }
@@ -290,28 +287,15 @@ exports.listUpazilas = async (req, res) => {
 
 exports.listBdAreas = async (req, res) => {
   try {
-    const prisma = getPrisma(req);
-    const upazilaId = asInt(req.query.upazilaId);
-    const districtId = asInt(req.query.districtId);
-    const parentId = req.query.parentId !== undefined ? asInt(req.query.parentId) : undefined;
-    const q = safeStr(req.query.q).trim();
-    const limit = Math.min(parseInt(req.query.limit || '200', 10) || 200, 400);
-
-    const rows = await prisma.bdArea.findMany({
-      where: {
-        ...(upazilaId ? { upazilaId } : {}),
-        ...(districtId ? { districtId } : {}),
-        ...(parentId !== undefined ? { parentId: parentId || null } : {}),
-        ...(q
-          ? { OR: [{ nameEn: { contains: q, mode: 'insensitive' } }, { nameBn: { contains: q, mode: 'insensitive' } }] }
-          : {})
-      },
-      orderBy: { nameEn: 'asc' },
-      take: limit,
-      select: { id: true, code: true, nameEn: true, nameBn: true, type: true, upazilaId: true, districtId: true, parentId: true }
+    const result = await locationService.listAreas(getPrisma(req), {
+      upazilaId: req.query?.upazilaId,
+      unionId: req.query?.unionId,
+      q: req.query?.q,
+      page: req.query?.page,
+      pageSize: req.query?.pageSize || req.query?.limit,
+      locale: req.query?.locale,
     });
-
-    res.json({ success: true, data: rows });
+    res.json({ success: true, ...result });
   } catch (e) {
     res.status(500).json({ success: false, message: e?.message || 'Server error' });
   }
@@ -325,99 +309,127 @@ exports.searchLocations = async (req, res) => {
   try {
     const prisma = getPrisma(req);
     const q = safeStr(req.query.q).trim();
-    const limit = Math.min(parseInt(req.query.limit || '20', 10) || 20, 50);
-    if (!q) return res.json({ success: true, data: [] });
+    if (!q) return res.json({ success: true, data: [], meta: { page: 1, pageSize: 25, total: 0, totalPages: 1 } });
 
-    // 1) Search BD areas
-    const bdRows = await prisma.bdArea.findMany({
-      where: {
-        OR: [
-          { nameEn: { contains: q, mode: 'insensitive' } },
-          { nameBn: { contains: q, mode: 'insensitive' } },
-          { code: { contains: q, mode: 'insensitive' } }
-        ]
-      },
-      take: limit,
-      orderBy: { nameEn: 'asc' },
-      select: {
-        id: true,
-        nameEn: true,
-        nameBn: true,
-        type: true,
-        upazilaId: true,
-        districtId: true,
-        parentId: true,
-        latitude: true,
-        longitude: true
-      }
+    const central = await locationService.searchLocations(prisma, {
+      q,
+      level: req.query?.level || "ALL",
+      divisionId: req.query?.divisionId,
+      districtId: req.query?.districtId,
+      upazilaId: req.query?.upazilaId,
+      unionId: req.query?.unionId,
+      page: req.query?.page,
+      pageSize: req.query?.pageSize || req.query?.limit,
+      locale: req.query?.locale,
     });
 
-    const bdItems = [];
-    for (const r of bdRows) {
-      // eslint-disable-next-line no-await-in-loop
-      const fullPathText = await buildBdAreaFullPath(prisma, r);
-      bdItems.push({
-        kind: 'BD_AREA',
-        bdAreaId: r.id,
-        nameEn: r.nameEn,
-        nameBn: r.nameBn,
-        type: r.type,
-        fullPathText,
-        latitude: r.latitude ? Number(r.latitude) : null,
-        longitude: r.longitude ? Number(r.longitude) : null
-      });
-      if (bdItems.length >= limit) break;
-    }
+    const bdData = (central.data || []).map((row) => ({
+      kind: row.level === "AREA" ? "BD_AREA" : row.level,
+      level: row.level,
+      id: row.id,
+      code: row.code,
+      nameEn: row.nameEn,
+      nameBn: row.nameBn,
+      label: row.label,
+      divisionId: row.divisionId || null,
+      districtId: row.districtId || null,
+      upazilaId: row.upazilaId || null,
+      unionId: row.unionId || null,
+      type: row.type || null,
+      fullPathText: row.label || row.nameEn || row.nameBn || null,
+    }));
 
-    // 2) Search Dhaka fast areas (optional)
-    const dhakaRows = await prisma.area.findMany({
-      where: {
-        OR: [
-          { nameEn: { contains: q, mode: 'insensitive' } },
-          { nameBn: { contains: q, mode: 'insensitive' } },
-          { searchKeywords: { contains: q, mode: 'insensitive' } }
-        ]
-      },
-      take: limit,
-      orderBy: { nameEn: 'asc' },
-      select: {
-        id: true,
-        nameEn: true,
-        nameBn: true,
-        parentId: true,
-        cityCorporationId: true,
-        latitude: true,
-        longitude: true
+    // Backward compatibility: keep Dhaka tree search results unless caller disables it.
+    const includeDhaka = String(req.query?.includeDhaka ?? "1").toLowerCase();
+    let dhakaItems = [];
+    if (includeDhaka !== "0" && includeDhaka !== "false") {
+      const limit = Math.min(parseInt(req.query.limit || req.query.pageSize || '20', 10) || 20, 50);
+      const dhakaRows = await prisma.area.findMany({
+        where: {
+          OR: [
+            { nameEn: { contains: q, mode: 'insensitive' } },
+            { nameBn: { contains: q, mode: 'insensitive' } },
+            { searchKeywords: { contains: q, mode: 'insensitive' } },
+          ],
+        },
+        take: limit,
+        orderBy: { nameEn: 'asc' },
+        select: {
+          id: true,
+          nameEn: true,
+          nameBn: true,
+          cityCorporationId: true,
+        },
+      });
+      for (const row of dhakaRows) {
+        // eslint-disable-next-line no-await-in-loop
+        const corp = await prisma.cityCorporation.findUnique({
+          where: { id: row.cityCorporationId },
+          select: { code: true, nameEn: true, nameBn: true },
+        });
+        // eslint-disable-next-line no-await-in-loop
+        const { names } = await buildDhakaAreaPath(prisma, row.id);
+        const corpName = corp?.nameEn || corp?.nameBn || corp?.code;
+        dhakaItems.push({
+          kind: 'DHAKA_AREA',
+          level: 'AREA',
+          id: row.id,
+          dhakaAreaId: row.id,
+          cityCorporationId: row.cityCorporationId,
+          cityCorporationCode: corp?.code || null,
+          nameEn: row.nameEn,
+          nameBn: row.nameBn,
+          label: row.nameEn || row.nameBn,
+          fullPathText: [corpName, ...names.reverse()].filter(Boolean).join(' > '),
+        });
       }
-    });
-
-    const dhakaItems = [];
-    for (const r of dhakaRows) {
-      // eslint-disable-next-line no-await-in-loop
-      const corp = await prisma.cityCorporation.findUnique({ where: { id: r.cityCorporationId }, select: { code: true, nameEn: true, nameBn: true } });
-      // eslint-disable-next-line no-await-in-loop
-      const { names } = await buildDhakaAreaPath(prisma, r.id);
-      const corpName = corp?.nameEn || corp?.nameBn || corp?.code;
-      const fullPathText = [corpName, ...names.reverse()].filter(Boolean).join(' > ');
-      dhakaItems.push({
-        kind: 'DHAKA_AREA',
-        cityCorporationId: r.cityCorporationId,
-        dhakaAreaId: r.id,
-        nameEn: r.nameEn,
-        nameBn: r.nameBn,
-        fullPathText,
-        cityCorporationCode: corp?.code || null,
-        latitude: r.latitude ? Number(r.latitude) : null,
-        longitude: r.longitude ? Number(r.longitude) : null
-      });
-      if (dhakaItems.length >= limit) break;
     }
 
-    // Merge + cap
-    const data = [...bdItems, ...dhakaItems].slice(0, limit);
-    res.json({ success: true, data });
+    const data = [...bdData, ...dhakaItems];
+    res.json({ success: true, data, meta: central.meta });
   } catch (e) {
     res.status(500).json({ success: false, message: e?.message || 'Server error' });
+  }
+};
+
+exports.validateSelection = async (req, res) => {
+  try {
+    const validated = await locationService.validateSelection(getPrisma(req), req.body || {});
+    if (!validated.ok) return res.status(400).json({ success: false, ...validated });
+    return res.json({ success: true, data: validated });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e?.message || "Server error" });
+  }
+};
+
+exports.listCoverage = async (req, res) => {
+  try {
+    const entityType = String(req.params.entityType || "").toUpperCase();
+    const entityId = Number(req.params.entityId);
+    if (!entityType || !Number.isFinite(entityId)) {
+      return res.status(400).json({ success: false, message: "entityType and entityId are required" });
+    }
+    const data = await locationService.listCoverage(getPrisma(req), entityType, entityId);
+    return res.json({ success: true, data });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e?.message || "Server error" });
+  }
+};
+
+exports.replaceCoverage = async (req, res) => {
+  try {
+    const entityType = String(req.params.entityType || "").toUpperCase();
+    const entityId = Number(req.params.entityId);
+    if (!entityType || !Number.isFinite(entityId)) {
+      return res.status(400).json({ success: false, message: "entityType and entityId are required" });
+    }
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+    const replaced = await locationService.replaceCoverage(getPrisma(req), entityType, entityId, rows);
+    if (!replaced.ok) return res.status(400).json({ success: false, ...replaced });
+    const data = await locationService.listCoverage(getPrisma(req), entityType, entityId);
+    return res.json({ success: true, data });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e?.message || "Server error" });
   }
 };
 

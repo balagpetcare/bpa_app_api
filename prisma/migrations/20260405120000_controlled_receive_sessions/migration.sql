@@ -82,5 +82,6 @@ SELECT g."orgId", g."id", 'DRAFT'::"VendorReceiveSessionStatus", CURRENT_TIMESTA
 FROM "grns" g
 WHERE g."status" = 'DRAFT'
   AND g."stockDispatchId" IS NULL
-  AND (g."vendorId" IS NOT NULL OR g."purchaseOrderId" IS NOT NULL OR g."inboundShipmentId" IS NOT NULL)
+  -- g.purchaseOrderId added in 20260429120000; deferred backfill there for PO-only GRNs
+  AND (g."vendorId" IS NOT NULL OR g."inboundShipmentId" IS NOT NULL)
   AND NOT EXISTS (SELECT 1 FROM "vendor_receive_sessions" v WHERE v."grnId" = g."id");

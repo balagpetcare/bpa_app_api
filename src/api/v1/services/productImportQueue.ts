@@ -2,19 +2,15 @@
  * BullMQ queue for product import jobs. Enqueue from upload endpoint; process in productImportWorker.
  */
 import { Queue } from "bullmq";
+import { areRedisQueuesEnabled } from "../../../infrastructure/redis/redis.client";
+import { getRedisConnectionOptions, isRedisEnabled } from "../../../infrastructure/redis/redisConnection";
 
-const redisConfig = {
-  host: process.env.REDIS_HOST || "localhost",
-  port: Number(process.env.REDIS_PORT) || 6379,
-  maxRetriesPerRequest: null,
-};
-
-const REDIS_ENABLED = process.env.REDIS_ENABLED !== "false" && process.env.REDIS_ENABLED !== "0";
+const redisConfig = getRedisConnectionOptions();
 
 let productImportQueue: Queue | null = null;
 
 export function getProductImportQueue(): Queue | null {
-  if (!REDIS_ENABLED) return null;
+  if (!isRedisEnabled() || !areRedisQueuesEnabled()) return null;
   if (productImportQueue) return productImportQueue;
   try {
     productImportQueue = new Queue("product_import", { connection: redisConfig });
@@ -47,5 +43,5 @@ export async function enqueueProductImportJob(payload: ProductImportJobPayload):
 }
 
 export function isProductImportQueueEnabled(): boolean {
-  return REDIS_ENABLED && getProductImportQueue() !== null;
+  return isRedisEnabled() && areRedisQueuesEnabled() && getProductImportQueue() !== null;
 }

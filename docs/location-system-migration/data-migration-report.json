@@ -1,0 +1,33 @@
+{
+  "generatedAt": "2026-06-03T07:57:08.394Z",
+  "userProfiles": {
+    "scanned": 3,
+    "updated": 0
+  },
+  "ownerProfiles": {
+    "scanned": 1,
+    "updated": 0
+  },
+  "organizations": {
+    "scanned": 0,
+    "updated": 0
+  },
+  "branches": {
+    "scanned": 0,
+    "updated": 0
+  },
+  "doctors": {
+    "scanned": 0,
+    "updated": 0
+  },
+  "producers": {
+    "orgs": {
+      "scanned": 0,
+      "updated": 0
+    },
+    "factories": {
+      "scanned": 0,
+      "updated": 0
+    }
+  }
+}

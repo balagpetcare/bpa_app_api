@@ -22,6 +22,14 @@ export async function updateOrgPolicy(
     enforceBranchOverrideWithinCentralBand?: boolean;
     retailDiscountApprovalEnabled?: boolean;
     posPricingGovernanceEnabled?: boolean;
+    posUseEnterpriseListResolution?: boolean;
+    blockSaleBelowCost?: boolean;
+    blockSaleBelowFloor?: boolean;
+    allowCampaignStacking?: boolean;
+    allowMembershipStacking?: boolean;
+    scheduledPricingEnabled?: boolean;
+    batchPricingEnabled?: boolean;
+    defaultMaxDiscountPercent?: number | null;
   },
   actorUserId: number | null
 ) {
@@ -38,6 +46,18 @@ export async function updateOrgPolicy(
       }),
       ...(data.posPricingGovernanceEnabled !== undefined && {
         posPricingGovernanceEnabled: data.posPricingGovernanceEnabled,
+      }),
+      ...(data.posUseEnterpriseListResolution !== undefined && {
+        posUseEnterpriseListResolution: data.posUseEnterpriseListResolution,
+      }),
+      ...(data.blockSaleBelowCost !== undefined && { blockSaleBelowCost: data.blockSaleBelowCost }),
+      ...(data.blockSaleBelowFloor !== undefined && { blockSaleBelowFloor: data.blockSaleBelowFloor }),
+      ...(data.allowCampaignStacking !== undefined && { allowCampaignStacking: data.allowCampaignStacking }),
+      ...(data.allowMembershipStacking !== undefined && { allowMembershipStacking: data.allowMembershipStacking }),
+      ...(data.scheduledPricingEnabled !== undefined && { scheduledPricingEnabled: data.scheduledPricingEnabled }),
+      ...(data.batchPricingEnabled !== undefined && { batchPricingEnabled: data.batchPricingEnabled }),
+      ...(data.defaultMaxDiscountPercent !== undefined && {
+        defaultMaxDiscountPercent: data.defaultMaxDiscountPercent,
       }),
     },
   });
@@ -77,32 +97,35 @@ export async function logPricingAudit(params: {
   });
 }
 
-/** Validates floor ≤ base ≤ MRP (maxPrice) and markup result within band. */
+/** Validates floor ≤ base ≤ min(maxPrice, mrp) and markup result within band. */
 export function validateCentralPricingBand(data: {
   basePrice?: number | null;
   markupPercent?: number | null;
   minPrice?: number | null;
   maxPrice?: number | null;
+  mrp?: number | null;
 }) {
   const min = data.minPrice != null ? Number(data.minPrice) : null;
   const max = data.maxPrice != null ? Number(data.maxPrice) : null;
+  const mrp = data.mrp != null ? Number(data.mrp) : null;
+  const upper = mrp != null && max != null ? Math.min(mrp, max) : mrp ?? max;
   const base = data.basePrice != null ? Number(data.basePrice) : null;
-  if (min != null && max != null && min > max + 1e-6) {
-    throw new Error("minPrice (floor) cannot exceed maxPrice (MRP cap)");
+  if (min != null && upper != null && min > upper + 1e-6) {
+    throw new Error("minPrice (floor) cannot exceed MRP upper cap (min of maxPrice and regulatory MRP)");
   }
   if (base != null && min != null && base < min - 1e-6) {
     throw new Error("basePrice cannot be below minPrice (floor)");
   }
-  if (base != null && max != null && base > max + 1e-6) {
-    throw new Error("basePrice cannot exceed maxPrice (MRP)");
+  if (base != null && upper != null && base > upper + 1e-6) {
+    throw new Error("basePrice cannot exceed MRP upper cap");
   }
   if (base != null && data.markupPercent != null) {
     const after = base * (1 + Number(data.markupPercent) / 100);
     if (min != null && after < min - 1e-6) {
       throw new Error("List price after markup would be below floor (minPrice)");
     }
-    if (max != null && after > max + 1e-6) {
-      throw new Error("List price after markup would exceed MRP (maxPrice)");
+    if (upper != null && after > upper + 1e-6) {
+      throw new Error("List price after markup would exceed MRP upper cap");
     }
   }
 }
@@ -116,22 +139,34 @@ export async function assertBranchOverrideWithinPolicy(orgId: number, variantId:
   if (!pp) return;
   const min = pp.minPrice != null ? Number(pp.minPrice) : null;
   const max = pp.maxPrice != null ? Number(pp.maxPrice) : null;
+  const mrp = pp.mrp != null ? Number(pp.mrp) : null;
+  const upper = mrp != null && max != null ? Math.min(mrp, max) : mrp ?? max;
   const p = Number(overridePrice);
   if (min != null && p < min - 1e-6) {
     throw new Error(`Branch override ${p} is below central floor (minPrice) ${min}`);
   }
-  if (max != null && p > max + 1e-6) {
-    throw new Error(`Branch override ${p} exceeds central MRP cap (maxPrice) ${max}`);
+  if (upper != null && p > upper + 1e-6) {
+    throw new Error(`Branch override ${p} exceeds central MRP cap ${upper}`);
   }
 }
 
-export async function listPricingAudit(orgId: number, opts?: { page?: number; limit?: number }) {
+export async function listPricingAudit(
+  orgId: number,
+  opts?: { page?: number; limit?: number; entityType?: string; entityKeyContains?: string }
+) {
   const page = opts?.page ?? 1;
   const limit = Math.min(opts?.limit ?? 50, 200);
   const skip = (page - 1) * limit;
+  const where: Prisma.PricingAuditLogWhereInput = { orgId };
+  if (opts?.entityType && String(opts.entityType).trim()) {
+    where.entityType = String(opts.entityType).trim() as PricingAuditEntityType;
+  }
+  if (opts?.entityKeyContains && String(opts.entityKeyContains).trim()) {
+    where.entityKey = { contains: String(opts.entityKeyContains).trim(), mode: "insensitive" };
+  }
   const [items, total] = await Promise.all([
     prisma.pricingAuditLog.findMany({
-      where: { orgId },
+      where,
       orderBy: { createdAt: "desc" },
       skip,
       take: limit,
@@ -139,7 +174,7 @@ export async function listPricingAudit(orgId: number, opts?: { page?: number; li
         actor: { select: { id: true, profile: { select: { displayName: true } } } },
       },
     }),
-    prisma.pricingAuditLog.count({ where: { orgId } }),
+    prisma.pricingAuditLog.count({ where }),
   ]);
   return { items, total, page, limit, totalPages: Math.ceil(total / limit) || 1 };
 }

@@ -22,6 +22,11 @@ router.post("/from-medicine-requisition", mutateAllocation, controller.createFro
 router.post("/:id(\\d+)/lines/manual", mutateAllocation, controller.addManualLine);
 router.post("/:id(\\d+)/reallocate", mutateAllocation, controller.reallocate);
 router.post("/:id(\\d+)/run-fefo", mutateAllocation, controller.runFefo);
+router.post(
+  "/:id(\\d+)/supplementary-from-backorders",
+  mutateAllocation,
+  controller.createSupplementaryFromBackorders
+);
 router.post("/:id(\\d+)/confirm", mutateAllocation, controller.confirm);
 router.post("/:id(\\d+)/cancel", mutateAllocation, controller.cancel);
 

@@ -30,7 +30,7 @@ describe("permissionsRegistry.service", () => {
         expect(p).toHaveProperty("label", expect.any(String));
         expect(p).toHaveProperty("group", group);
         expect(p).toHaveProperty("description", expect.any(String));
-        expect(["admin", "producer", "both", "branch"]).toContain(p.scope);
+        expect(["admin", "producer", "both", "branch", "org"]).toContain(p.scope);
       }
     }
   });

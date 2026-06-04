@@ -10,6 +10,42 @@ const { auditStockDispatch } = require("./auditHelper");
 const { INVENTORY_ERROR_CODES } = require("../../constants/inventoryErrors");
 const { logWarehouseAudit, auditMetadataFromRequest } = require("../warehouse/warehouseAudit.service");
 
+/** Legacy transfer vs allocation plan / feature flags — align with stock_requests owner mutations. */
+function inventoryLegacyFulfillmentErrorResponse(e: unknown): { status: number; body: Record<string, unknown> } | null {
+  const raw = String((e as Error)?.message || "");
+  if (raw.startsWith("ALLOCATION_PLAN_BLOCKS_LEGACY:")) {
+    return {
+      status: 409,
+      body: {
+        success: false,
+        code: "ALLOCATION_PLAN_BLOCKS_LEGACY",
+        message: raw.replace(/^ALLOCATION_PLAN_BLOCKS_LEGACY:\s*/, "").trim(),
+      },
+    };
+  }
+  if (raw.startsWith("LEGACY_STOCK_REQUEST_FULFILL_DISABLED:")) {
+    return {
+      status: 403,
+      body: {
+        success: false,
+        code: "LEGACY_STOCK_REQUEST_FULFILL_DISABLED",
+        message: raw.replace(/^LEGACY_STOCK_REQUEST_FULFILL_DISABLED:\s*/, "").trim(),
+      },
+    };
+  }
+  if (raw.startsWith("LEGACY_STOCK_TRANSFER_DISABLED:")) {
+    return {
+      status: 403,
+      body: {
+        success: false,
+        code: "LEGACY_STOCK_TRANSFER_DISABLED",
+        message: raw.replace(/^LEGACY_STOCK_TRANSFER_DISABLED:\s*/, "").trim(),
+      },
+    };
+  }
+  return null;
+}
+
 /**
  * Strip cost-related fields from response data for non-owner roles.
  * Owner/warehouse managers can see cost; branch staff cannot.
@@ -1296,7 +1332,7 @@ exports.getValuation = async (req, res) => {
 
 /**
  * GET /api/v1/inventory/variants/search
- * Searchable product/variant picker for bulk receive. Query: q=, orgId=, limit=, page=
+ * Searchable product/variant picker for bulk receive. Query: q=, orgId=, limit=, page=, variantId= (resolve one row for hydration when q is empty)
  * Resolves orgIds from user (owner orgs + member orgs).
  */
 exports.getVariantsSearch = async (req, res) => {
@@ -1324,6 +1360,8 @@ exports.getVariantsSearch = async (req, res) => {
     const catRaw = req.query.categoryId != null ? parseInt(String(req.query.categoryId), 10) : NaN;
     const brandRaw = req.query.brandId != null ? parseInt(String(req.query.brandId), 10) : NaN;
     const variantActive = String(req.query.variantActive || "").toLowerCase();
+    const variantIdRaw = req.query.variantId != null ? parseInt(String(req.query.variantId), 10) : NaN;
+    const variantId = Number.isFinite(variantIdRaw) && variantIdRaw > 0 ? variantIdRaw : undefined;
     const result = await service.getVariantsSearch({
       orgIds: effectiveOrgIds,
       q: req.query.q as string | undefined,
@@ -1332,6 +1370,7 @@ exports.getVariantsSearch = async (req, res) => {
       categoryId: Number.isFinite(catRaw) && catRaw > 0 ? catRaw : undefined,
       brandId: Number.isFinite(brandRaw) && brandRaw > 0 ? brandRaw : undefined,
       variantActiveOnly: variantActive === "all" ? false : true,
+      variantId,
     });
     return res.status(200).json({ success: true, data: result.items, pagination: result.pagination });
   } catch (e) {
@@ -2065,6 +2104,8 @@ exports.createInventoryTransfer = async (req: any, res: any) => {
     return res.status(201).json({ success: true, data: transfer, message: "Transfer created" });
   } catch (e: unknown) {
     console.error("createInventoryTransfer error:", e);
+    const mapped = inventoryLegacyFulfillmentErrorResponse(e);
+    if (mapped) return res.status(mapped.status).json(mapped.body);
     return res.status(400).json({ success: false, message: (e as Error).message });
   }
 };
@@ -2105,6 +2146,8 @@ exports.dispatchInventoryTransfer = async (req: any, res: any) => {
     return res.status(200).json({ success: true, data: result, message: "Transfer dispatched" });
   } catch (e: unknown) {
     console.error("dispatchInventoryTransfer error:", e);
+    const mapped = inventoryLegacyFulfillmentErrorResponse(e);
+    if (mapped) return res.status(mapped.status).json(mapped.body);
     const code = (e as any)?.code;
     if (code === "LOT_EXPIRED" || code === INVENTORY_ERROR_CODES.LOT_EXPIRED) {
       return res.status(400).json({ success: false, message: (e as Error).message, code });
@@ -2200,6 +2243,50 @@ exports.lookupVariantByBarcode = async (req: any, res: any) => {
     }
     console.error("lookupVariantByBarcode error:", e);
     return res.status(500).json({ success: false, message: (e as Error).message });
+  }
+};
+
+/** GET /api/v1/inventory/vendor-receipts/:id/print/grn — HTML GRN print (alias of GET /api/v1/grn/:id/print). */
+exports.printVendorReceiptGrnHtml = async (req: any, res: any) => {
+  try {
+    const userId = req.user?.id ?? req.user?.userId;
+    const uid = Number(userId);
+    if (!Number.isFinite(uid) || uid <= 0) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const orgIds = await grnService.getOrgIdsForUser(uid);
+    if (!orgIds.length) return res.status(403).json({ success: false, message: "No organization access" });
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ success: false, message: "Invalid id" });
+    const grnRow = await prisma.grn.findFirst({ where: { id, orgId: { in: orgIds } }, select: { orgId: true } });
+    if (!grnRow) return res.status(404).json({ success: false, message: "GRN not found" });
+    const { renderGrnPrintHtml } = require("./printDocuments.service");
+    const html = await renderGrnPrintHtml(id, grnRow.orgId);
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    return res.status(200).send(html);
+  } catch (e: any) {
+    console.error("printVendorReceiptGrnHtml", e);
+    return res.status(400).json({ success: false, message: e?.message || "Failed to render print" });
+  }
+};
+
+/** GET /api/v1/inventory/vendor-receipts/:id/print/delivery-note — HTML vendor delivery note for GRN. */
+exports.printVendorReceiptDeliveryNoteHtml = async (req: any, res: any) => {
+  try {
+    const userId = req.user?.id ?? req.user?.userId;
+    const uid = Number(userId);
+    if (!Number.isFinite(uid) || uid <= 0) return res.status(401).json({ success: false, message: "Unauthorized" });
+    const orgIds = await grnService.getOrgIdsForUser(uid);
+    if (!orgIds.length) return res.status(403).json({ success: false, message: "No organization access" });
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ success: false, message: "Invalid id" });
+    const grnRow = await prisma.grn.findFirst({ where: { id, orgId: { in: orgIds } }, select: { orgId: true } });
+    if (!grnRow) return res.status(404).json({ success: false, message: "GRN not found" });
+    const { renderGrnDeliveryNoteHtml } = require("./printDocuments.service");
+    const html = await renderGrnDeliveryNoteHtml(id, grnRow.orgId);
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    return res.status(200).send(html);
+  } catch (e: any) {
+    console.error("printVendorReceiptDeliveryNoteHtml", e);
+    return res.status(400).json({ success: false, message: e?.message || "Failed to render delivery note" });
   }
 };
 

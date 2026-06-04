@@ -10,7 +10,11 @@ import { Server as HttpServer } from "http";
 const jwt = require("jsonwebtoken");
 const appConfig = require("../config/appConfig");
 
-const REDIS_ENABLED = process.env.REDIS_ENABLED !== "false" && process.env.REDIS_ENABLED !== "0";
+import {
+  createDedicatedRedisClient,
+  isRedisPubSubEnabled,
+} from "../infrastructure/redis/redis.client";
+
 let redisPublisher: any = null;
 let redisSubscriber: any = null;
 const roomPrefix = "user:";
@@ -24,39 +28,21 @@ const wsToUserId = new Map<WebSocket, number>();
 const subscribedChannels = new Set<string>();
 
 function getRedisPublisher(): any {
-  if (!REDIS_ENABLED) return null;
+  if (!isRedisPubSubEnabled()) return null;
   if (redisPublisher) return redisPublisher;
-  try {
-    const Redis = require("ioredis");
-    redisPublisher = new Redis({
-      host: process.env.REDIS_HOST || "localhost",
-      port: Number(process.env.REDIS_PORT) || 6379,
-      maxRetriesPerRequest: 3,
-    });
-    redisPublisher.on("error", (err: Error) => console.warn("[Redis Publisher]", err?.message));
-  } catch (e) {
-    redisPublisher = null;
-  }
+  redisPublisher = createDedicatedRedisClient("realtime-publisher");
   return redisPublisher;
 }
 
 function getRedisSubscriber(): any {
-  if (!REDIS_ENABLED) return null;
+  if (!isRedisPubSubEnabled()) return null;
   if (redisSubscriber) return redisSubscriber;
-  try {
-    const Redis = require("ioredis");
-    redisSubscriber = new Redis({
-      host: process.env.REDIS_HOST || "localhost",
-      port: Number(process.env.REDIS_PORT) || 6379,
-      maxRetriesPerRequest: 3,
-    });
-    redisSubscriber.on("error", (err: Error) => console.warn("[Redis Subscriber]", err?.message));
+  redisSubscriber = createDedicatedRedisClient("realtime-subscriber");
+  if (redisSubscriber) {
     redisSubscriber.on("message", (channel: string, message: string) => {
       const roomKey = channel.startsWith(channelPrefix) ? channel.replace(channelPrefix, roomPrefix) : null;
       if (roomKey) broadcastToRoom(roomKey, message);
     });
-  } catch (e) {
-    redisSubscriber = null;
   }
   return redisSubscriber;
 }

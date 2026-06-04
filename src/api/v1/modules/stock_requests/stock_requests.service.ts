@@ -3,8 +3,31 @@ import { logWarehouseAudit } from "../warehouse/warehouseAudit.service";
 import { allocateVariantFifo, getMaxDispatchableQtyAtLocation } from "../inventory/fefoAllocation.service";
 import { isLotExpiredByCalendarDayUtc } from "../inventory/lotExpiryCalendar";
 import { buildAvailabilityDiagnosticsForRequest } from "./stockRequestAvailabilityDiagnostics";
+import {
+  computeFullRequestSummary,
+  computeLineSummary,
+  computeRequestSummary,
+  validateFulfillmentSource,
+} from "../../services/stockRequestQuantity.service";
+import {
+  deriveRequestStatus,
+  enterpriseAllocationOwnsRequestLifecycle,
+  getStatusDisplay,
+  shouldBlockLegacyOwnerFulfillment,
+} from "../../services/stockRequestStatus.service";
+import { assertLegacyFulfillmentAllowedForStockRequest } from "../../services/legacyFulfillmentGuard.service";
+import { closeFulfilledBackordersForStockRequest } from "../backorders/backorder.service";
+import { getRequestIntent, getBranchCategory, getBranchCategoryFromCodes } from "../../services/branchTypeResolver.service";
 const transfersService = require("../transfers/transfers.service");
 const ledgerService = require("../inventory/ledger.service");
+
+/** Block legacy flexible fulfill, allocation preview, fulfillAndDispatch, and dispatchRequest when a plan exists (central guard + audit). */
+async function assertLegacyOwnerFulfillmentAllowed(stockRequestId: number, actorUserId?: number | null) {
+  await assertLegacyFulfillmentAllowedForStockRequest(stockRequestId, {
+    source: "stock_requests.service",
+    actorUserId: actorUserId ?? null,
+  });
+}
 
 async function auditStockRequestLifecycle(opts: {
   orgId: number;
@@ -300,6 +323,8 @@ async function fulfillStockRequestFlexible(requestId: number, input: FlexibleFul
   });
   if (!request) throw new Error("Stock request not found");
 
+  await assertLegacyOwnerFulfillmentAllowed(requestId, input.createdByUserId ?? null);
+
   // Allow multi-wave dispatch: permit FULFILLED_PARTIAL in addition to SUBMITTED/OWNER_REVIEW
   if (!["SUBMITTED", "OWNER_REVIEW", "FULFILLED_PARTIAL"].includes(request.status)) {
     throw new Error(`Request cannot be dispatched in status ${request.status}`);
@@ -508,22 +533,42 @@ async function fulfillStockRequestFlexible(requestId: number, input: FlexibleFul
   const dispatched = dispatchRows.length > 0;
 
   if (!dispatched) {
+    const requestedRowsForSummary = workingItems
+      .filter((i) => i.lineKind === "REQUESTED" || i.lineKind == null)
+      .map((i) => ({
+        id: i.id,
+        variantId: i.variantId,
+        requestedQty: i.requestedQty,
+        fulfilledQty: i.fulfilledQty,
+        cancelledQty: i.cancelledQty,
+        lineKind: i.lineKind,
+        backorderStatus: (i as { backorderStatus?: string }).backorderStatus ?? "NONE",
+      }));
+    const lineSummariesNoLoc = requestedRowsForSummary.map((row) => computeLineSummary(row, 0));
+    const reqSum = computeRequestSummary(lineSummariesNoLoc);
+    let message: string;
+    if (reqSum.totalRemainingQty <= 0) {
+      message =
+        "Nothing remaining to dispatch on this request (all requested lines are fulfilled or cancelled). Reload the request if quantities changed.";
+    } else if (lineErrors.length > 0) {
+      message = `No quantity could be dispatched at the selected source for this wave (remaining need ${reqSum.totalRemainingQty}). See lineErrors.`;
+    } else {
+      message = `No quantity could be dispatched (remaining need ${reqSum.totalRemainingQty}). Check fulfill quantities or source location.`;
+    }
     return {
       transfer: null,
       fulfillment: {
         dispatched: false,
-        message: "No quantity could be dispatched. See lineErrors.",
-        requestedQty: workingItems
-          .filter((i) => i.lineKind === "REQUESTED" || i.lineKind == null)
-          .reduce((s, i) => s + i.requestedQty, 0),
-        fulfilledQty: 0,
-        remainingQty: 0,
+        message,
+        requestedQty: reqSum.totalRequestedQty,
+        fulfilledQty: reqSum.totalFulfilledQty,
+        remainingQty: reqSum.totalRemainingQty,
         overFulfilledQty: 0,
         warnings,
         lineErrors,
         rejectedLines,
         acceptedLines,
-        cancelledLines: cancelledLines.map(id => ({ itemId: id })),
+        cancelledLines: cancelledLines.map((id) => ({ itemId: id })),
         /** Future: allowDispatchWithApproval, backorder — disabled by default */
         extensions: { backorder: "NOT_ENABLED", forceDispatch: "NOT_ENABLED" },
       },
@@ -594,21 +639,14 @@ async function fulfillStockRequestFlexible(requestId: number, input: FlexibleFul
 
 /**
  * Detect if branch is a warehouse hub; if so, default intent to PROCUREMENT.
+ * DEPRECATED: Use branchTypeResolver.service.ts instead.
+ * Kept for backward compatibility.
  */
 async function resolveRequestIntent(
   branchId: number,
   explicitIntent?: "INTERNAL_TRANSFER" | "PROCUREMENT"
 ): Promise<"INTERNAL_TRANSFER" | "PROCUREMENT"> {
-  if (explicitIntent) return explicitIntent;
-  const branch = await prisma.branch.findUnique({
-    where: { id: branchId },
-    select: {
-      typeLinks: { select: { branchType: { select: { code: true } } } },
-    },
-  });
-  const WAREHOUSE_HUB_CODES = new Set(["WAREHOUSE_DC", "WAREHOUSE", "CENTRAL_WAREHOUSE", "DISTRIBUTION_CENTER"]);
-  const isWarehouse = (branch?.typeLinks ?? []).some((t: any) => WAREHOUSE_HUB_CODES.has(t.branchType.code));
-  return isWarehouse ? "PROCUREMENT" : "INTERNAL_TRANSFER";
+  return getRequestIntent(branchId, explicitIntent);
 }
 
 /**
@@ -690,7 +728,13 @@ async function listRequests(filter: ListRequestsFilter) {
       take: limit,
       orderBy: { createdAt: "desc" },
       include: {
-        branch: { select: { id: true, name: true } },
+        branch: {
+          select: {
+            id: true,
+            name: true,
+            typeLinks: { select: { branchType: { select: { code: true } } } },
+          },
+        },
         requester: { select: { id: true, profile: { select: { displayName: true } } } },
         items: {
           include: {
@@ -702,10 +746,64 @@ async function listRequests(filter: ListRequestsFilter) {
           select: { id: true, status: true, sentAt: true, receivedAt: true },
           take: 1,
         },
+        allocationPlans: {
+          where: { parentPlanId: null },
+          take: 1,
+          select: {
+            id: true,
+            status: true,
+            totalAllocatedQty: true,
+            shortageQty: true,
+          },
+        },
+        dispatches: { select: { id: true, status: true } },
       },
     }),
     prisma.stockRequest.count({ where }),
   ]);
+
+  for (const sr of items as any[]) {
+    sr.allocationPlan = sr.allocationPlans?.[0] ?? null;
+    delete sr.allocationPlans;
+    const codes = (sr.branch?.typeLinks ?? []).map((t: any) => t.branchType?.code).filter(Boolean);
+    sr.requesterBranchCategory = getBranchCategoryFromCodes(codes);
+    const rows = (sr.items ?? []).map((item: any) => ({
+      id: item.id,
+      variantId: item.variantId,
+      requestedQty: item.requestedQty,
+      fulfilledQty: item.fulfilledQty,
+      cancelledQty: item.cancelledQty,
+      lineKind: item.lineKind,
+      backorderStatus: item.backorderStatus ?? "NONE",
+    }));
+    const lineSummaries = rows.map((row: any) => computeLineSummary(row, 0));
+    sr.canonicalRequestSummary = computeRequestSummary(lineSummaries);
+    sr.derivedStatus = deriveRequestStatus(
+      { status: sr.status },
+      sr.allocationPlan ?? null,
+      sr.dispatches ?? null
+    );
+    sr.derivedStatusDisplay = getStatusDisplay(sr.derivedStatus);
+    sr.enterpriseAllocationOwnsLifecycle = enterpriseAllocationOwnsRequestLifecycle(sr.allocationPlan ?? null);
+    sr.allocationPlanBlocksLegacyFulfill = shouldBlockLegacyOwnerFulfillment(sr.allocationPlan ?? null);
+    const dCount = sr.dispatches?.length ?? 0;
+    sr.legacyStockRequestFulfillGloballyDisabled =
+      String(process.env.DISABLE_LEGACY_STOCK_REQUEST_FULFILL || "").toLowerCase() === "true";
+    sr.enterpriseDispatchReceiveSessionOnly =
+      String(process.env.ENTERPRISE_DISPATCH_RECEIVE_SESSION_ONLY || "").toLowerCase() === "true";
+    sr.legacyFulfillBlockedByEnterpriseDispatch = dCount > 0;
+    sr.hideLegacyOwnerFulfillUi = Boolean(
+      sr.allocationPlanBlocksLegacyFulfill ||
+        sr.legacyStockRequestFulfillGloballyDisabled ||
+        sr.legacyFulfillBlockedByEnterpriseDispatch ||
+        sr.enterpriseAllocationOwnsLifecycle
+    );
+    if (sr.requestIntent === "PROCUREMENT" || sr.requestIntent === "INTERNAL_TRANSFER") {
+      sr.resolvedRequestIntent = sr.requestIntent;
+    } else {
+      sr.resolvedRequestIntent = sr.requesterBranchCategory === "WAREHOUSE" ? "PROCUREMENT" : "INTERNAL_TRANSFER";
+    }
+  }
 
   return {
     items,
@@ -754,39 +852,100 @@ async function getRequestById(
           },
         },
       },
+      procurementDemandLines: {
+        orderBy: { id: "asc" },
+        select: {
+          id: true,
+          demandQty: true,
+          fulfilledQty: true,
+          status: true,
+          variantId: true,
+          stockRequestItemId: true,
+          allocationPlanId: true,
+          purchaseOrderId: true,
+          purchaseOrderLineId: true,
+          fulfillmentDispatchId: true,
+          priority: true,
+          createdAt: true,
+        },
+      },
+      allocationPlans: {
+        where: { parentPlanId: null },
+        take: 1,
+        select: {
+          id: true,
+          status: true,
+          totalDemandQty: true,
+          totalAllocatedQty: true,
+          shortageQty: true,
+          fromLocationId: true,
+        },
+      },
+      dispatches: {
+        select: {
+          id: true,
+          status: true,
+          fromLocationId: true,
+          toLocationId: true,
+          createdAt: true,
+        },
+        orderBy: { id: "desc" },
+      },
     },
   });
 
   if (!request) return null;
 
-  // Add computed fields to each item
-  const enhancedItems = request.items.map((item: any) => {
-    const remainingQty = item.requestedQty - item.fulfilledQty - item.cancelledQty;
-    let lineStatus = 'PENDING';
-    if (item.lineKind === 'EXTRA') {
-      lineStatus = 'EXTRA';
-    } else if (item.cancelledQty === item.requestedQty) {
-      lineStatus = 'CANCELLED';
-    } else if (item.fulfilledQty >= item.requestedQty) {
-      lineStatus = item.fulfilledQty > item.requestedQty ? 'OVER_FULFILLED' : 'FULFILLED';
-    } else if (item.fulfilledQty > 0) {
-      lineStatus = 'PARTIAL';
-    } else if (item.cancelledQty > 0) {
-      lineStatus = 'PARTIAL_CANCELLED';
-    }
+  (request as any).allocationPlan = (request as any).allocationPlans?.[0] ?? null;
+  delete (request as any).allocationPlans;
 
-    return {
-      ...item,
-      remainingQty,
-      lineStatus,
-    };
-  });
+  const lineRows = (request.items as any[]).map((item: any) => ({
+    id: item.id,
+    variantId: item.variantId,
+    requestedQty: item.requestedQty,
+    fulfilledQty: item.fulfilledQty,
+    cancelledQty: item.cancelledQty,
+    lineKind: item.lineKind,
+    backorderStatus: item.backorderStatus ?? "NONE",
+  }));
 
-  (request as any).items = enhancedItems;
+  const requesterBranchCategory = await getBranchCategory(request.branchId);
+  (request as any).requesterBranchCategory = requesterBranchCategory;
+  (request as any).resolvedRequestIntent = await getRequestIntent(
+    request.branchId,
+    request.requestIntent === "PROCUREMENT" || request.requestIntent === "INTERNAL_TRANSFER"
+      ? request.requestIntent
+      : undefined
+  );
+  (request as any).derivedStatus = deriveRequestStatus(
+    { status: request.status },
+    (request as any).allocationPlan ?? null,
+    (request as any).dispatches ?? null
+  );
+  (request as any).derivedStatusDisplay = getStatusDisplay((request as any).derivedStatus);
+  (request as any).enterpriseAllocationOwnsLifecycle = enterpriseAllocationOwnsRequestLifecycle(
+    (request as any).allocationPlan ?? null
+  );
+  (request as any).allocationPlanBlocksLegacyFulfill = shouldBlockLegacyOwnerFulfillment(
+    (request as any).allocationPlan ?? null
+  );
+  const dispatchCount = (request as any).dispatches?.length ?? 0;
+  (request as any).legacyStockRequestFulfillGloballyDisabled =
+    String(process.env.DISABLE_LEGACY_STOCK_REQUEST_FULFILL || "").toLowerCase() === "true";
+  (request as any).enterpriseDispatchReceiveSessionOnly =
+    String(process.env.ENTERPRISE_DISPATCH_RECEIVE_SESSION_ONLY || "").toLowerCase() === "true";
+  (request as any).legacyFulfillBlockedByEnterpriseDispatch = dispatchCount > 0;
+  (request as any).hideLegacyOwnerFulfillUi = Boolean(
+    (request as any).allocationPlanBlocksLegacyFulfill ||
+      (request as any).legacyStockRequestFulfillGloballyDisabled ||
+      (request as any).legacyFulfillBlockedByEnterpriseDispatch ||
+      (request as any).enterpriseAllocationOwnsLifecycle
+  );
+
+  let enhancedItems: any[];
 
   if (options?.fromLocationId && request.items?.length) {
-    const { resolveOrgIdForLocation } = require("../inventory/stockAvailability.service");
-    const sourceOrgId = await resolveOrgIdForLocation(options.fromLocationId);
+    const srcVal = await validateFulfillmentSource(request.orgId, options.fromLocationId);
 
     const attachEmptyFulfillmentWithValidation = (validation: Record<string, unknown>) => {
       (request as any).fulfillmentSourceValidation = validation;
@@ -795,46 +954,54 @@ async function getRequestById(
       (request as any).maxDispatchableByVariant = {};
       (request as any).maxDispatchableByItemId = {};
       (request as any).lineWarnings = {};
-      const requestedLines = enhancedItems.filter((i: any) => i.lineKind !== "EXTRA");
-      const totalRequestedQty = requestedLines.reduce((sum: number, i: any) => sum + i.requestedQty, 0);
-      const totalFulfilledQty = enhancedItems.reduce((sum: number, i: any) => sum + i.fulfilledQty, 0);
-      const totalCancelledQty = requestedLines.reduce((sum: number, i: any) => sum + i.cancelledQty, 0);
-      const totalRemainingQty = requestedLines.reduce((sum: number, i: any) => sum + (i.remainingQty || 0), 0);
-      const linesByStatus: Record<string, number> = {};
-      for (const item of enhancedItems) {
-        const status = (item as any).lineStatus;
-        linesByStatus[status] = (linesByStatus[status] || 0) + 1;
-      }
+      const summariesNoLoc = lineRows.map((row) => computeLineSummary(row, 0));
+      const canonicalRequestSummary = computeRequestSummary(summariesNoLoc);
+      (request as any).canonicalRequestSummary = canonicalRequestSummary;
+      enhancedItems = (request.items as any[]).map((item: any) => {
+        const s = summariesNoLoc.find((x) => x.itemId === item.id)!;
+        return {
+          ...item,
+          remainingQty: s.remainingQty,
+          lineStatus: s.lineStatus,
+          canonicalLineQty: s,
+        };
+      });
+      (request as any).items = enhancedItems;
       (request as any).summary = {
-        totalRequestedQty,
-        totalFulfilledQty,
-        totalCancelledQty,
-        totalRemainingQty,
+        totalRequestedQty: canonicalRequestSummary.totalRequestedQty,
+        totalFulfilledQty: canonicalRequestSummary.totalFulfilledQty,
+        totalCancelledQty: canonicalRequestSummary.totalCancelledQty,
+        totalRemainingQty: canonicalRequestSummary.totalRemainingQty,
         totalMaxDispatchable: 0,
-        linesByStatus,
+        linesByStatus: canonicalRequestSummary.linesByStatus,
       };
     };
 
-    if (sourceOrgId == null) {
+    if (!srcVal.ok) {
       attachEmptyFulfillmentWithValidation({
         ok: false,
-        code: "SOURCE_LOCATION_NOT_FOUND",
-        message:
-          "The selected source location was not found or is not linked to a branch. Choose a valid warehouse or hub.",
+        code: srcVal.code,
+        message: srcVal.message,
         fromLocationId: options.fromLocationId,
         requestOrgId: request.orgId,
-      });
-    } else if (sourceOrgId !== request.orgId) {
-      attachEmptyFulfillmentWithValidation({
-        ok: false,
-        code: "SOURCE_LOCATION_ORG_MISMATCH",
-        message:
-          "The selected source location belongs to a different organization than this stock request. Choose a warehouse or hub under the same organization.",
-        fromLocationId: options.fromLocationId,
-        requestOrgId: request.orgId,
-        locationOrgId: sourceOrgId,
+        ...(srcVal.locationOrgId != null ? { locationOrgId: srcVal.locationOrgId } : {}),
       });
     } else {
+      const full = await computeFullRequestSummary(request.orgId, options.fromLocationId, lineRows);
+      enhancedItems = (request.items as any[]).map((item: any) => {
+        const s = full.lineSummaries.find((x) => x.itemId === item.id)!;
+        return {
+          ...item,
+          remainingQty: s.remainingQty,
+          lineStatus: s.lineStatus,
+          canonicalLineQty: s,
+        };
+      });
+      (request as any).items = enhancedItems;
+      (request as any).maxDispatchableByVariant = Object.fromEntries(full.maxDispatchableByVariant);
+      (request as any).maxDispatchableByItemId = Object.fromEntries(full.maxDispatchableByItemId);
+      (request as any).canonicalRequestSummary = full.requestSummary;
+
     const variantIds = [...new Set(request.items.map((i: any) => i.variantId))];
     const orgId = request.orgId;
 
@@ -922,30 +1089,10 @@ async function getRequestById(
       balances.map((b) => [b.variantId, Math.max(0, b.onHandQty - b.reservedQty)])
     );
 
-    // Max dispatchable by variant (uses updated getMaxDispatchableQty with reservedQty)
-    const maxDispatchableByVariant: Record<number, number> = {};
-    for (const vid of variantIds) {
-      maxDispatchableByVariant[vid] = await getMaxDispatchableQty(orgId, options.fromLocationId, vid);
-    }
+    const maxDispatchableByVariant: Record<number, number> = Object.fromEntries(full.maxDispatchableByVariant);
     (request as any).maxDispatchableByVariant = maxDispatchableByVariant;
 
-    // Per-line cap when multiple REQUESTED lines share a variant (shared pool at source location)
-    const maxDispatchableByItemId: Record<number, number> = {};
-    const poolLeft = new Map<number, number>();
-    for (const vid of variantIds) {
-      poolLeft.set(vid, maxDispatchableByVariant[vid] ?? 0);
-    }
-    const requestedOrdered = enhancedItems
-      .filter((i: any) => i.lineKind !== "EXTRA")
-      .sort((a: any, b: any) => a.id - b.id);
-    for (const item of requestedOrdered) {
-      const v = item.variantId;
-      const rem = (item as any).remainingQty ?? 0;
-      const pool = poolLeft.get(v) ?? 0;
-      const lineMax = Math.min(rem, pool);
-      maxDispatchableByItemId[item.id] = lineMax;
-      poolLeft.set(v, Math.max(0, pool - lineMax));
-    }
+    const maxDispatchableByItemId: Record<number, number> = Object.fromEntries(full.maxDispatchableByItemId);
     (request as any).maxDispatchableByItemId = maxDispatchableByItemId;
 
     try {
@@ -1010,33 +1157,38 @@ async function getRequestById(
     }
     (request as any).lineWarnings = lineWarnings;
 
-    // Summary
-    const requestedLines = enhancedItems.filter((i: any) => i.lineKind !== "EXTRA");
-    const totalRequestedQty = requestedLines.reduce((sum: number, i: any) => sum + i.requestedQty, 0);
-    const totalFulfilledQty = enhancedItems.reduce((sum: number, i: any) => sum + i.fulfilledQty, 0);
-    const totalCancelledQty = requestedLines.reduce((sum: number, i: any) => sum + i.cancelledQty, 0);
-    const totalRemainingQty = requestedLines.reduce((sum: number, i: any) => sum + (i.remainingQty || 0), 0);
-    const totalMaxDispatchable = requestedLines.reduce((sum: number, i: any) => {
-      const max = maxDispatchableByItemId[i.id] ?? maxDispatchableByVariant[i.variantId] ?? 0;
-      return sum + Math.min(max, i.remainingQty || 0);
-    }, 0);
-
-    const linesByStatus: Record<string, number> = {};
-    for (const item of enhancedItems) {
-      const status = (item as any).lineStatus;
-      linesByStatus[status] = (linesByStatus[status] || 0) + 1;
-    }
-
     (request as any).summary = {
-      totalRequestedQty,
-      totalFulfilledQty,
-      totalCancelledQty,
-      totalRemainingQty,
-      totalMaxDispatchable,
-      linesByStatus,
+      totalRequestedQty: full.requestSummary.totalRequestedQty,
+      totalFulfilledQty: full.requestSummary.totalFulfilledQty,
+      totalCancelledQty: full.requestSummary.totalCancelledQty,
+      totalRemainingQty: full.requestSummary.totalRemainingQty,
+      totalMaxDispatchable: full.requestSummary.totalDispatchable,
+      linesByStatus: full.requestSummary.linesByStatus,
     };
     (request as any).fulfillmentSourceValidation = { ok: true };
     }
+  } else {
+    const summaries = lineRows.map((row) => computeLineSummary(row, 0));
+    const canonicalRequestSummary = computeRequestSummary(summaries);
+    (request as any).canonicalRequestSummary = canonicalRequestSummary;
+    enhancedItems = (request.items as any[]).map((item: any) => {
+      const s = summaries.find((x) => x.itemId === item.id)!;
+      return {
+        ...item,
+        remainingQty: s.remainingQty,
+        lineStatus: s.lineStatus,
+        canonicalLineQty: s,
+      };
+    });
+    (request as any).items = enhancedItems;
+    (request as any).summary = {
+      totalRequestedQty: canonicalRequestSummary.totalRequestedQty,
+      totalFulfilledQty: canonicalRequestSummary.totalFulfilledQty,
+      totalCancelledQty: canonicalRequestSummary.totalCancelledQty,
+      totalRemainingQty: canonicalRequestSummary.totalRemainingQty,
+      totalMaxDispatchable: canonicalRequestSummary.totalDispatchable,
+      linesByStatus: canonicalRequestSummary.linesByStatus,
+    };
   }
 
   return request;
@@ -1227,6 +1379,8 @@ async function declineRequest(
  * Owner: Create transfer from request (DRAFT, linked to request). Used by fulfillAndDispatch.
  */
 async function dispatchRequest(requestId: number, data: DispatchInput): Promise<number> {
+  await assertLegacyOwnerFulfillmentAllowed(requestId, data.createdByUserId ?? null);
+
   const request = await prisma.stockRequest.findUnique({
     where: { id: requestId },
     include: { items: true, branch: { select: { id: true } } },
@@ -1279,6 +1433,13 @@ export async function markRequestReceivedIfLinked(transferId: number, fullReceiv
     select: { stockRequestId: true },
   });
   if (!transfer?.stockRequestId) return;
+  const enterpriseDispatches = await prisma.stockDispatch.count({
+    where: { stockRequestId: transfer.stockRequestId },
+  });
+  if (enterpriseDispatches > 0) {
+    // Enterprise path: status is driven by markStockRequestStatusFromDispatchReceive only.
+    return;
+  }
   await prisma.stockRequest.update({
     where: { id: transfer.stockRequestId },
     data: { status: fullReceived ? "RECEIVED_FULL" : "RECEIVED_PARTIAL" },
@@ -1288,6 +1449,11 @@ export async function markRequestReceivedIfLinked(transferId: number, fullReceiv
 /**
  * Enterprise dispatch receive path: set StockRequest status from aggregate dispatch DO state.
  * Invoked inside the same DB transaction as receiveDispatch.
+ *
+ * Rules:
+ * - Not every dispatch DELIVERED → PARTIALLY_RECEIVED (multi-wave / in-flight DOs).
+ * - Every dispatch DELIVERED and every line fully accounted (good + damaged + short ≥ dispatched) → RECEIVED.
+ * - Legacy transfer receive must not call this; use only StockDispatch receive.
  */
 export async function markStockRequestStatusFromDispatchReceive(tx: any, stockRequestId: number): Promise<void> {
   const dispatches = await tx.stockDispatch.findMany({
@@ -1325,8 +1491,12 @@ export async function markStockRequestStatusFromDispatchReceive(tx: any, stockRe
 
   await tx.stockRequest.update({
     where: { id: stockRequestId },
-    data: { status: allLinesAccounted ? "RECEIVED_FULL" : "PARTIALLY_RECEIVED" },
+    data: { status: allLinesAccounted ? "RECEIVED" : "PARTIALLY_RECEIVED" },
   });
+
+  if (allLinesAccounted) {
+    await closeFulfilledBackordersForStockRequest(tx, stockRequestId);
+  }
 }
 
 /**
@@ -1339,6 +1509,9 @@ async function fulfillAndDispatch(requestId: number, data: DispatchInput) {
     include: { items: true },
   });
   if (!request) throw new Error("Stock request not found");
+
+  await assertLegacyOwnerFulfillmentAllowed(requestId, data.createdByUserId ?? null);
+
   if (!["SUBMITTED", "OWNER_REVIEW"].includes(request.status)) {
     throw new Error(`Request cannot be dispatched in status ${request.status}`);
   }
@@ -1351,9 +1524,6 @@ async function fulfillAndDispatch(requestId: number, data: DispatchInput) {
     qtyByVariant.set(i.variantId, (qtyByVariant.get(i.variantId) ?? 0) + i.quantity);
   }
 
-  const transferId = await dispatchRequest(requestId, data);
-  await transfersService.sendTransfer(transferId, data.createdByUserId);
-
   const incrementByItemId = apportionLegacyDispatchQtyByLine(
     request.items as Array<{
       id: number;
@@ -1365,6 +1535,17 @@ async function fulfillAndDispatch(requestId: number, data: DispatchInput) {
     }>,
     qtyByVariant
   );
+  let apportionedTotal = 0;
+  for (const q of incrementByItemId.values()) apportionedTotal += q;
+  if (apportionedTotal <= 0) {
+    throw new Error(
+      "NO_DISPATCHABLE_QUANTITY: All requested lines are fulfilled or cancelled; legacy dispatch cannot update any line."
+    );
+  }
+
+  const transferId = await dispatchRequest(requestId, data);
+  await transfersService.sendTransfer(transferId, data.createdByUserId);
+
   if (incrementByItemId.size > 0) {
     await prisma.$transaction(
       [...incrementByItemId.entries()].map(([itemId, qty]) =>
@@ -1402,12 +1583,15 @@ async function fulfillAndDispatch(requestId: number, data: DispatchInput) {
 export async function allocationPreview(requestId: number, input: {
   fromLocationId: number;
   items: Array<{ stockRequestItemId: number; fulfillQty: number }>;
+  actorUserId?: number | null;
 }) {
   const request = await prisma.stockRequest.findUnique({
     where: { id: requestId },
     include: { items: true },
   });
   if (!request) throw new Error("Stock request not found");
+
+  await assertLegacyOwnerFulfillmentAllowed(requestId, input.actorUserId ?? null);
 
   await assertSourceLocationMatchesRequestOrg(input.fromLocationId, request.orgId);
 

@@ -867,3 +867,6 @@ module.exports = {
   assertLotNotExpired,
   INVENTORY_ERROR_CODES,
 };
+
+/** Named export for TypeScript ESM `import` from pricing modules. */
+export { getAvailableLotsFEFO, getAvailableLotsFEFOWithTx };

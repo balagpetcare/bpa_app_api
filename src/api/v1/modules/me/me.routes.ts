@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 
 const auth = require("../../../../middlewares/auth");
+const { runProfilePhotoUpload } = require("./profilePhotoUpload.middleware");
 const ctrl = require("./me.controller");
 
 // Robust resolver for CJS / ESM / ts-node exports
@@ -62,11 +63,27 @@ const postLocationManual =
     ? ctrl.postLocationManual
     : null;
 
+const meProfile = require("./meProfile.controller");
+
 if (!getMe) {
   throw new Error("me.routes: getMe controller export not found");
 }
 
 router.get("/", auth, getMe);
+
+// Enterprise profile hub (self-service, audited)
+router.get("/profile", auth, meProfile.getProfile);
+router.patch("/profile", auth, meProfile.patchProfile);
+router.post("/profile/photo", auth, runProfilePhotoUpload, meProfile.postProfilePhoto);
+router.delete("/profile/photo", auth, meProfile.deleteProfilePhoto);
+router.get("/settings", auth, meProfile.getSettings);
+router.patch("/settings", auth, meProfile.patchSettings);
+router.get("/security", auth, meProfile.getSecurity);
+router.post("/security/password", auth, meProfile.postPassword);
+router.get("/capabilities", auth, meProfile.getCapabilities);
+router.get("/branches", auth, meProfile.getBranches);
+router.patch("/active-branch", auth, meProfile.patchActiveBranch);
+router.get("/audit", auth, meProfile.getAudit);
 
 if (getPermissions) {
   router.get("/permissions", auth, getPermissions);

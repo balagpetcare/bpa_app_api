@@ -133,6 +133,120 @@ export async function allocateVariantFifoUpTo(
   return { slices: out, shortBy: need };
 }
 
+/** In-memory row for batch FEFO (sorted by expiry ascending per variant at location). */
+export type FefoBatchRow = {
+  lotId: number;
+  variantId: number;
+  onHandQty: number;
+  reservedQty: number;
+  expDate: Date | null;
+};
+
+export type FefoLocationBatchContext = {
+  sellable: boolean;
+  /** variantId -> rows sorted by expDate asc */
+  rowsByVariant: Map<number, FefoBatchRow[]>;
+  recallFrozen: Set<number>;
+  qcPending: Map<number, number>;
+};
+
+/**
+ * Load all FEFO-eligible lot rows for many variants at one location in a single query.
+ * Used by multi-source allocator to avoid N×M round-trips.
+ */
+export async function batchLoadFefoContextForLocation(
+  orgId: number,
+  locationId: number,
+  variantIds: number[]
+): Promise<FefoLocationBatchContext> {
+  if (variantIds.length === 0) {
+    return { sellable: true, rowsByVariant: new Map(), recallFrozen: new Set(), qcPending: new Map() };
+  }
+
+  const sellable = await isDispatchSellableLocation(locationId);
+  if (!sellable) {
+    return { sellable: false, rowsByVariant: new Map(), recallFrozen: new Set(), qcPending: new Map() };
+  }
+
+  const uniqueVariantIds = [...new Set(variantIds)];
+
+  const rows = await prisma.stockLotBalance.findMany({
+    where: {
+      locationId,
+      onHandQty: { gt: 0 },
+      lot: {
+        orgId,
+        variantId: { in: uniqueVariantIds },
+        expDate: fefoLotExpDateEligibleFilter(),
+      },
+    },
+    include: {
+      lot: { select: { id: true, expDate: true, variantId: true } },
+    },
+  });
+
+  const lotIds = rows.map((r) => r.lotId);
+  const [recallFrozen, qcPending] = await Promise.all([
+    getFrozenRecallLotIds(orgId, lotIds),
+    getPendingQcHoldByLot(orgId, locationId),
+  ]);
+
+  const rowsByVariant = new Map<number, FefoBatchRow[]>();
+  for (const r of rows) {
+    const vid = r.lot.variantId;
+    if (!rowsByVariant.has(vid)) rowsByVariant.set(vid, []);
+    rowsByVariant.get(vid)!.push({
+      lotId: r.lotId,
+      variantId: vid,
+      onHandQty: r.onHandQty,
+      reservedQty: r.reservedQty,
+      expDate: r.lot.expDate,
+    });
+  }
+
+  for (const [, list] of rowsByVariant.entries()) {
+    list.sort((a, b) => {
+      const ta = a.expDate ? new Date(a.expDate).getTime() : 0;
+      const tb = b.expDate ? new Date(b.expDate).getTime() : 0;
+      return ta - tb;
+    });
+  }
+
+  return { sellable: true, rowsByVariant, recallFrozen, qcPending };
+}
+
+/**
+ * FEFO slice from preloaded batch context (no DB).
+ */
+export function allocateVariantFifoUpToFromBatchContext(
+  ctx: FefoLocationBatchContext,
+  locationId: number,
+  variantId: number,
+  quantityNeeded: number
+): { slices: FefoSlice[]; shortBy: number } {
+  if (quantityNeeded <= 0) return { slices: [], shortBy: 0 };
+  if (!ctx.sellable) return { slices: [], shortBy: quantityNeeded };
+
+  const rows = ctx.rowsByVariant.get(variantId) ?? [];
+  const out: FefoSlice[] = [];
+  let need = quantityNeeded;
+
+  for (const row of rows) {
+    if (need <= 0) break;
+    if (ctx.recallFrozen.has(row.lotId)) continue;
+    const qcBlock = ctx.qcPending.get(row.lotId) ?? 0;
+    const effective = row.onHandQty - row.reservedQty - qcBlock;
+    if (effective <= 0) continue;
+    const take = Math.min(need, effective);
+    if (take > 0) {
+      out.push({ lotId: row.lotId, locationId, quantity: take });
+      need -= take;
+    }
+  }
+
+  return { slices: out, shortBy: need };
+}
+
 /**
  * Total quantity dispatchable via FEFO lot lines (effective on-hand minus reservedQty, QC/recall exclusions).
  * Does not consider aggregate StockBalance — use with aggregate max for enterprise non-lot fallback.

@@ -124,7 +124,17 @@ exports.submitKyc = async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
-    const data = await service.submitKyc({ userId, name: req.body.name, countryCode: req.body.countryCode, docsJson: req.body.docsJson });
+    const data = await service.submitKyc({
+      userId,
+      name: req.body.name,
+      countryCode: req.body.countryCode,
+      docsJson: req.body.docsJson,
+      divisionId: req.body.divisionId,
+      districtId: req.body.districtId,
+      upazilaId: req.body.upazilaId,
+      unionId: req.body.unionId,
+      areaId: req.body.areaId ?? req.body.bdAreaId,
+    });
     return res.status(200).json({ success: true, data });
   } catch (e) {
     const status = e?.statusCode || 500;
@@ -139,7 +149,17 @@ exports.submitKycLegacyOrNew = async (req, res) => {
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
     const hasLegacyBody = req.body?.docsJson !== undefined || req.body?.name !== undefined || req.body?.countryCode !== undefined;
     if (hasLegacyBody) {
-      const data = await service.submitKyc({ userId, name: req.body.name, countryCode: req.body.countryCode, docsJson: req.body.docsJson });
+      const data = await service.submitKyc({
+        userId,
+        name: req.body.name,
+        countryCode: req.body.countryCode,
+        docsJson: req.body.docsJson,
+        divisionId: req.body.divisionId,
+        districtId: req.body.districtId,
+        upazilaId: req.body.upazilaId,
+        unionId: req.body.unionId,
+        areaId: req.body.areaId ?? req.body.bdAreaId,
+      });
       return res.status(200).json({
         success: true,
         data,

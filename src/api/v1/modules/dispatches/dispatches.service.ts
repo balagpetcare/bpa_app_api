@@ -4,6 +4,16 @@
  */
 import { Prisma } from "@prisma/client";
 import prisma from "../../../../infrastructure/db/prismaClient";
+import {
+  assertReceiveItemsHaveDiscrepancyNotes,
+  validateReceiveBatchAgainstRemaining,
+} from "./dispatchReceivePartition";
+
+export {
+  assertReceiveItemsHaveDiscrepancyNotes,
+  DISPATCH_RECEIVE_LINE_DISCREPANCY_REASON_CODES,
+  validateReceiveBatchAgainstRemaining,
+} from "./dispatchReceivePartition";
 const ledgerService = require("../inventory/ledger.service");
 const { isFulfillmentReservationEnabled } = require("../fulfillment/reservation.service");
 const stockRequestsService = require("../stock_requests/stock_requests.service");
@@ -50,6 +60,10 @@ export type ReceiveItemInput = {
   quantityReceived: number;
   quantityDamaged?: number;
   quantityShort?: number;
+  /** Physically received beyond remaining envelope; not posted to stock (logged as dispatch discrepancy on confirm). */
+  excessQty?: number;
+  /** Optional disposition / follow-up (stored on session line; appended to discrepancy notes when posted). */
+  followUpNote?: string | null;
   /** Optional line-level reason (e.g. session verification); stored on dispatch discrepancy rows. */
   reasonCode?: string | null;
   lineNote?: string | null;
@@ -110,6 +124,14 @@ export async function getDispatchById(id: number) {
       },
       fromLocation: { select: { id: true, name: true, type: true } },
       toLocation: { select: { id: true, name: true, type: true, branchId: true } },
+      createdBy: {
+        select: {
+          id: true,
+          profile: { select: { displayName: true, username: true } },
+          auth: { select: { email: true } },
+        },
+      },
+      grns: { orderBy: { id: "desc" }, take: 3, select: { id: true, status: true, receivedAt: true } },
       items: {
         include: {
           variant: { select: { id: true, sku: true, title: true } },
@@ -138,6 +160,48 @@ export async function getDispatchById(id: number) {
       },
     },
   });
+}
+
+/**
+ * Default receive location for a branch (stock request / MR destination).
+ * Prefers retail-facing types when multiple active locations exist.
+ */
+export async function resolveDefaultReceiveLocationIdForBranch(
+  branchId: number,
+  orgId: number,
+  tx?: Prisma.TransactionClient
+): Promise<number> {
+  const db = tx ?? prisma;
+  const locs = await db.inventoryLocation.findMany({
+    where: { branchId, isActive: true, branch: { orgId } },
+    select: { id: true, type: true },
+    orderBy: { id: "asc" },
+  });
+  if (!locs.length) {
+    const br = await db.branch.findFirst({ where: { id: branchId, orgId }, select: { name: true } });
+    const label = br?.name ? `${branchId} (${br.name})` : String(branchId);
+    throw new Error(
+      `No active inventory location for destination branch ${label}. In Owner → Branches, create at least one active inventory location for this branch before dispatch.`
+    );
+  }
+  const preferredOrder: string[] = [
+    "BRANCH_STORE",
+    "PHARMACY",
+    "CLINIC_STORE",
+    "SHOP",
+    "STAGING",
+    "CENTRAL_WAREHOUSE",
+    "CLINIC",
+    "ONLINE_HUB",
+    "DAMAGE_AREA",
+    "RETURN_AREA",
+    "QUARANTINE",
+  ];
+  for (const t of preferredOrder) {
+    const hit = locs.find((l) => String(l.type) === t);
+    if (hit) return hit.id;
+  }
+  return locs[0].id;
 }
 
 /**
@@ -311,6 +375,8 @@ export async function createDispatch(
 /** Send dispatch: write TRANSFER_OUT from fromLocation, set status IN_TRANSIT. */
 export async function sendDispatch(dispatchId: number, createdByUserId?: number) {
   return prisma.$transaction(async (tx: any) => {
+    await tx.$executeRaw(Prisma.sql`SELECT id FROM stock_dispatches WHERE id = ${dispatchId} FOR UPDATE`);
+
     const dispatch = await tx.stockDispatch.findUnique({
       where: { id: dispatchId },
       include: { items: true },
@@ -469,7 +535,8 @@ export async function receiveDispatchLedgerInTx(
     notes?: string;
     createdByUserId?: number;
     idempotencyKey?: string;
-  }
+  },
+  ledgerOpts?: { relaxRemainingPartition?: boolean }
 ) {
   await tx.$executeRaw(Prisma.sql`SELECT id FROM stock_dispatches WHERE id = ${dispatchId} FOR UPDATE`);
 
@@ -482,12 +549,39 @@ export async function receiveDispatchLedgerInTx(
     throw new Error(`Dispatch can only be received when IN_TRANSIT. Current: ${dispatch.status}`);
   }
 
+  const destLocation = await tx.inventoryLocation.findUnique({
+    where: { id: dispatch.toLocationId },
+    select: { branchId: true },
+  });
+  if (!destLocation?.branchId) {
+    throw new Error("Dispatch destination location has no branch");
+  }
+
   if (data.idempotencyKey?.trim()) {
     const existing = await tx.grn.findFirst({
       where: { stockDispatchId: dispatchId, idempotencyKey: data.idempotencyKey.trim() },
       select: { id: true },
     });
-    if (existing) throw new Error("Duplicate receive request (idempotency key)");
+    if (existing) {
+      const updatedDispatch = await tx.stockDispatch.findUnique({
+        where: { id: dispatchId },
+        include: {
+          fromLocation: true,
+          toLocation: true,
+          items: {
+            include: {
+              variant: { select: { id: true, sku: true, title: true } },
+              lot: { select: { id: true, lotCode: true, expDate: true } },
+            },
+          },
+        },
+      });
+      const grn = await tx.grn.findFirst({
+        where: { id: existing.id },
+        include: { lines: true },
+      });
+      return { dispatch: updatedDispatch, grn };
+    }
   }
 
     const receiveItems = data.items?.length
@@ -501,7 +595,32 @@ export async function receiveDispatchLedgerInTx(
         }));
 
     const orgId = dispatch.orgId;
-    // Additive validation: received + damaged + short must not exceed dispatched per line; partial receive allowed.
+    const relaxPartition = ledgerOpts?.relaxRemainingPartition === true;
+    for (const rec of receiveItems) {
+      const line = dispatch.items.find(
+        (i: any) => i.variantId === rec.variantId && (rec.lotId == null || rec.lotId === i.lotId)
+      );
+      if (!line) throw new Error(`Item variant ${rec.variantId} not found in dispatch`);
+      const partitionErr = validateReceiveBatchAgainstRemaining(line, rec, {
+        relaxRemainingPartition: relaxPartition,
+      });
+      if (partitionErr) throw new Error(partitionErr);
+      const qtyReceived = Math.max(0, rec.quantityReceived ?? 0);
+      const qtyDamaged = Math.max(0, rec.quantityDamaged ?? 0);
+      const qtyShort = Math.max(0, rec.quantityShort ?? 0);
+      const newReceived = line.quantityReceived + qtyReceived;
+      const newDamaged = line.quantityDamaged + qtyDamaged;
+      const newShort = line.quantityShort + qtyShort;
+      const newTotal = newReceived + newDamaged + newShort;
+      if (newTotal > line.quantityDispatched) {
+        throw new Error(`Running total would exceed dispatched for variant ${rec.variantId}`);
+      }
+    }
+
+    assertReceiveItemsHaveDiscrepancyNotes(dispatch.items, receiveItems, {
+      relaxRemainingPartition: relaxPartition,
+    });
+
     for (const rec of receiveItems) {
       const line = dispatch.items.find(
         (i: any) => i.variantId === rec.variantId && (rec.lotId == null || rec.lotId === i.lotId)
@@ -510,17 +629,9 @@ export async function receiveDispatchLedgerInTx(
       const qtyReceived = Math.max(0, rec.quantityReceived ?? 0);
       const qtyDamaged = Math.max(0, rec.quantityDamaged ?? 0);
       const qtyShort = Math.max(0, rec.quantityShort ?? 0);
-      const total = qtyReceived + qtyDamaged + qtyShort;
-      if (total > line.quantityDispatched) {
-        throw new Error(`Received total ${total} cannot exceed dispatched ${line.quantityDispatched} for variant ${rec.variantId}`);
-      }
       const newReceived = line.quantityReceived + qtyReceived;
       const newDamaged = line.quantityDamaged + qtyDamaged;
       const newShort = line.quantityShort + qtyShort;
-      const newTotal = newReceived + newDamaged + newShort;
-      if (newTotal > line.quantityDispatched) {
-        throw new Error(`Running total would exceed dispatched for variant ${rec.variantId}`);
-      }
 
       await tx.stockDispatchItem.update({
         where: { id: line.id },
@@ -544,6 +655,21 @@ export async function receiveDispatchLedgerInTx(
           refId: String(dispatchId),
           createdByUserId: data.createdByUserId,
         });
+
+        try {
+          const vaccineBridge = require("../clinic/vaccineInventoryBridge.service");
+          await vaccineBridge.mirrorDispatchReceiveLineToClinicalStock(tx, {
+            orgId,
+            destBranchId: destLocation.branchId,
+            stockDispatchItemId: line.id,
+            productVariantId: rec.variantId,
+            stockLotId: lotId,
+            quantityReceived: qtyReceived,
+            actorUserId: data.createdByUserId ?? null,
+          });
+        } catch (mirrorErr: any) {
+          console.warn("[dispatch.clinicalMirror]", dispatchId, line.id, mirrorErr?.message || mirrorErr);
+        }
       }
       if (qtyDamaged > 0) {
         await ledgerService.recordLedgerEntryInTx(tx, {
@@ -588,6 +714,22 @@ export async function receiveDispatchLedgerInTx(
             reasonCode: discRc || "SHORT",
             quantity: qtyShort,
             notes: discNote,
+          },
+        });
+      }
+      const qtyExcess = Math.max(0, rec.excessQty ?? 0);
+      if (qtyExcess > 0) {
+        const follow = rec.followUpNote != null && String(rec.followUpNote).trim() ? String(rec.followUpNote).trim() : "";
+        const combinedNotes = [discNote, follow].filter(Boolean).join("\n\n") || null;
+        await tx.stockDispatchDiscrepancy.create({
+          data: {
+            orgId,
+            stockDispatchId: dispatchId,
+            variantId: rec.variantId,
+            lotId: lotId ?? null,
+            reasonCode: discRc || "OVER_DELIVERED",
+            quantity: qtyExcess,
+            notes: combinedNotes,
           },
         });
       }
@@ -676,7 +818,9 @@ export async function receiveDispatchLegacyImmediate(
     idempotencyKey?: string;
   }
 ) {
-  return prisma.$transaction((tx: any) => receiveDispatchLedgerInTx(tx, dispatchId, data));
+  return prisma.$transaction((tx: any) =>
+    receiveDispatchLedgerInTx(tx, dispatchId, data, { relaxRemainingPartition: true })
+  );
 }
 
 export type ReceiveDispatchMode = "legacy_immediate" | "verify" | "submit" | "confirm";
@@ -688,7 +832,8 @@ export async function saveDispatchReceiveVerification(
     items: ReceiveItemInput[];
     notes?: string;
     createdByUserId?: number;
-  }
+  },
+  opts?: { preserveSessionStatus?: boolean }
 ) {
   const dispatch = await prisma.stockDispatch.findUnique({
     where: { id: dispatchId },
@@ -714,13 +859,11 @@ export async function saveDispatchReceiveVerification(
       (i: any) => i.variantId === rec.variantId && (rec.lotId == null || rec.lotId === i.lotId)
     );
     if (!line) throw new Error(`Item variant ${rec.variantId} not found in dispatch`);
+    const partitionErr = validateReceiveBatchAgainstRemaining(line, rec, { relaxRemainingPartition: false });
+    if (partitionErr) throw new Error(partitionErr);
     const qtyReceived = Math.max(0, rec.quantityReceived ?? 0);
     const qtyDamaged = Math.max(0, rec.quantityDamaged ?? 0);
     const qtyShort = Math.max(0, rec.quantityShort ?? 0);
-    const total = qtyReceived + qtyDamaged + qtyShort;
-    if (total > line.quantityDispatched) {
-      throw new Error(`Verified total ${total} cannot exceed dispatched ${line.quantityDispatched} for variant ${rec.variantId}`);
-    }
     const newReceived = line.quantityReceived + qtyReceived;
     const newDamaged = line.quantityDamaged + qtyDamaged;
     const newShort = line.quantityShort + qtyShort;
@@ -730,7 +873,18 @@ export async function saveDispatchReceiveVerification(
     }
   }
 
+  assertReceiveItemsHaveDiscrepancyNotes(dispatch.items, receiveItems, { relaxRemainingPartition: false });
+
   return prisma.$transaction(async (tx: any) => {
+    const updateData: Record<string, unknown> = {
+      notes: data.notes ?? null,
+      verifiedAt: new Date(),
+      verifiedByUserId: data.createdByUserId ?? null,
+    };
+    if (!opts?.preserveSessionStatus) {
+      updateData.status = "DRAFT";
+    }
+
     const session = await tx.dispatchReceiveSession.upsert({
       where: { stockDispatchId: dispatchId },
       create: {
@@ -741,12 +895,7 @@ export async function saveDispatchReceiveVerification(
         verifiedAt: new Date(),
         verifiedByUserId: data.createdByUserId ?? null,
       },
-      update: {
-        notes: data.notes ?? null,
-        verifiedAt: new Date(),
-        verifiedByUserId: data.createdByUserId ?? null,
-        status: "DRAFT",
-      },
+      update: updateData as any,
     });
 
     await tx.dispatchReceiveSessionLine.deleteMany({ where: { sessionId: session.id } });
@@ -762,11 +911,14 @@ export async function saveDispatchReceiveVerification(
           quantityReceived: Math.max(0, rec.quantityReceived ?? 0),
           quantityDamaged: Math.max(0, rec.quantityDamaged ?? 0),
           quantityShort: Math.max(0, rec.quantityShort ?? 0),
+          excessQty: Math.max(0, rec.excessQty ?? 0),
           reasonCode:
             rec.reasonCode != null && String(rec.reasonCode).trim()
               ? String(rec.reasonCode).trim().slice(0, 64)
               : null,
           lineNote: rec.lineNote != null && String(rec.lineNote).trim() ? String(rec.lineNote).trim() : null,
+          followUpNote:
+            rec.followUpNote != null && String(rec.followUpNote).trim() ? String(rec.followUpNote).trim() : null,
         },
       });
     }
@@ -844,10 +996,12 @@ export async function submitDispatchReceiveSessionForConfirmation(dispatchId: nu
 
 export async function confirmDispatchReceiveFromSession(
   dispatchId: number,
-  data: { createdByUserId?: number; idempotencyKey?: string; notes?: string },
+  data: { createdByUserId?: number; idempotencyKey?: string; notes?: string; items?: ReceiveItemInput[] },
   options?: { allowConfirmFromDraft?: boolean }
 ) {
-  const session = await prisma.dispatchReceiveSession.findUnique({
+  const hasPayloadItems = Array.isArray(data.items) && data.items.length > 0;
+
+  let session = await prisma.dispatchReceiveSession.findUnique({
     where: { stockDispatchId: dispatchId },
     include: {
       lines: {
@@ -857,7 +1011,50 @@ export async function confirmDispatchReceiveFromSession(
       },
     },
   });
-  if (!session) throw new Error("No receive session to confirm");
+
+  const priorSessionStatus = session?.status;
+  const needsHydrateFromBody =
+    hasPayloadItems &&
+    (!session ||
+      !session.lines.length ||
+      (session.status === "DRAFT" && options?.allowConfirmFromDraft === true) ||
+      session.status === "AWAITING_CONFIRMATION");
+
+  if (needsHydrateFromBody && data.items) {
+    if (process.env.NODE_ENV !== "production") {
+      console.info("[dispatch.receive.confirm] hydrating session from request items", {
+        dispatchId,
+        itemCount: data.items.length,
+        priorSessionStatus: priorSessionStatus ?? "(none)",
+      });
+    }
+    const preserveSubmit = priorSessionStatus === "AWAITING_CONFIRMATION" && hasPayloadItems;
+    await saveDispatchReceiveVerification(
+      dispatchId,
+      {
+        items: data.items,
+        notes: data.notes,
+        createdByUserId: data.createdByUserId,
+      },
+      { preserveSessionStatus: preserveSubmit }
+    );
+    session = await prisma.dispatchReceiveSession.findUnique({
+      where: { stockDispatchId: dispatchId },
+      include: {
+        lines: {
+          include: {
+            stockDispatchItem: true,
+          },
+        },
+      },
+    });
+  }
+
+  if (!session) {
+    throw new Error(
+      "No receive session to confirm. Save verification first, or include receive line items in the confirm request."
+    );
+  }
   if (session.status === "POSTED" || session.status === "CANCELLED") {
     throw new Error(`Cannot confirm in status ${session.status}`);
   }
@@ -867,7 +1064,9 @@ export async function confirmDispatchReceiveFromSession(
     );
   }
   if (!session.lines.length) {
-    throw new Error("Receive session has no lines; save verification first.");
+    throw new Error(
+      "Receive session has no lines. Save verification first, or include receive line items in the confirm request."
+    );
   }
 
   const items: ReceiveItemInput[] = session.lines.map((l: any) => ({
@@ -876,14 +1075,17 @@ export async function confirmDispatchReceiveFromSession(
     quantityReceived: l.quantityReceived,
     quantityDamaged: l.quantityDamaged,
     quantityShort: l.quantityShort,
+    excessQty: l.excessQty ?? 0,
     reasonCode: l.reasonCode ?? undefined,
     lineNote: l.lineNote ?? undefined,
+    followUpNote: l.followUpNote ?? undefined,
   }));
 
   /** Ledger + GRN + session state in one transaction (no committed receive without session update). */
   const result = await prisma.$transaction(async (tx: any) => {
+    // PostgreSQL column is camelCase "stockDispatchId" (Prisma @@map table "dispatch_receive_sessions").
     await tx.$executeRaw(
-      Prisma.sql`SELECT id FROM dispatch_receive_sessions WHERE stock_dispatch_id = ${dispatchId} FOR UPDATE`
+      Prisma.sql`SELECT id FROM "dispatch_receive_sessions" WHERE "stockDispatchId" = ${dispatchId} FOR UPDATE`
     );
     const locked = await tx.dispatchReceiveSession.findUnique({
       where: { stockDispatchId: dispatchId },
@@ -894,12 +1096,17 @@ export async function confirmDispatchReceiveFromSession(
       throw new Error(`Cannot confirm in status ${locked.status}`);
     }
 
-    const receiveResult = await receiveDispatchLedgerInTx(tx, dispatchId, {
-      items,
-      notes: data.notes ?? session.notes ?? undefined,
-      createdByUserId: data.createdByUserId,
-      idempotencyKey: data.idempotencyKey,
-    });
+    const receiveResult = await receiveDispatchLedgerInTx(
+      tx,
+      dispatchId,
+      {
+        items,
+        notes: data.notes ?? session.notes ?? undefined,
+        createdByUserId: data.createdByUserId,
+        idempotencyKey: data.idempotencyKey,
+      },
+      { relaxRemainingPartition: false }
+    );
 
     const allReceived = receiveResult.dispatch?.status === "DELIVERED";
 
@@ -934,6 +1141,32 @@ export async function confirmDispatchReceiveFromSession(
   return result;
 }
 
+/** Cancel a DRAFT DispatchReceiveSession (branch inbound draft only). */
+export async function cancelDispatchReceiveSession(dispatchId: number, actorUserId?: number | null) {
+  const session = await prisma.dispatchReceiveSession.findUnique({
+    where: { stockDispatchId: dispatchId },
+  });
+  if (!session) return { ok: false as const, code: "NO_SESSION" as const };
+  if (session.status !== "DRAFT") {
+    throw new Error(`Only DRAFT receive sessions can be cancelled (current: ${session.status})`);
+  }
+  await prisma.dispatchReceiveSession.update({
+    where: { id: session.id },
+    data: { status: "CANCELLED" },
+  });
+  await logWarehouseAudit({
+    orgId: session.orgId,
+    warehouseId: null,
+    category: "OPERATIONS",
+    action: "DISPATCH_RECEIVE_SESSION_CANCELLED",
+    entityType: "DispatchReceiveSession",
+    entityId: String(session.id),
+    metadata: { stockDispatchId: dispatchId },
+    actorUserId: actorUserId ?? null,
+  });
+  return { ok: true as const, sessionId: session.id };
+}
+
 /**
  * Controlled receive entry point.
  * - `legacy_immediate` — post TRANSFER_IN immediately (manager / backward compatible).
@@ -952,6 +1185,12 @@ export async function receiveDispatch(
   options?: { mode?: ReceiveDispatchMode; allowConfirmFromDraft?: boolean }
 ) {
   const mode = options?.mode ?? "legacy_immediate";
+  const sessionOnly = String(process.env.ENTERPRISE_DISPATCH_RECEIVE_SESSION_ONLY || "").toLowerCase() === "true";
+  if (sessionOnly && mode === "legacy_immediate") {
+    throw new Error(
+      "Dispatch receive must use verify → submit → confirm (ENTERPRISE_DISPATCH_RECEIVE_SESSION_ONLY=true). Immediate ledger post is disabled."
+    );
+  }
   if (mode === "verify") {
     return saveDispatchReceiveVerification(dispatchId, {
       items: data.items ?? [],

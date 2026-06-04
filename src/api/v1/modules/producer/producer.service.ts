@@ -1,4 +1,5 @@
 const prisma = require("../../../../infrastructure/db/prismaClient");
+const centralizedLocationService = require("../../../../modules/location/location.service");
 const bcrypt = require("bcrypt");
 const featureFlag = require("../../services/governance/featureFlag.service");
 const quota = require("../../services/governance/quota.service");
@@ -297,7 +298,26 @@ async function loginProducer({ email, phone, password }) {
  * Legacy KYC submit: updates ProducerOrg name/countryCode and persists docsJson to legacyDocsJson
  * (do not rely on file refs in docsJson; use /kyc/documents for uploads).
  */
-async function submitKyc({ userId, name, countryCode, docsJson }) {
+async function submitKyc({ userId, name, countryCode, docsJson, divisionId, districtId, upazilaId, unionId, areaId }) {
+  let normalizedLocation = {
+    divisionId: divisionId != null ? Number(divisionId) || null : null,
+    districtId: districtId != null ? Number(districtId) || null : null,
+    upazilaId: upazilaId != null ? Number(upazilaId) || null : null,
+    unionId: unionId != null ? Number(unionId) || null : null,
+    areaId: areaId != null ? Number(areaId) || null : null,
+  };
+  if (
+    normalizedLocation.divisionId ||
+    normalizedLocation.districtId ||
+    normalizedLocation.upazilaId ||
+    normalizedLocation.unionId ||
+    normalizedLocation.areaId
+  ) {
+    const validated = await centralizedLocationService.validateSelection(prisma, normalizedLocation);
+    if (!validated?.ok) throw createError(validated?.message || "Invalid location selection", 400, validated?.errorCode);
+    normalizedLocation = validated.normalized || normalizedLocation;
+  }
+
   const org = await getProducerOrgByUser(userId);
   if (!org) {
     const created = await prisma.producerOrg.create({
@@ -305,6 +325,11 @@ async function submitKyc({ userId, name, countryCode, docsJson }) {
         ownerUserId: userId,
         name: name || "Producer Org",
         countryCode: countryCode || null,
+        divisionId: normalizedLocation.divisionId,
+        districtId: normalizedLocation.districtId,
+        upazilaId: normalizedLocation.upazilaId,
+        unionId: normalizedLocation.unionId,
+        areaId: normalizedLocation.areaId,
         docsJson: docsJson || null,
         legacyDocsJson: docsJson || null,
         status: "PENDING",
@@ -319,6 +344,11 @@ async function submitKyc({ userId, name, countryCode, docsJson }) {
     data: {
       ...(name ? { name } : {}),
       ...(countryCode ? { countryCode } : {}),
+      ...(normalizedLocation.divisionId !== undefined ? { divisionId: normalizedLocation.divisionId } : {}),
+      ...(normalizedLocation.districtId !== undefined ? { districtId: normalizedLocation.districtId } : {}),
+      ...(normalizedLocation.upazilaId !== undefined ? { upazilaId: normalizedLocation.upazilaId } : {}),
+      ...(normalizedLocation.unionId !== undefined ? { unionId: normalizedLocation.unionId } : {}),
+      ...(normalizedLocation.areaId !== undefined ? { areaId: normalizedLocation.areaId } : {}),
       ...(docsJson ? { docsJson, legacyDocsJson: docsJson } : {}),
       status: "PENDING",
     },
@@ -604,12 +634,37 @@ async function listFactories(producerOrgId) {
 async function createFactory(producerOrgId, data) {
   if (!producerOrgId) throw createError("Producer org not found", 404);
   if (!data?.name) throw createError("name is required", 400);
+
+  let normalizedLocation = {
+    divisionId: data?.divisionId != null ? Number(data.divisionId) || null : null,
+    districtId: data?.districtId != null ? Number(data.districtId) || null : null,
+    upazilaId: data?.upazilaId != null ? Number(data.upazilaId) || null : null,
+    unionId: data?.unionId != null ? Number(data.unionId) || null : null,
+    areaId: (data?.areaId ?? data?.bdAreaId) != null ? Number(data.areaId ?? data.bdAreaId) || null : null,
+  };
+  if (
+    normalizedLocation.divisionId ||
+    normalizedLocation.districtId ||
+    normalizedLocation.upazilaId ||
+    normalizedLocation.unionId ||
+    normalizedLocation.areaId
+  ) {
+    const validated = await centralizedLocationService.validateSelection(prisma, normalizedLocation);
+    if (!validated?.ok) throw createError(validated?.message || "Invalid location selection", 400, validated?.errorCode);
+    normalizedLocation = validated.normalized || normalizedLocation;
+  }
+
   return prisma.producerFactory.create({
     data: {
       producerOrgId: Number(producerOrgId),
       name: String(data.name),
       addressJson: data.addressJson || null,
       countryCode: data.countryCode || null,
+      divisionId: normalizedLocation.divisionId,
+      districtId: normalizedLocation.districtId,
+      upazilaId: normalizedLocation.upazilaId,
+      unionId: normalizedLocation.unionId,
+      areaId: normalizedLocation.areaId,
       isVerified: false,
     },
   });

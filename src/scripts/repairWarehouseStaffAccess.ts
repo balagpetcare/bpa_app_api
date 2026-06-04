@@ -1,18 +1,36 @@
 /**
  * Data Repair Script for Warehouse Staff Access
- * 
+ *
  * This script repairs existing warehouse staff records that were created
  * via the old broken flow (missing BranchMember and BranchAccessPermission).
- * 
+ *
  * Run this script after deploying the unified staff orchestration fixes.
- * 
+ *
  * Usage:
  *   npx ts-node src/scripts/repairWarehouseStaffAccess.ts [--dry-run]
  */
 
+import type { MemberRole, WarehouseStaffRole } from "@prisma/client";
 import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
+
+/** Map warehouse assignment role to org branch membership role (BranchMember.role). */
+function warehouseStaffRoleToMemberRole(role: WarehouseStaffRole): MemberRole {
+  switch (role) {
+    case "WAREHOUSE_MANAGER":
+    case "RECEIVING_STAFF":
+    case "DISPATCH_STAFF":
+      return role;
+    case "INVENTORY_CONTROLLER":
+      return "WAREHOUSE_MANAGER";
+    case "QC_OFFICER":
+    case "AUDIT_OFFICER":
+      return "BRANCH_STAFF";
+    default:
+      return "BRANCH_STAFF";
+  }
+}
 
 interface RepairResult {
   userId: number;
@@ -104,7 +122,7 @@ async function repairWarehouseStaffAccess(dryRun: boolean = false): Promise<Repa
               orgId: warehouse.orgId,
               branchId: warehouse.branchId,
               userId: user.id,
-              role: assignment.role,
+              role: warehouseStaffRoleToMemberRole(assignment.role),
               status: "ACTIVE",
               invitedByUserId: 1, // System/admin
             },
@@ -124,12 +142,16 @@ async function repairWarehouseStaffAccess(dryRun: boolean = false): Promise<Repa
 
         // Create or update BranchAccessPermission
         if (!existingAccessPermission) {
+          const repairInviterId = 1; // System/admin
+          const repairNow = new Date();
           await prisma.branchAccessPermission.create({
             data: {
               branchId: warehouse.branchId,
               userId: user.id,
               status: "APPROVED",
-              invitedByUserId: 1, // System/admin
+              invitedByUserId: repairInviterId,
+              approvedByUserId: repairInviterId,
+              approvedAt: repairNow,
             },
           });
           result.accessPermissionCreated = true;
@@ -157,7 +179,7 @@ async function repairWarehouseStaffAccess(dryRun: boolean = false): Promise<Repa
             branchId: warehouse.branchId,
           },
         });
-        
+
         if (updatedInvites.count > 0) {
           console.log(`    ✓ Updated ${updatedInvites.count} invite records to targetType=BRANCH`);
         }

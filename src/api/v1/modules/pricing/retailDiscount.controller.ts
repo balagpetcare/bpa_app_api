@@ -73,6 +73,25 @@ exports.upsertRule = async (req: any, res: any) => {
   }
 };
 
+exports.patchRule = async (req: any, res: any) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    if (!can(req, "pricing.retail.rule.manage")) {
+      return res.status(403).json({ success: false, message: "Forbidden" });
+    }
+    const id = parseInt(req.params.id, 10);
+    const orgId = req.body.orgId != null ? parseInt(req.body.orgId, 10) : undefined;
+    const status = req.body.status != null ? String(req.body.status) : "INACTIVE";
+    if (!id || !orgId) return res.status(400).json({ success: false, message: "id and orgId required" });
+    const row = await retail.patchRetailRuleStatus(orgId, id, status, userId);
+    return res.status(200).json({ success: true, data: row });
+  } catch (e: any) {
+    console.error("patchRule", e);
+    return res.status(400).json({ success: false, message: e?.message ?? "Failed" });
+  }
+};
+
 exports.validateLine = async (req: any, res: any) => {
   try {
     if (!req.user?.id) return res.status(401).json({ success: false, message: "Unauthorized" });

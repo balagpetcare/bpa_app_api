@@ -56,7 +56,7 @@ export async function assignToBin(returnId: number, auditBinId: number): Promise
     include: { auditBinItems: true },
   });
   if (!vialReturn) throw new Error("Vial return not found");
-  if (vialReturn.auditBinItems?.length) throw new Error("Return already assigned to a bin");
+  if (vialReturn.auditBinItems) throw new Error("Return already assigned to a bin");
   const bin = await prisma.auditBin.findUnique({
     where: { id: auditBinId },
   });

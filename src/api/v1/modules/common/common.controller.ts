@@ -274,6 +274,35 @@ exports.getBdUpazilas = async (req, res) => {
   }
 };
 
+// GET /api/v1/common/bd/unions?upazilaId=1
+exports.getBdUnions = async (req, res) => {
+  try {
+    const upazilaId = Number(req.query.upazilaId);
+    if (!Number.isFinite(upazilaId) || upazilaId <= 0) {
+      return res.status(400).json({ success: false, message: "upazilaId is required" });
+    }
+
+    if (prisma.bdUnion && typeof prisma.bdUnion.findMany === "function") {
+      const items = await prisma.bdUnion.findMany({
+        where: { upazilaId },
+        select: { id: true, code: true, nameEn: true, nameBn: true, upazilaId: true },
+        orderBy: { nameEn: "asc" },
+      });
+      return res.status(200).json({ success: true, items });
+    }
+
+    // Fallback while bd_unions table/model is not available in some environments.
+    const items = await prisma.bdArea.findMany({
+      where: { upazilaId, type: "UNION" },
+      select: { id: true, code: true, nameEn: true, nameBn: true, upazilaId: true },
+      orderBy: { nameEn: "asc" },
+    });
+    return res.status(200).json({ success: true, items });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: "Failed to fetch unions" });
+  }
+};
+
 // GET /api/v1/common/bd/areas?upazilaId=1
 exports.getBdAreas = async (req, res) => {
   try {

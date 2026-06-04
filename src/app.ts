@@ -54,6 +54,14 @@ app.use(
       // if allowlist empty, fallback to true (dev-friendly)
       if (allowedOrigins.length === 0) return callback(null, true);
 
+      // Dev: allow any localhost / 127.0.0.1 port (Next.js panels, vaccination landing, etc.)
+      if (
+        process.env.NODE_ENV !== "production" &&
+        /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)
+      ) {
+        return callback(null, true);
+      }
+
       return allowedOrigins.includes(origin)
         ? callback(null, true)
         : callback(new Error(`CORS blocked origin: ${origin}`));
@@ -102,6 +110,20 @@ app.use(countryContextMiddleware);
 
 // Health
 app.get("/health", (_req, res) => res.json({ ok: true, service: "bpa_api" }));
+try {
+  const { redisHealthHandler } = require("./infrastructure/redis/redis.health");
+  app.get("/health/redis", (req, res) => {
+    redisHealthHandler(req, res).catch((err: Error) => {
+      res.status(503).json({
+        ok: false,
+        service: "bpa_api",
+        error: err?.message || "redis health check failed",
+      });
+    });
+  });
+} catch (err) {
+  console.warn("[app] Redis health route not loaded", (err as Error)?.message || err);
+}
 
 // ✅ Central Auth UI Routes (HTML pages for login/register)
 // Serves at /auth/login and /auth/register

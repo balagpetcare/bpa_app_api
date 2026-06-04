@@ -53,14 +53,18 @@ module.exports = async function authenticateToken(req, res, next) {
     }
 
     const permsFromToken = (payload && (payload.perms || payload.permissions)) || null;
+    let resolvedPerms = [];
+    try {
+      resolvedPerms = await resolvePermissionsForUser(userId);
+    } catch {
+      resolvedPerms = [];
+    }
+    // Never let a stale JWT permission subset strip DB-resolved permissions (union, not replace).
     if (Array.isArray(permsFromToken)) {
-      req.user.permissions = permsFromToken;
+      const fromToken = permsFromToken.map((p) => String(p));
+      req.user.permissions = [...new Set([...resolvedPerms, ...fromToken])];
     } else {
-      try {
-        req.user.permissions = await resolvePermissionsForUser(userId);
-      } catch {
-        req.user.permissions = [];
-      }
+      req.user.permissions = resolvedPerms;
     }
 
     await attachAuthContexts(req, userId);

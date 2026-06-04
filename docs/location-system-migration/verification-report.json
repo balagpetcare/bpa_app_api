@@ -1,0 +1,16 @@
+{
+  "generatedAt": "2026-06-03T07:56:50.870Z",
+  "counts": {
+    "divisions": 8,
+    "districts": 64,
+    "upazilas": 495,
+    "unions": 4540,
+    "areas": 4540
+  },
+  "integrity": {
+    "orphanDistricts": 0,
+    "orphanUpazilas": 0,
+    "orphanUnions": 0,
+    "orphanAreasByUnion": 0
+  }
+}

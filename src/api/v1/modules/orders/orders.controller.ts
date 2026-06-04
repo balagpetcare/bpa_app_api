@@ -2,6 +2,8 @@ const service = require("./orders.service");
 const inventoryService = require("../inventory/inventory.service");
 const ledgerService = require("../inventory/ledger.service");
 const prisma = require("../../../../infrastructure/db/prismaClient");
+const branchAccess = require("./ordersBranchAccess.service");
+const { restoreInventoryAfterOrderCancel } = require("./ordersCancelInventory.service");
 
 /**
  * GET /api/v1/orders
@@ -14,13 +16,11 @@ exports.getOrders = async (req, res) => {
       return res.status(401).json({ success: false, message: "Unauthorized" });
     }
 
-    // Get user's branch membership
-    const branchMember = await prisma.branchMember.findFirst({
-      where: { userId: userId, status: "ACTIVE" },
-      select: { branchId: true },
-    });
-
-    const branchId = branchMember?.branchId || parseInt(req.query.branchId) || undefined;
+    const resolved = await branchAccess.resolveBranchIdForOrderList(userId, req.query.branchId);
+    if (!resolved.ok) {
+      return res.status(resolved.status).json({ success: false, message: resolved.message });
+    }
+    const branchId = resolved.branchId;
 
     const result = await service.getOrders({
       branchId: branchId,
@@ -62,13 +62,14 @@ exports.getOrder = async (req, res) => {
       return res.status(400).json({ success: false, message: "Invalid order ID" });
     }
 
-    // Get user's branch
-    const branchMember = await prisma.branchMember.findFirst({
-      where: { userId: userId, status: "ACTIVE" },
-      select: { branchId: true },
-    });
-
-    const branchId = branchMember?.branchId;
+    let branchId: number | undefined;
+    try {
+      const a = await branchAccess.assertOrderBranchAccess(userId, orderId);
+      branchId = a.branchId;
+    } catch (e: any) {
+      const status = e?.status || 500;
+      return res.status(status).json({ success: false, message: e?.message || "Access denied" });
+    }
 
     const order = await service.getOrderById(orderId, branchId);
 
@@ -287,13 +288,14 @@ exports.updateOrderStatus = async (req, res) => {
       });
     }
 
-    // Get user's branch
-    const branchMember = await prisma.branchMember.findFirst({
-      where: { userId: userId, status: "ACTIVE" },
-      select: { branchId: true },
-    });
-
-    const branchId = branchMember?.branchId;
+    let branchId: number | undefined;
+    try {
+      const a = await branchAccess.assertOrderBranchAccess(userId, orderId);
+      branchId = a.branchId;
+    } catch (e: any) {
+      const status = e?.status || 500;
+      return res.status(status).json({ success: false, message: e?.message || "Access denied" });
+    }
 
     const order = await service.updateOrderStatus(orderId, status, branchId);
 
@@ -337,13 +339,14 @@ exports.processPayment = async (req, res) => {
       });
     }
 
-    // Get user's branch
-    const branchMember = await prisma.branchMember.findFirst({
-      where: { userId: userId, status: "ACTIVE" },
-      select: { branchId: true },
-    });
-
-    const branchId = branchMember?.branchId;
+    let branchId: number | undefined;
+    try {
+      const a = await branchAccess.assertOrderBranchAccess(userId, orderId);
+      branchId = a.branchId;
+    } catch (e: any) {
+      const status = e?.status || 500;
+      return res.status(status).json({ success: false, message: e?.message || "Access denied" });
+    }
 
     const order = await service.processPayment(
       orderId,
@@ -387,52 +390,20 @@ exports.cancelOrder = async (req, res) => {
 
     const { reason } = req.body;
 
-    // Get user's branch
-    const branchMember = await prisma.branchMember.findFirst({
-      where: { userId: userId, status: "ACTIVE" },
-      select: { branchId: true },
-    });
-
-    const branchId = branchMember?.branchId;
+    let branchId: number | undefined;
+    try {
+      const a = await branchAccess.assertOrderBranchAccess(userId, orderId);
+      branchId = a.branchId;
+    } catch (e: any) {
+      const status = e?.status || 500;
+      return res.status(status).json({ success: false, message: e?.message || "Access denied" });
+    }
 
     const result = await service.cancelOrder(orderId, reason, branchId);
     const order = result.order;
     const performedCancel = result.performedCancel === true;
 
-    if (performedCancel && order.status === "CANCELLED" && order.fulfilmentInventoryLocationId != null && order.items?.length) {
-      const restoreItems = order.items.filter((i) => i.variantId).map((i) => ({ variantId: i.variantId, quantity: i.quantity }));
-      if (restoreItems.length > 0) {
-        await ledgerService.restoreStockForOrderCancel({
-          locationId: order.fulfilmentInventoryLocationId,
-          items: restoreItems,
-          refId: String(order.id),
-          createdByUserId: userId,
-        });
-      }
-    } else if (performedCancel && order.status === "CANCELLED") {
-      for (const item of order.items) {
-        if (item.variantId && branchId) {
-          const inventory = await inventoryService.getInventory({
-            branchId: branchId,
-            productId: item.productId,
-            variantId: item.variantId,
-            limit: 1,
-          });
-          if (inventory.items.length > 0) {
-            await inventoryService.adjustStock(
-              inventory.items[0].id,
-              {
-                type: "IN",
-                quantity: item.quantity,
-                reason: `Order ${order.orderNumber} cancelled - stock restored`,
-                createdByUserId: userId,
-              },
-              branchId
-            );
-          }
-        }
-      }
-    }
+    await restoreInventoryAfterOrderCancel(userId, order, performedCancel, branchId);
 
     return res.status(200).json({
       success: true,

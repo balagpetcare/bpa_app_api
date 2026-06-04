@@ -3,6 +3,14 @@
 // - Uses the hardened Express app (src/app.ts)
 // NOTE: Prisma middleware must be attached inside src/app.ts (before routes)
 
+require("dotenv").config();
+try {
+  const { initRedisSubsystem } = require("./infrastructure/redis/redis.client");
+  initRedisSubsystem();
+} catch (e) {
+  console.warn("[Redis] Subsystem init skipped", (e as Error)?.message || e);
+}
+
 const http = require("http");
 const { env } = require("./config/env");
 const app = require("./app");
@@ -44,6 +52,29 @@ try {
   setInterval(runRetention, retentionIntervalMs).unref?.();
 } catch (e) {
   console.error("[JOB_INIT] notificationRetention failed", e);
+}
+
+try {
+  const { bootstrapPaymentProvider } = require("./api/v1/payments/paymentProvider.bootstrap");
+  bootstrapPaymentProvider();
+} catch (e) {
+  console.error("[PAYMENT_INIT] bootstrap failed", e);
+  if (process.env.NODE_ENV === "production") {
+    process.exit(1);
+  }
+}
+try {
+  const { runPaymentRecoveryJob } = require("./api/v1/payments/paymentRecovery.service");
+  const recoveryIntervalMs = Number(process.env.PAYMENT_RECOVERY_INTERVAL_MS || 10 * 60 * 1000);
+  function runRecovery() {
+    runPaymentRecoveryJob().catch((err: Error) =>
+      console.error("[JOB_INIT] paymentRecovery error", err)
+    );
+  }
+  runRecovery();
+  setInterval(runRecovery, recoveryIntervalMs).unref?.();
+} catch (e) {
+  console.error("[JOB_INIT] paymentRecovery failed", e);
 }
 
 /**
@@ -116,19 +147,30 @@ function gracefulShutdown(signal: string) {
     console.log(`[${signal}] Server closed successfully`);
 
     // Close database connections
+    const shutdownTasks: Promise<void>[] = [];
+    try {
+      const { disconnectRedis } = require("./infrastructure/redis/redis.client");
+      shutdownTasks.push(disconnectRedis());
+    } catch {
+      /* redis module optional */
+    }
     try {
       const prisma = require("./infrastructure/db/prismaClient").default;
-      prisma.$disconnect().then(() => {
-        console.log(`[${signal}] Database disconnected`);
-        process.exit(0);
-      }).catch((dbErr: any) => {
-        console.error(`[${signal}] Error disconnecting database:`, dbErr);
+      shutdownTasks.push(
+        prisma.$disconnect().then(() => {
+          console.log(`[${signal}] Database disconnected`);
+        })
+      );
+    } catch {
+      /* no prisma */
+    }
+    Promise.all(shutdownTasks)
+      .then(() => process.exit(0))
+      .catch((err) => {
+        console.error(`[${signal}] Shutdown error:`, err);
         process.exit(1);
       });
-    } catch (e) {
-      console.log(`[${signal}] No database connection to close`);
-      process.exit(0);
-    }
+    return;
   });
 
   // Force exit after 10 seconds if graceful shutdown fails

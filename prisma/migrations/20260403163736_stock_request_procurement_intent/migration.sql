@@ -13,7 +13,7 @@ CREATE INDEX "stock_requests_requestIntent_idx" ON "stock_requests"("requestInte
 CREATE INDEX "stock_requests_linkedPurchaseOrderId_idx" ON "stock_requests"("linkedPurchaseOrderId");
 
 -- AddForeignKey: stock_requests.linkedPurchaseOrderId -> purchase_orders.id
-ALTER TABLE "stock_requests" ADD CONSTRAINT "stock_requests_linkedPurchaseOrderId_fkey" FOREIGN KEY ("linkedPurchaseOrderId") REFERENCES "purchase_orders"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+-- Deferred to 20260429120000 — `purchase_orders` is created there (shadow ordering).
 
 -- AddForeignKey: stock_requests.preferredVendorId -> vendors.id
 ALTER TABLE "stock_requests" ADD CONSTRAINT "stock_requests_preferredVendorId_fkey" FOREIGN KEY ("preferredVendorId") REFERENCES "vendors"("id") ON DELETE SET NULL ON UPDATE CASCADE;

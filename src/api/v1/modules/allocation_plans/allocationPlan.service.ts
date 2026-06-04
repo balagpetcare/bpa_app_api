@@ -1,16 +1,29 @@
 /**
  * Allocation plans: approved requisitions → FEFO lines → reservations → pick lists.
  * Enterprise: auto-allocation, partial/shortage, manual lines, reallocate, audit events.
+ * Multi-source: feature-gated multi-warehouse FEFO allocation (MULTI_SOURCE_ALLOCATION_ENABLED).
  */
 import prisma from "../../../../infrastructure/db/prismaClient";
 import { allocateVariantFifoUpTo } from "../inventory/fefoAllocation.service";
 import { logWarehouseAudit } from "../warehouse/warehouseAudit.service";
 import {
   isFulfillmentReservationEnabled,
+  lockStockLotBalancesForAllocation,
   releaseAllocationPlanLinesInTx,
   reserveAllocationPlanLinesInTx,
 } from "../fulfillment/reservation.service";
 import { getFrozenRecallLotIds, getPendingQcHoldByLot } from "../inventory/stockAvailability.service";
+import { canTransitionTo, type StockRequestStatus } from "../../services/stockRequestStatus.service";
+import {
+  isMultiSourceEnabled,
+  runMultiSourceAllocation,
+} from "../../services/multiSourceAllocator.service";
+import {
+  createBackordersFromPlanShortage,
+  syncBackordersAfterSupplementaryPlanConfirm,
+} from "../backorders/backorder.service";
+import { MultiWarehouseFulfillmentError, MW_CODES } from "../../services/multiWarehouseFulfillment.errors";
+import { mwLogError, mwLogInfo } from "../../services/multiWarehouseFulfillment.logger";
 
 const STOCK_REQUEST_ALLOC_STATUSES = [
   "SUBMITTED",
@@ -34,7 +47,7 @@ const MED_REQ_ALLOC_STATUSES = [
 const PRE_CONFIRM_STATUSES = ["DRAFT", "ALLOCATED", "PARTIALLY_ALLOCATED", "FAILED"] as const;
 
 function demandFromStockRequest(req: {
-  items: Array<{ variantId: number; requestedQty: number }>;
+  items: Array<{ variantId: number; requestedQty: number; lineKind?: string | null }>;
   approvedItems: unknown;
   extraItems: unknown;
 }): Map<number, number> {
@@ -42,11 +55,14 @@ function demandFromStockRequest(req: {
   const approved = (req.approvedItems as Array<{ variantId: number; approvedQty: number }> | null) ?? [];
   if (approved.length) {
     for (const a of approved) {
-      if (a.variantId && a.approvedQty > 0) map.set(a.variantId, a.approvedQty);
+      if (a.variantId && a.approvedQty > 0) {
+        map.set(a.variantId, (map.get(a.variantId) ?? 0) + a.approvedQty);
+      }
     }
   } else {
     for (const i of req.items) {
-      map.set(i.variantId, i.requestedQty);
+      if (i.lineKind === "EXTRA") continue;
+      map.set(i.variantId, (map.get(i.variantId) ?? 0) + i.requestedQty);
     }
   }
   const extra = (req.extraItems as Array<{ variantId: number; quantity: number }> | null) ?? [];
@@ -124,9 +140,15 @@ export async function createFromStockRequest(data: {
   createdByUserId?: number | null;
   /** When true, only create the plan header (no FEFO lines). Default false = auto-allocate. */
   skipAutoAllocation?: boolean;
+  /** MULTI_SOURCE enables cross-warehouse allocation (feature-gated). */
+  allocationScope?: "SINGLE_SOURCE" | "MULTI_SOURCE";
+  /** Explicit source location whitelist for multi-source (optional). */
+  sourceLocationIds?: number[];
+  /** When true, create backorder records for shortages on confirm. */
+  autoBackorder?: boolean;
 }) {
-  const existing = await prisma.allocationPlan.findUnique({
-    where: { stockRequestId: data.stockRequestId },
+  const existing = await prisma.allocationPlan.findFirst({
+    where: { stockRequestId: data.stockRequestId, orgId: data.orgId, parentPlanId: null },
   });
   if (existing) throw new Error("An allocation plan already exists for this stock request");
 
@@ -151,6 +173,13 @@ export async function createFromStockRequest(data: {
     if (!wh) throw new Error("Warehouse not found");
   }
 
+  if (data.allocationScope === "MULTI_SOURCE" && !isMultiSourceEnabled()) {
+    throw new MultiWarehouseFulfillmentError(MW_CODES.MULTI_SOURCE_DISABLED, { httpStatus: 403 });
+  }
+
+  const useMultiSource =
+    data.allocationScope === "MULTI_SOURCE" && isMultiSourceEnabled();
+
   const plan = await prisma.allocationPlan.create({
     data: {
       orgId: data.orgId,
@@ -159,7 +188,12 @@ export async function createFromStockRequest(data: {
       warehouseId: data.warehouseId ?? undefined,
       createdByUserId: data.createdByUserId ?? undefined,
       status: "DRAFT",
-      allocationMethod: data.skipAutoAllocation ? "MANUAL" : "AUTO_FEFO",
+      allocationMethod: data.skipAutoAllocation
+        ? "MANUAL"
+        : useMultiSource
+          ? "AUTO_FEFO_MULTI"
+          : "AUTO_FEFO",
+      allocationScope: useMultiSource ? "MULTI_SOURCE" : "SINGLE_SOURCE",
     },
     include: {
       stockRequest: { select: { id: true, status: true, branchId: true } },
@@ -174,7 +208,11 @@ export async function createFromStockRequest(data: {
       action: "PLAN_CREATED",
       fromStatus: null,
       toStatus: "DRAFT",
-      metadata: { skipAutoAllocation: Boolean(data.skipAutoAllocation) },
+      metadata: {
+        skipAutoAllocation: Boolean(data.skipAutoAllocation),
+        allocationScope: useMultiSource ? "MULTI_SOURCE" : "SINGLE_SOURCE",
+        autoBackorder: Boolean(data.autoBackorder),
+      },
       performedByUserId: data.createdByUserId ?? null,
     },
   });
@@ -183,7 +221,174 @@ export async function createFromStockRequest(data: {
     return getPlanById(plan.id, data.orgId);
   }
 
+  if (useMultiSource) {
+    return runMultiSourceFefoForPlan(plan.id, data.orgId, {
+      actorUserId: data.createdByUserId ?? undefined,
+      sourceLocationIds: data.sourceLocationIds,
+    });
+  }
+
   return runFefoForPlan(plan.id, data.orgId, { actorUserId: data.createdByUserId ?? undefined });
+}
+
+/**
+ * Multi-source FEFO allocation: allocates across multiple warehouses in priority order.
+ * Creates AllocationPlanLine rows with varying locationId and AllocationSourceSummary rows.
+ */
+export async function runMultiSourceFefoForPlan(
+  planId: number,
+  orgId: number,
+  opts?: { actorUserId?: number; sourceLocationIds?: number[] },
+) {
+  const plan = await prisma.allocationPlan.findFirst({
+    where: { id: planId, orgId },
+    include: {
+      stockRequest: { include: { items: true } },
+      medicineRequisition: { include: { items: true } },
+    },
+  });
+  if (!plan) throw new Error("Allocation plan not found");
+
+  const pre = plan.status as (typeof PRE_CONFIRM_STATUSES)[number];
+  if (!PRE_CONFIRM_STATUSES.includes(pre)) {
+    throw new Error(`Allocation can only be run in ${PRE_CONFIRM_STATUSES.join("/")} status (current: ${plan.status})`);
+  }
+
+  const demand = await loadDemandForPlan(plan as any);
+  if (!demand.size) throw new Error("No line items with variant demand to allocate");
+
+  let result;
+  try {
+    result = await runMultiSourceAllocation(orgId, demand, {
+      preferredLocationId: plan.fromLocationId,
+      sourceLocationIds: opts?.sourceLocationIds,
+    });
+  } catch (e) {
+    mwLogError("runMultiSourceFefoForPlan_alloc_failed", e, { planId, orgId });
+    throw e;
+  }
+
+  type LineRow = {
+    allocationPlanId: number;
+    variantId: number;
+    lotId: number;
+    locationId: number;
+    quantityAllocated: number;
+    demandQty: number | null;
+    quantityShort: number;
+    lineStatus: string | null;
+    allocationMethod: string | null;
+    sourceWarehouseId: number | null;
+  };
+
+  const lineCreates: LineRow[] = [];
+  const variantFirstSeen = new Set<number>();
+
+  for (const line of result.lines) {
+    const isFirst = !variantFirstSeen.has(line.variantId);
+    if (isFirst) variantFirstSeen.add(line.variantId);
+
+    const shortage = result.shortages.find((s) => s.variantId === line.variantId);
+    const variantDemand = demand.get(line.variantId) ?? 0;
+
+    lineCreates.push({
+      allocationPlanId: planId,
+      variantId: line.variantId,
+      lotId: line.lotId,
+      locationId: line.locationId,
+      quantityAllocated: line.quantityAllocated,
+      demandQty: isFirst ? variantDemand : null,
+      quantityShort: isFirst ? (shortage?.shortageQty ?? 0) : 0,
+      lineStatus: isFirst
+        ? shortage
+          ? "PARTIAL"
+          : "ALLOCATED"
+        : null,
+      allocationMethod: "FEFO",
+      sourceWarehouseId: line.warehouseId,
+    });
+  }
+
+  const nextStatus =
+    result.totalAllocatedQty === 0 && result.totalDemandQty > 0
+      ? "FAILED"
+      : result.totalShortageQty > 0
+        ? "PARTIALLY_ALLOCATED"
+        : "ALLOCATED";
+
+  const prevStatus = plan.status;
+
+  return prisma.$transaction(async (tx) => {
+    await tx.allocationPlanLine.deleteMany({ where: { allocationPlanId: planId } });
+    await tx.allocationSourceSummary.deleteMany({ where: { allocationPlanId: planId } });
+
+    for (const row of lineCreates) {
+      await tx.allocationPlanLine.create({ data: row });
+    }
+
+    // Build source summaries grouped by locationId
+    const sourceGroups = new Map<number, { warehouseId: number | null; totalQty: number; lineCount: number }>();
+    for (const line of lineCreates) {
+      const existing = sourceGroups.get(line.locationId);
+      if (existing) {
+        existing.totalQty += line.quantityAllocated;
+        existing.lineCount++;
+      } else {
+        sourceGroups.set(line.locationId, {
+          warehouseId: line.sourceWarehouseId,
+          totalQty: line.quantityAllocated,
+          lineCount: 1,
+        });
+      }
+    }
+
+    for (const [locationId, group] of sourceGroups.entries()) {
+      await tx.allocationSourceSummary.create({
+        data: {
+          orgId,
+          allocationPlanId: planId,
+          locationId,
+          warehouseId: group.warehouseId,
+          totalAllocatedQty: group.totalQty,
+          totalLineCount: group.lineCount,
+          sourceStatus: "PENDING",
+        },
+      });
+    }
+
+    await tx.allocationPlan.update({
+      where: { id: planId },
+      data: {
+        status: nextStatus as any,
+        totalDemandQty: result.totalDemandQty,
+        totalAllocatedQty: result.totalAllocatedQty,
+        shortageQty: result.totalShortageQty,
+        allocationMethod: "AUTO_FEFO_MULTI",
+        sourceCount: sourceGroups.size,
+      },
+    });
+
+    await logPlanEvent(tx, {
+      orgId,
+      allocationPlanId: planId,
+      action: "MULTI_SOURCE_ALLOC_RUN",
+      fromStatus: prevStatus,
+      toStatus: nextStatus,
+      metadata: {
+        totalDemandQty: result.totalDemandQty,
+        totalAllocatedQty: result.totalAllocatedQty,
+        shortageQty: result.totalShortageQty,
+        sourceCount: sourceGroups.size,
+        lineCount: lineCreates.length,
+      },
+      performedByUserId: opts?.actorUserId ?? null,
+    });
+
+    return tx.allocationPlan.findFirst({
+      where: { id: planId },
+      include: planIncludeDetailMultiSource(),
+    });
+  });
 }
 
 export async function createFromMedicineRequisition(data: {
@@ -248,9 +453,13 @@ export async function createFromMedicineRequisition(data: {
   return runFefoForPlan(plan.id, data.orgId, { actorUserId: data.createdByUserId ?? undefined });
 }
 
-export async function runFefoForPlan(
+/**
+ * Run FEFO for a plan using an explicit demand map (e.g. supplementary plan = sum of backorder remainingQty per variant).
+ */
+export async function runFefoForPlanWithDemand(
   planId: number,
   orgId: number,
+  demand: Map<number, number>,
   opts?: { actorUserId?: number }
 ) {
   const plan = await prisma.allocationPlan.findFirst({
@@ -267,8 +476,7 @@ export async function runFefoForPlan(
     throw new Error(`Allocation can only be run in ${PRE_CONFIRM_STATUSES.join("/")} status (current: ${plan.status})`);
   }
 
-  const demand = await loadDemandForPlan(plan as any);
-  if (!demand.size) throw new Error("No line items with variant demand to allocate");
+  if (!demand.size) throw new Error("No variant demand to allocate");
 
   const fromLocationId = plan.fromLocationId;
   const totalDemandQty = sumDemand(demand);
@@ -357,6 +565,102 @@ export async function runFefoForPlan(
   });
 }
 
+export async function runFefoForPlan(
+  planId: number,
+  orgId: number,
+  opts?: { actorUserId?: number }
+) {
+  const plan = await prisma.allocationPlan.findFirst({
+    where: { id: planId, orgId },
+    include: {
+      stockRequest: { include: { items: true } },
+      medicineRequisition: { include: { items: true } },
+    },
+  });
+  if (!plan) throw new Error("Allocation plan not found");
+
+  const demand = await loadDemandForPlan(plan as any);
+  if (!demand.size) throw new Error("No line items with variant demand to allocate");
+  return runFefoForPlanWithDemand(planId, orgId, demand, opts);
+}
+
+/**
+ * Create a child allocation plan chained from a parent plan to cover open backorder remaining quantities,
+ * then run FEFO against that demand only. One supplementary plan per parent (schema: parentPlanId unique).
+ */
+export async function createSupplementaryPlanFromBackorders(params: {
+  parentPlanId: number;
+  orgId: number;
+  fromLocationId: number;
+  createdByUserId?: number | null;
+}) {
+  const child = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "allocation_plans" WHERE id = ${params.parentPlanId} AND "orgId" = ${params.orgId} FOR UPDATE`;
+
+    const parent = await tx.allocationPlan.findFirst({
+      where: { id: params.parentPlanId, orgId: params.orgId },
+      include: { supplementaryPlan: { select: { id: true } } },
+    });
+    if (!parent) throw new Error("Parent allocation plan not found");
+    if (parent.supplementaryPlan) {
+      throw new Error("A supplementary allocation plan already exists for this parent plan");
+    }
+    if (!parent.stockRequestId) throw new Error("Parent plan has no stock request");
+
+    const backorders = await tx.backorder.findMany({
+      where: {
+        allocationPlanId: params.parentPlanId,
+        remainingQty: { gt: 0 },
+        status: { notIn: ["CANCELLED", "CLOSED"] },
+      },
+    });
+    if (!backorders.length) throw new Error("No open backorders with remaining quantity for this plan");
+
+    const demand = new Map<number, number>();
+    for (const b of backorders) {
+      demand.set(b.variantId, (demand.get(b.variantId) ?? 0) + b.remainingQty);
+    }
+
+    const created = await tx.allocationPlan.create({
+      data: {
+        orgId: params.orgId,
+        stockRequestId: parent.stockRequestId,
+        fromLocationId: params.fromLocationId,
+        warehouseId: parent.warehouseId ?? undefined,
+        parentPlanId: params.parentPlanId,
+        createdByUserId: params.createdByUserId ?? undefined,
+        status: "DRAFT",
+        allocationMethod: "AUTO_FEFO",
+        allocationScope: parent.allocationScope ?? "SINGLE_SOURCE",
+      },
+    });
+
+    await tx.backorder.updateMany({
+      where: { id: { in: backorders.map((b) => b.id) } },
+      data: { supplementaryPlanId: created.id, status: "LINKED" as any },
+    });
+
+    await logPlanEvent(tx, {
+      orgId: params.orgId,
+      allocationPlanId: created.id,
+      action: "SUPPLEMENTARY_PLAN_CREATED",
+      fromStatus: null,
+      toStatus: "DRAFT",
+      metadata: {
+        parentPlanId: params.parentPlanId,
+        backorderIds: backorders.map((b) => b.id),
+      },
+      performedByUserId: params.createdByUserId ?? null,
+    });
+
+    return { createdId: created.id, demand };
+  });
+
+  return runFefoForPlanWithDemand(child.createdId, params.orgId, child.demand, {
+    actorUserId: params.createdByUserId ?? undefined,
+  });
+}
+
 function planIncludeDetail() {
   return {
     lines: {
@@ -367,7 +671,15 @@ function planIncludeDetail() {
       },
       orderBy: { id: "asc" as const },
     },
-    pickList: {
+    sourceSummaries: {
+      include: {
+        location: { select: { id: true, name: true } },
+        warehouse: { select: { id: true, name: true } },
+      },
+      orderBy: { id: "asc" as const },
+    },
+    pickLists: {
+      orderBy: { id: "desc" as const },
       include: {
         lines: {
           include: {
@@ -416,6 +728,28 @@ function planIncludeDetail() {
   };
 }
 
+function planIncludeDetailMultiSource() {
+  const base = planIncludeDetail();
+  return {
+    ...base,
+    sourceSummaries: {
+      include: {
+        location: { select: { id: true, name: true, type: true } },
+        warehouse: { select: { id: true, name: true, code: true } },
+        pickList: { select: { id: true, status: true } },
+        dispatch: { select: { id: true, status: true } },
+      },
+      orderBy: { id: "asc" as const },
+    },
+    backorders: {
+      include: {
+        variant: { select: { id: true, sku: true, title: true } },
+      },
+      orderBy: { id: "asc" as const },
+    },
+  };
+}
+
 export async function confirmPlan(
   planId: number,
   orgId: number,
@@ -429,7 +763,16 @@ export async function confirmPlan(
 
     const plan = await tx.allocationPlan.findFirst({
       where: { id: planId, orgId },
-      include: {
+      select: {
+        id: true,
+        orgId: true,
+        status: true,
+        version: true,
+        fromLocationId: true,
+        stockRequestId: true,
+        parentPlanId: true,
+        shortageQty: true,
+        allocationScope: true,
         lines: {
           where: { quantityAllocated: { gt: 0 } },
           select: {
@@ -454,7 +797,13 @@ export async function confirmPlan(
     const linesToReserve = plan.lines.filter((l) => l.quantityAllocated > 0);
     if (!linesToReserve.length) throw new Error("No positive allocation lines to reserve");
 
+    const isMulti = (plan as any).allocationScope === "MULTI_SOURCE";
+
     if (isFulfillmentReservationEnabled()) {
+      await lockStockLotBalancesForAllocation(
+        tx,
+        linesToReserve.map((l) => ({ locationId: l.locationId, lotId: l.lotId })),
+      );
       await reserveAllocationPlanLinesInTx(tx, {
         orgId,
         allocationPlanId: planId,
@@ -466,6 +815,19 @@ export async function confirmPlan(
           quantityAllocated: l.quantityAllocated,
         })),
         createdByUserId: actorUserId ?? null,
+        multiSource: isMulti,
+      });
+    }
+
+    // Update source summaries to CONFIRMED for multi-source plans
+    if (isMulti) {
+      await tx.allocationSourceSummary.updateMany({
+        where: {
+          allocationPlanId: planId,
+          sourceStatus: "PENDING",
+          totalAllocatedQty: { gt: 0 },
+        },
+        data: { sourceStatus: "CONFIRMED", confirmedAt: new Date() },
       });
     }
 
@@ -476,7 +838,7 @@ export async function confirmPlan(
         confirmedAt: new Date(),
         version: { increment: 1 },
       },
-      include: planIncludeDetail(),
+      include: isMulti ? planIncludeDetailMultiSource() : planIncludeDetail(),
     });
 
     await logPlanEvent(tx, {
@@ -485,9 +847,99 @@ export async function confirmPlan(
       action: "ALLOC_CONFIRM",
       fromStatus: plan.status,
       toStatus: "CONFIRMED",
-      metadata: { reservedLines: linesToReserve.length },
+      metadata: {
+        reservedLines: linesToReserve.length,
+        multiSource: isMulti,
+      },
       performedByUserId: actorUserId ?? null,
     });
+
+    // Shortage → procurement_demand_lines (idempotent; same transaction as CONFIRMED)
+    const procurementDemandSvc = require("../procurement_demand/procurementDemand.service");
+    await procurementDemandSvc.createProcurementDemandLinesFromShortage(tx, {
+      planId,
+      orgId,
+      actorUserId: actorUserId ?? null,
+    });
+
+    // Create backorder records for shortages
+    if ((u as any).shortageQty > 0 && (u as any).stockRequestId) {
+      const shortageLines = await tx.allocationPlanLine.findMany({
+        where: { allocationPlanId: planId, quantityShort: { gt: 0 } },
+        select: { variantId: true, quantityShort: true },
+      });
+
+      if (shortageLines.length > 0) {
+        const srItems = await tx.stockRequestItem.findMany({
+          where: { stockRequestId: (u as any).stockRequestId },
+          select: { id: true, variantId: true },
+        });
+        const variantToItemId = new Map(srItems.map((i: any) => [i.variantId, i.id]));
+
+        await createBackordersFromPlanShortage(tx, {
+          orgId,
+          allocationPlanId: planId,
+          stockRequestId: (u as any).stockRequestId,
+          shortages: shortageLines.map((l: any) => ({
+            variantId: l.variantId,
+            shortageQty: l.quantityShort,
+            stockRequestItemId: variantToItemId.get(l.variantId) ?? null,
+          })),
+          priority: 0,
+        });
+      }
+    }
+
+    if (u.stockRequestId) {
+      const sr = await tx.stockRequest.findUnique({
+        where: { id: u.stockRequestId },
+        include: {
+          dispatches: { select: { status: true } },
+          items: {
+            select: {
+              id: true,
+              variantId: true,
+              requestedQty: true,
+              fulfilledQty: true,
+              cancelledQty: true,
+              lineKind: true,
+              backorderStatus: true,
+            },
+          },
+        },
+      });
+      if (sr && !["CLOSED", "CANCELLED"].includes(sr.status)) {
+        const from = sr.status as StockRequestStatus;
+        const gate = canTransitionTo(from, "APPROVED", {
+          hasAllocationPlan: true,
+          allocationPlanConfirmed: true,
+        });
+        if (gate.allowed && sr.status !== "APPROVED") {
+          await tx.stockRequest.update({
+            where: { id: sr.id },
+            data: { status: "APPROVED" },
+          });
+          await logPlanEvent(tx, {
+            orgId,
+            allocationPlanId: planId,
+            action: "STOCK_REQUEST_APPROVED_ON_PLAN_CONFIRM",
+            fromStatus: sr.status,
+            toStatus: "APPROVED",
+            metadata: { stockRequestId: sr.id },
+            performedByUserId: actorUserId ?? null,
+          });
+        }
+      }
+    }
+
+    if (plan.parentPlanId != null && plan.stockRequestId) {
+      await syncBackordersAfterSupplementaryPlanConfirm(tx, {
+        orgId,
+        supplementaryPlanId: planId,
+        stockRequestId: plan.stockRequestId,
+        actorUserId: actorUserId ?? null,
+      });
+    }
 
     return u;
   });
@@ -519,7 +971,7 @@ export async function cancelPlan(planId: number, orgId: number, reason?: string,
     const plan = await tx.allocationPlan.findFirst({
       where: { id: planId, orgId },
       include: {
-        pickList: true,
+        pickLists: { select: { id: true, stockDispatchId: true } },
         lines: {
           select: {
             variantId: true,
@@ -534,10 +986,13 @@ export async function cancelPlan(planId: number, orgId: number, reason?: string,
     if (["DISPATCHED", "CANCELLED"].includes(plan.status)) {
       throw new Error(`Cannot cancel plan in status ${plan.status}`);
     }
-    if (plan.pickList?.stockDispatchId) throw new Error("Plan already linked to dispatch; cancel pick/dispatch first");
+    if (plan.pickLists.some((p) => p.stockDispatchId != null)) {
+      throw new Error("Plan already linked to dispatch; cancel pick/dispatch first");
+    }
 
     const shouldReleaseReservation =
-      isFulfillmentReservationEnabled() && ["CONFIRMED", "PICKING", "PICKED"].includes(plan.status);
+      isFulfillmentReservationEnabled() &&
+      ["CONFIRMED", "PICKING", "PICKED", "PARTIALLY_DISPATCHED"].includes(plan.status);
 
     const prevStatus = plan.status;
 
@@ -553,12 +1008,20 @@ export async function cancelPlan(planId: number, orgId: number, reason?: string,
           quantityAllocated: l.quantityAllocated,
         })),
         createdByUserId: actorUserId ?? null,
+        multiSource: (plan as any).allocationScope === "MULTI_SOURCE",
       });
     }
-    if (plan.pickList) {
-      await tx.pickListLine.deleteMany({ where: { pickListId: plan.pickList.id } });
-      await tx.pickList.delete({ where: { id: plan.pickList.id } });
-    }
+    // Cancel backorders linked to this plan
+    await tx.backorder.updateMany({
+      where: { allocationPlanId: planId, status: { notIn: ["CANCELLED", "CLOSED"] } },
+      data: { status: "CANCELLED", cancelledAt: new Date() },
+    });
+    // Cancel source summaries
+    await tx.allocationSourceSummary.updateMany({
+      where: { allocationPlanId: planId, sourceStatus: { notIn: ["CANCELLED", "DISPATCHED"] } },
+      data: { sourceStatus: "CANCELLED" },
+    });
+    await tx.pickList.deleteMany({ where: { allocationPlanId: planId } });
     await tx.allocationPlanLine.deleteMany({ where: { allocationPlanId: planId } });
     const u = await tx.allocationPlan.update({
       where: { id: planId },
@@ -742,10 +1205,10 @@ export async function addManualAllocationLine(
 export async function reallocatePlan(planId: number, orgId: number, actorUserId?: number) {
   const plan = await prisma.allocationPlan.findFirst({
     where: { id: planId, orgId },
-    include: { pickList: true },
+    include: { pickLists: { select: { id: true } } },
   });
   if (!plan) throw new Error("Allocation plan not found");
-  if (plan.pickList) {
+  if (plan.pickLists.length) {
     throw new Error("Pick list exists; cancel the pick list or cancel the plan before reallocating");
   }
   if (["DISPATCHED", "CANCELLED"].includes(plan.status)) {
@@ -781,6 +1244,7 @@ export async function reallocatePlan(planId: number, orgId: number, actorUserId?
             quantityAllocated: l.quantityAllocated,
           })),
           createdByUserId: actorUserId ?? null,
+          multiSource: (full as any).allocationScope === "MULTI_SOURCE",
         });
       }
       await tx.allocationPlan.update({

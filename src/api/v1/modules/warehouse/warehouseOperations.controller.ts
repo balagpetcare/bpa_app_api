@@ -1,6 +1,7 @@
 export {};
 const operationsService = require("./warehouseOperations.service");
 const { getUserId, requireWarehouseAccess } = require("./warehouse.controller");
+const db = require("../../../../infrastructure/db/prismaClient").default;
 
 function parsePageLimit(req: any) {
   const page = req.query.page ? Number(req.query.page) : 1;
@@ -53,7 +54,38 @@ async function requisitions(req: any, res: any) {
       return res.status(403).json({ success: false, message: "Not authorized" });
     }
     const { page, limit } = parsePageLimit(req);
-    const data = await operationsService.listRequisitionQueue(id, { page, limit });
+    const q = req.query.q != null ? String(req.query.q) : undefined;
+    const status = req.query.status != null ? String(req.query.status) : undefined;
+    const branchIdRaw = req.query.branchId;
+    const branchId =
+      branchIdRaw != null && String(branchIdRaw).trim() !== "" ? Number(branchIdRaw) : undefined;
+    const dateFrom = req.query.dateFrom != null ? String(req.query.dateFrom) : undefined;
+    const dateTo = req.query.dateTo != null ? String(req.query.dateTo) : undefined;
+    const sortBy = req.query.sortBy != null ? String(req.query.sortBy) : undefined;
+    const sortDir = req.query.sortDir != null ? String(req.query.sortDir) : undefined;
+    const hasDispatch = req.query.hasDispatch != null ? String(req.query.hasDispatch) : undefined;
+    const urgency = req.query.urgency != null ? String(req.query.urgency) : undefined;
+    const wh = await db.warehouse.findUnique({
+      where: { id },
+      select: { branchId: true, locations: { take: 1, select: { branchId: true } } },
+    });
+    const staffBranchId = wh?.branchId ?? wh?.locations?.[0]?.branchId ?? undefined;
+    const locIds = await operationsService.getLinkedLocationIds(id);
+    const data = await operationsService.listRequisitionQueue(id, {
+      page,
+      limit,
+      staffBranchIdForActionPaths: staffBranchId,
+      warehouseLocationIds: locIds,
+      q,
+      status,
+      branchId: Number.isFinite(branchId) ? branchId : undefined,
+      dateFrom,
+      dateTo,
+      sortBy,
+      sortDir,
+      hasDispatch,
+      urgency,
+    });
     return res.status(200).json({ success: true, data: data.items, pagination: data.pagination });
   } catch (e: any) {
     console.error("warehouseOperations.requisitions", e);

@@ -3,19 +3,19 @@
  * Enqueue from NotificationService; process in notificationWorker.
  */
 import { Queue } from "bullmq";
-const redisConfig = {
-  host: process.env.REDIS_HOST || "localhost",
-  port: Number(process.env.REDIS_PORT) || 6379,
-  maxRetriesPerRequest: null,
-};
+import { areRedisQueuesEnabled } from "../../../infrastructure/redis/redis.client";
+import {
+  getRedisConnectionOptions,
+  isRedisEnabled,
+} from "../../../infrastructure/redis/redisConnection";
+
+const redisConfig = getRedisConnectionOptions();
 
 let emailQueue: Queue | null = null;
 let smsQueue: Queue | null = null;
 
-const REDIS_ENABLED = process.env.REDIS_ENABLED !== "false" && process.env.REDIS_ENABLED !== "0";
-
 function getEmailQueue(): Queue | null {
-  if (!REDIS_ENABLED) return null;
+  if (!isRedisEnabled() || !areRedisQueuesEnabled()) return null;
   if (emailQueue) return emailQueue;
   try {
     emailQueue = new Queue("notif_email", { connection: redisConfig });
@@ -26,7 +26,7 @@ function getEmailQueue(): Queue | null {
 }
 
 function getSmsQueue(): Queue | null {
-  if (!REDIS_ENABLED) return null;
+  if (!isRedisEnabled() || !areRedisQueuesEnabled()) return null;
   if (smsQueue) return smsQueue;
   try {
     smsQueue = new Queue("notif_sms", { connection: redisConfig });
@@ -48,14 +48,43 @@ export type NotificationJobPayload = {
   meta?: Record<string, unknown> | null;
 };
 
-export async function enqueueEmailJob(payload: NotificationJobPayload): Promise<void> {
+export async function enqueueEmailJob(payload: NotificationJobPayload): Promise<boolean> {
   const q = getEmailQueue();
-  if (!q) return;
+  if (!q) return false;
   await q.add("send", payload, { attempts: 3, backoff: { type: "exponential", delay: 2000 } });
+  return true;
 }
 
-export async function enqueueSmsJob(payload: NotificationJobPayload): Promise<void> {
+/**
+ * Enqueue SMS job. Returns false when Redis/queue unavailable (caller should direct-send fallback).
+ */
+export async function enqueueSmsJob(payload: NotificationJobPayload): Promise<boolean> {
   const q = getSmsQueue();
-  if (!q) return;
-  await q.add("send", payload, { attempts: 3, backoff: { type: "exponential", delay: 2000 } });
+  if (!q) return false;
+  const attempts = Number(process.env.SMS_QUEUE_ATTEMPTS || 3);
+  const delay = Number(process.env.SMS_QUEUE_BACKOFF_MS || 5000);
+  await q.add("send", payload, {
+    attempts,
+    backoff: { type: "exponential", delay },
+    removeOnComplete: 200,
+    removeOnFail: 500,
+  });
+  return true;
+}
+
+export async function getSmsQueueJobCounts(): Promise<{
+  waiting: number;
+  active: number;
+  failed: number;
+  delayed: number;
+} | null> {
+  const q = getSmsQueue();
+  if (!q) return null;
+  const counts = await q.getJobCounts("waiting", "active", "failed", "delayed");
+  return {
+    waiting: counts.waiting ?? 0,
+    active: counts.active ?? 0,
+    failed: counts.failed ?? 0,
+    delayed: counts.delayed ?? 0,
+  };
 }

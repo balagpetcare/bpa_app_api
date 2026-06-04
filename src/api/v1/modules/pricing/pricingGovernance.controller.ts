@@ -16,7 +16,7 @@ exports.getPolicy = async (req: any, res: any) => {
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
     const orgId = req.query.orgId ? parseInt(req.query.orgId, 10) : undefined;
     if (!orgId) return res.status(400).json({ success: false, message: "orgId required" });
-    if (!can(req, "pricing.audit.view", "org.read")) {
+    if (!can(req, "pricing.central.read", "pricing.audit.view", "org.read")) {
       return res.status(403).json({ success: false, message: "Forbidden" });
     }
     const policy = await gov.getOrCreateOrgPolicy(orgId);
@@ -36,14 +36,26 @@ exports.patchPolicy = async (req: any, res: any) => {
     if (!can(req, "pricing.central.write")) {
       return res.status(403).json({ success: false, message: "Forbidden" });
     }
-    const { enforceBranchOverrideWithinCentralBand, retailDiscountApprovalEnabled, posPricingGovernanceEnabled } =
-      req.body || {};
+    const b = req.body || {};
     const policy = await gov.updateOrgPolicy(
       orgId,
       {
-        enforceBranchOverrideWithinCentralBand,
-        retailDiscountApprovalEnabled,
-        posPricingGovernanceEnabled,
+        enforceBranchOverrideWithinCentralBand: b.enforceBranchOverrideWithinCentralBand,
+        retailDiscountApprovalEnabled: b.retailDiscountApprovalEnabled,
+        posPricingGovernanceEnabled: b.posPricingGovernanceEnabled,
+        posUseEnterpriseListResolution: b.posUseEnterpriseListResolution,
+        blockSaleBelowCost: b.blockSaleBelowCost,
+        blockSaleBelowFloor: b.blockSaleBelowFloor,
+        allowCampaignStacking: b.allowCampaignStacking,
+        allowMembershipStacking: b.allowMembershipStacking,
+        scheduledPricingEnabled: b.scheduledPricingEnabled,
+        batchPricingEnabled: b.batchPricingEnabled,
+        defaultMaxDiscountPercent:
+          b.defaultMaxDiscountPercent === "" || b.defaultMaxDiscountPercent === undefined
+            ? undefined
+            : b.defaultMaxDiscountPercent != null
+              ? Number(b.defaultMaxDiscountPercent)
+              : undefined,
       },
       userId
     );
@@ -60,12 +72,14 @@ exports.listAudit = async (req: any, res: any) => {
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
     const orgId = req.query.orgId ? parseInt(req.query.orgId, 10) : undefined;
     if (!orgId) return res.status(400).json({ success: false, message: "orgId required" });
-    if (!can(req, "pricing.audit.view", "org.read")) {
+    if (!can(req, "pricing.central.read", "pricing.audit.view", "org.read")) {
       return res.status(403).json({ success: false, message: "Forbidden" });
     }
     const page = req.query.page ? parseInt(req.query.page, 10) : 1;
     const limit = req.query.limit ? parseInt(req.query.limit, 10) : 50;
-    const result = await gov.listPricingAudit(orgId, { page, limit });
+    const entityType = typeof req.query.entityType === "string" ? req.query.entityType : undefined;
+    const entityKeyContains = typeof req.query.entityKeyContains === "string" ? req.query.entityKeyContains : undefined;
+    const result = await gov.listPricingAudit(orgId, { page, limit, entityType, entityKeyContains });
     return res.status(200).json({ success: true, data: result.items, pagination: { page: result.page, limit: result.limit, total: result.total, totalPages: result.totalPages } });
   } catch (e: any) {
     console.error("listAudit", e);

@@ -3,6 +3,8 @@
  * Worker: src/common/queue/workers/email.worker.ts
  */
 import { Queue } from "bullmq";
+import { areRedisQueuesEnabled } from "../../infrastructure/redis/redis.client";
+import { getRedisConnectionOptions, isRedisEnabled } from "../../infrastructure/redis/redisConnection";
 
 export const QUEUE_NAME = "producer_staff_invite_email";
 
@@ -18,25 +20,15 @@ export type ProducerStaffInviteEmailJobPayload = {
   customMessage?: string;
 };
 
-function getConnection(): { url?: string; host?: string; port?: number; maxRetriesPerRequest: null } {
-  const REDIS_URL = process.env.REDIS_URL || "";
-  if (REDIS_URL) return { url: REDIS_URL, maxRetriesPerRequest: null };
-  return {
-    host: process.env.REDIS_HOST || "localhost",
-    port: Number(process.env.REDIS_PORT) || 6379,
-    maxRetriesPerRequest: null,
-  };
+function getConnection() {
+  return getRedisConnectionOptions();
 }
 
 let _queue: Queue<ProducerStaffInviteEmailJobPayload> | null = null;
 
 export function getProducerStaffInviteEmailQueue(): Queue<ProducerStaffInviteEmailJobPayload> | null {
   if (_queue) return _queue;
-  const REDIS_URL = process.env.REDIS_URL || "";
-  const REDIS_ENABLED =
-    REDIS_URL.length > 0 ||
-    (process.env.REDIS_ENABLED !== "false" && process.env.REDIS_ENABLED !== "0");
-  if (!REDIS_ENABLED) return null;
+  if (!isRedisEnabled() || !areRedisQueuesEnabled()) return null;
   try {
     _queue = new Queue(QUEUE_NAME, {
       connection: getConnection(),

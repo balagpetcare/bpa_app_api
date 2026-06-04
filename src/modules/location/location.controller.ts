@@ -1,77 +1,121 @@
-const prisma = require("../../infrastructure/db/prismaClient");
+const service = require("./location.service");
+const dto = require("./location.dto");
 
-function searchFilter(q) {
-  if (!q) return {};
-  return {
-    OR: [
-      { nameEn: { contains: q, mode: "insensitive" } },
-      { nameBn: { contains: q } },
-    ],
-  };
+function getPrisma(req) {
+  if (req?.prisma) return req.prisma;
+  return require("../../infrastructure/db/prismaClient");
 }
 
-function pagination(page = 1, limit = 50) {
-  page = Number(page) || 1;
-  limit = Math.min(Number(limit) || 50, 100);
-  return { skip: (page - 1) * limit, take: limit };
+function parseListInput(req) {
+  return dto.toHierarchyListDto(req.query || {});
 }
 
-// 🔹 Dropdown-friendly
-exports.dropdown = async (req, res) => {
-  const { type, parentId } = req.query;
-  let data = [];
-
-  if (type === "division") {
-    data = await prisma.bdDivision.findMany({
-      select: { id: true, nameEn: true, nameBn: true },
-      orderBy: { nameEn: "asc" },
-    });
+exports.listDivisions = async (req, res) => {
+  try {
+    const result = await service.listDivisions(getPrisma(req), parseListInput(req));
+    res.json({ success: true, ...result });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e?.message || "Failed to fetch divisions" });
   }
-
-  if (type === "district") {
-    data = await prisma.bdDistrict.findMany({
-      where: { divisionId: Number(parentId) },
-      select: { id: true, nameEn: true, nameBn: true },
-      orderBy: { nameEn: "asc" },
-    });
-  }
-
-  if (type === "upazila") {
-    data = await prisma.bdUpazila.findMany({
-      where: { districtId: Number(parentId) },
-      select: { id: true, nameEn: true, nameBn: true },
-      orderBy: { nameEn: "asc" },
-    });
-  }
-
-  res.json(
-    data.map((d) => ({
-      value: d.id,
-      label: d.nameEn + (d.nameBn ? ` (${d.nameBn})` : ""),
-    }))
-  );
 };
 
-// 🔹 Geo hierarchy
-exports.hierarchy = async (req, res) => {
-  const divisions = await prisma.bdDivision.findMany({
-    include: {
-      districts: {
-        include: {
-          upazilas: true,
-        },
-      },
-    },
-  });
-  res.json(divisions);
+exports.listDistricts = async (req, res) => {
+  try {
+    const result = await service.listDistricts(getPrisma(req), parseListInput(req));
+    res.json({ success: true, ...result });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e?.message || "Failed to fetch districts" });
+  }
 };
 
-// 🔹 Admin seed sync
-exports.syncSeed = async (req, res) => {
-  await prisma.$executeRawUnsafe(`
-    REFRESH MATERIALIZED VIEW CONCURRENTLY bd_divisions;
-  `).catch(() => {});
-  res.json({ status: "Location seed synced" });
+exports.listUpazilas = async (req, res) => {
+  try {
+    const result = await service.listUpazilas(getPrisma(req), parseListInput(req));
+    res.json({ success: true, ...result });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e?.message || "Failed to fetch upazilas" });
+  }
 };
 
-export {};
+exports.listUnions = async (req, res) => {
+  try {
+    const result = await service.listUnions(getPrisma(req), parseListInput(req));
+    res.json({ success: true, ...result });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e?.message || "Failed to fetch unions" });
+  }
+};
+
+exports.listAreas = async (req, res) => {
+  try {
+    const result = await service.listAreas(getPrisma(req), parseListInput(req));
+    res.json({ success: true, ...result });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e?.message || "Failed to fetch areas" });
+  }
+};
+
+exports.search = async (req, res) => {
+  try {
+    const input = {
+      ...dto.toSearchDto(req.query || {}),
+    };
+    const result = await service.searchLocations(getPrisma(req), input);
+    res.json({ success: true, ...result });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e?.message || "Failed to search locations" });
+  }
+};
+
+exports.validateSelection = async (req, res) => {
+  try {
+    const result = await service.validateSelection(getPrisma(req), dto.toSelectionDto(req.body || {}));
+    if (!result.ok) return res.status(400).json({ success: false, ...result });
+    res.json({ success: true, data: result });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e?.message || "Failed to validate selection" });
+  }
+};
+
+exports.listCoverage = async (req, res) => {
+  try {
+    const entityType = String(req.params.entityType || "");
+    const entityId = Number(req.params.entityId);
+    if (!entityType || !Number.isFinite(entityId)) {
+      return res.status(400).json({ success: false, message: "entityType and entityId are required" });
+    }
+    const data = await service.listCoverage(getPrisma(req), entityType, entityId);
+    res.json({ success: true, data });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e?.message || "Failed to fetch coverage" });
+  }
+};
+
+exports.replaceCoverage = async (req, res) => {
+  try {
+    const entityType = String(req.params.entityType || "");
+    const entityId = Number(req.params.entityId);
+    if (!entityType || !Number.isFinite(entityId)) {
+      return res.status(400).json({ success: false, message: "entityType and entityId are required" });
+    }
+    const parsed = dto.toCoverageReplaceDto(req.params || {}, req.body || {});
+    const result = await service.replaceCoverage(getPrisma(req), parsed.entityType, parsed.entityId, parsed.rows);
+    if (!result.ok) return res.status(400).json({ success: false, ...result });
+    const data = await service.listCoverage(getPrisma(req), parsed.entityType, parsed.entityId);
+    res.json({ success: true, data });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e?.message || "Failed to update coverage" });
+  }
+};
+
+module.exports = {
+  listDivisions: exports.listDivisions,
+  listDistricts: exports.listDistricts,
+  listUpazilas: exports.listUpazilas,
+  listUnions: exports.listUnions,
+  listAreas: exports.listAreas,
+  search: exports.search,
+  validateSelection: exports.validateSelection,
+  listCoverage: exports.listCoverage,
+  replaceCoverage: exports.replaceCoverage,
+};

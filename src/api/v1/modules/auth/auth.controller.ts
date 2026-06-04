@@ -11,6 +11,9 @@ const {
   decideRedirect,
 } = require("../../services/authUnified.service");
 const { memberRoleToWarehouseStaffRole } = require("../../utils/warehouseStaffRoleMapping");
+const {
+  branchAccessPermissionUpsertDataForInviteAccept,
+} = require("../../services/branchAccessPermissionInviteAccept");
 
 /** BranchAccessPermission.role is MemberRole — omit when invite uses WarehouseStaffRole-only values. */
 function memberRoleForBranchAccessPermission(role: string | null | undefined): string | undefined {
@@ -27,6 +30,14 @@ function memberRoleForBranchAccessPermission(role: string | null | undefined): s
     "WAREHOUSE_MANAGER",
     "RECEIVING_STAFF",
     "DISPATCH_STAFF",
+    "DOCTOR",
+    "CLINIC_STAFF",
+    "CLINIC_RECEPTION",
+    "CLINIC_INVENTORY_STAFF",
+    "PHARMACIST",
+    "GROOMING_STAFF",
+    "BOARDING_STAFF",
+    "TRAINING_STAFF",
   ]);
   return memberRoles.has(r) ? r : undefined;
 }
@@ -513,6 +524,20 @@ exports.getProfile = async (req, res) => {
     });
 
     if (!user) return res.status(404).json({ success: false, message: "User not found" });
+
+    if (user?.profile) {
+      try {
+        const {
+          attachEffectivePhotoToProfile,
+        } = require("../../services/providerProfileBootstrap.service");
+        user.profile = attachEffectivePhotoToProfile(user.profile);
+      } catch (e) {
+        console.warn(
+          "attachEffectivePhotoToProfile skipped:",
+          e instanceof Error ? e.message : String(e)
+        );
+      }
+    }
 
     // Phase-1 admin access (no schema change):
     // - ADMIN_USER_IDS: comma-separated user IDs
@@ -1122,23 +1147,16 @@ exports.acceptInvite = async (req, res) => {
 
           // CRITICAL FIX: Create BranchAccessPermission for warehouse staff
           const bapRoleWh = memberRoleForBranchAccessPermission(staffInvite.warehouseRole);
+          const bapWhPayload = branchAccessPermissionUpsertDataForInviteAccept({
+            branchId: wh.branchId,
+            userId: uid,
+            invitedByUserId: staffInvite.invitedByUserId,
+            memberRole: bapRoleWh ?? undefined,
+          });
           await tx.branchAccessPermission.upsert({
             where: { branchId_userId: { branchId: wh.branchId, userId: uid } },
-            update: {
-              status: "APPROVED",
-              ...(bapRoleWh ? { role: bapRoleWh } : {}),
-              approvedByUserId: staffInvite.invitedByUserId,
-              approvedAt: new Date(),
-            },
-            create: {
-              branchId: wh.branchId,
-              userId: uid,
-              status: "APPROVED",
-              ...(bapRoleWh ? { role: bapRoleWh } : {}),
-              invitedByUserId: staffInvite.invitedByUserId,
-              approvedByUserId: staffInvite.invitedByUserId,
-              approvedAt: new Date(),
-            },
+            create: bapWhPayload.create,
+            update: bapWhPayload.update,
           });
 
           // Create WarehouseStaffAssignment
@@ -1183,23 +1201,16 @@ exports.acceptInvite = async (req, res) => {
             select: { id: true },
           });
 
+          const bapBranchPayload = branchAccessPermissionUpsertDataForInviteAccept({
+            branchId: staffInvite.branchId,
+            userId: uid,
+            invitedByUserId: staffInvite.invitedByUserId,
+            memberRole: staffInvite.role,
+          });
           await tx.branchAccessPermission.upsert({
             where: { branchId_userId: { branchId: staffInvite.branchId, userId: uid } },
-            update: {
-              status: "APPROVED",
-              role: staffInvite.role,
-              approvedByUserId: staffInvite.invitedByUserId,
-              approvedAt: new Date(),
-            },
-            create: {
-              branchId: staffInvite.branchId,
-              userId: uid,
-              status: "APPROVED",
-              role: staffInvite.role,
-              invitedByUserId: staffInvite.invitedByUserId,
-              approvedByUserId: staffInvite.invitedByUserId,
-              approvedAt: new Date(),
-            },
+            create: bapBranchPayload.create,
+            update: bapBranchPayload.update,
           });
 
           const whRole = memberRoleToWarehouseStaffRole(staffInvite.role);

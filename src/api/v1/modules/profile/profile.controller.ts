@@ -1,6 +1,9 @@
 
 import { prisma } from "../../../../lib/prisma";
-import { Prisma, ProfileVisibility } from "@prisma/client";
+import { Prisma, ProfileVisibility, AuditEntityType } from "@prisma/client";
+
+const { writeAudit } = require("../../../../middlewares/auditWriter");
+const { resolveUserProfileLocationUpdate } = require("../me/meProfile.service");
 
 /* ---------------- helpers ---------------- */
 
@@ -139,6 +142,23 @@ exports.updateMyProfile = async (req: any, res: any) => {
       address,
     } = req.body || {};
 
+    const locationResolved = await resolveUserProfileLocationUpdate(req.body || {});
+    if (locationResolved.ok === false) {
+      return res.status(400).json({ success: false, message: locationResolved.message });
+    }
+
+    const beforeSnap = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        profile: {
+          select: {
+            displayName: true,
+            avatarMediaId: true,
+          },
+        },
+      },
+    });
+
     const profileData: Prisma.UserProfileUpdateInput = {};
 const authData: Prisma.UserAuthUpdateInput = {};
 
@@ -182,6 +202,14 @@ if (cId !== undefined) {
 if (email !== undefined) authData.email = toNullableString(email);
 if (phone !== undefined) authData.phone = toNullableString(phone);
 
+if (locationResolved.ok && locationResolved.data && !("skip" in locationResolved)) {
+  profileData.divisionId = locationResolved.data.divisionId;
+  profileData.districtId = locationResolved.data.districtId;
+  profileData.upazilaId = locationResolved.data.upazilaId;
+  profileData.unionId = locationResolved.data.unionId;
+  profileData.areaId = locationResolved.data.areaId;
+}
+
     // nothing to update
     if (
       Object.keys(profileData).length === 0 &&
@@ -224,6 +252,20 @@ if (phone !== undefined) authData.phone = toNullableString(phone);
           take: 60,
         },
       },
+    });
+
+    const photoChanged =
+      aId !== undefined &&
+      Number(beforeSnap?.profile?.avatarMediaId || 0) !== Number(updated?.profile?.avatarMediaId || 0);
+
+    await writeAudit({
+      prisma,
+      req,
+      action: photoChanged ? "PROFILE_PHOTO_UPDATED" : "PROFILE_UPDATED",
+      entityType: AuditEntityType.USER,
+      entityId: String(userId),
+      before: beforeSnap ?? null,
+      after: { profile: profileData, auth: authData },
     });
 
     return res.status(200).json({ success: true, data: updated });

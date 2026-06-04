@@ -3,14 +3,72 @@ const service = require("./stock_requests.service");
 const {
   userCanAccessStockRequestBranch,
   getStockRequestListBranchIdsForUser,
+  canUserViewStockRequestViaWarehouseFulfillment,
 } = require("./stockRequestAccess");
 const { createNotification } = require("../../services/notification.service");
+const { notifyWarehouseStaffStockRequestSubmitted } = require("../../services/warehouseOpsNotifications.service");
 const db = require("../../../../infrastructure/db/prismaClient").default;
 
 function getUserId(req: any): number | null {
   const id = req?.user?.id ?? req?.user?.userId;
   const n = Number(id);
   return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/** Map structured service errors to HTTP status + JSON (legacy fulfill / preview / dispatch). */
+function ownerStockRequestMutationErrorResponse(e: any): { status: number; body: Record<string, unknown> } {
+  const raw = String(e?.message || "Failed");
+  if (raw.startsWith("ALLOCATION_PLAN_BLOCKS_LEGACY:")) {
+    return {
+      status: 409,
+      body: {
+        success: false,
+        code: "ALLOCATION_PLAN_BLOCKS_LEGACY",
+        message: raw.replace(/^ALLOCATION_PLAN_BLOCKS_LEGACY:\s*/, "").trim(),
+      },
+    };
+  }
+  if (raw.startsWith("LEGACY_STOCK_REQUEST_FULFILL_DISABLED:")) {
+    return {
+      status: 403,
+      body: {
+        success: false,
+        code: "LEGACY_STOCK_REQUEST_FULFILL_DISABLED",
+        message: raw.replace(/^LEGACY_STOCK_REQUEST_FULFILL_DISABLED:\s*/, "").trim(),
+      },
+    };
+  }
+  if (raw.startsWith("ENTERPRISE_DISPATCH_BLOCKS_LEGACY:")) {
+    return {
+      status: 409,
+      body: {
+        success: false,
+        code: "ENTERPRISE_DISPATCH_BLOCKS_LEGACY",
+        message: raw.replace(/^ENTERPRISE_DISPATCH_BLOCKS_LEGACY:\s*/, "").trim(),
+      },
+    };
+  }
+  if (raw.startsWith("ENTERPRISE_ALLOCATION_ACTIVE:")) {
+    return {
+      status: 409,
+      body: {
+        success: false,
+        code: "ENTERPRISE_ALLOCATION_ACTIVE",
+        message: raw.replace(/^ENTERPRISE_ALLOCATION_ACTIVE:\s*/, "").trim(),
+      },
+    };
+  }
+  if (raw.startsWith("NO_DISPATCHABLE_QUANTITY:")) {
+    return {
+      status: 422,
+      body: {
+        success: false,
+        code: "NO_DISPATCHABLE_QUANTITY",
+        message: raw.replace(/^NO_DISPATCHABLE_QUANTITY:\s*/, "").trim(),
+      },
+    };
+  }
+  return { status: 400, body: { success: false, message: raw } };
 }
 
 /**
@@ -156,9 +214,12 @@ async function getById(req: any, res: any) {
       select: { id: true },
     });
     const orgIds = ownedOrgs.map((o: any) => o.id);
+    const perms = Array.isArray(req.user?.permissions) ? req.user.permissions : [];
+    const canViaWarehouse = await canUserViewStockRequestViaWarehouseFulfillment(userId, id, perms);
     const canAccess =
       branchIds.includes((request as any).branchId) ||
-      orgIds.includes((request as any).orgId);
+      orgIds.includes((request as any).orgId) ||
+      canViaWarehouse;
     if (!canAccess) {
       return res.status(403).json({ success: false, message: "Not authorized to view this request" });
     }
@@ -258,6 +319,11 @@ async function submit(req: any, res: any) {
       }
     } catch (notifErr: any) {
       console.warn("stock_requests.submit notification", notifErr?.message);
+    }
+    try {
+      await notifyWarehouseStaffStockRequestSubmitted({ orgId: existing.orgId, stockRequestId: id });
+    } catch (whNotifErr: any) {
+      console.warn("stock_requests.submit warehouse staff notify", whNotifErr?.message);
     }
     return res.status(200).json({ success: true, data: request });
   } catch (e: any) {
@@ -388,7 +454,8 @@ async function fulfill(req: any, res: any) {
     });
   } catch (e: any) {
     console.error("stock_requests.fulfill", e);
-    return res.status(400).json({ success: false, message: e?.message || "Failed to fulfill" });
+    const { status, body } = ownerStockRequestMutationErrorResponse(e);
+    return res.status(status).json(body);
   }
 }
 
@@ -433,7 +500,8 @@ async function dispatch(req: any, res: any) {
     return res.status(200).json({ success: true, data: transfer, message: "Dispatched" });
   } catch (e: any) {
     console.error("stock_requests.dispatch", e);
-    return res.status(400).json({ success: false, message: e?.message || "Failed to dispatch" });
+    const { status, body } = ownerStockRequestMutationErrorResponse(e);
+    return res.status(status).json(body);
   }
 }
 
@@ -640,6 +708,7 @@ async function allocationPreviewHandler(req: any, res: any) {
 
     const result = await service.allocationPreview(requestId, {
       fromLocationId: Number(fromLocationId),
+      actorUserId: userId,
       items: items.map((i: any) => ({
         stockRequestItemId: Number(i.stockRequestItemId),
         fulfillQty: Number(i.fulfillQty),
@@ -649,7 +718,8 @@ async function allocationPreviewHandler(req: any, res: any) {
     return res.status(200).json({ success: true, data: result });
   } catch (e: any) {
     console.error("stock_requests.allocationPreview", e);
-    return res.status(400).json({ success: false, message: e?.message || "Failed to preview allocation" });
+    const { status, body } = ownerStockRequestMutationErrorResponse(e);
+    return res.status(status).json(body);
   }
 }
 

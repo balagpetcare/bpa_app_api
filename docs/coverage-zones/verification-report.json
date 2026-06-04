@@ -1,0 +1,47 @@
+{
+  "generatedAt": "2026-06-03T08:31:21.576Z",
+  "counts": {
+    "zones": 14,
+    "mappings": 258,
+    "dhakaNeighbourhoodMappings": 229
+  },
+  "integrity": {
+    "duplicateZoneSlugs": 0,
+    "duplicateZoneAreaPairs": 0,
+    "orphanBdAreaReferences": 0,
+    "metroZonesWithoutMappings": 0
+  },
+  "metroZones": [
+    {
+      "slug": "dhaka-metro",
+      "name": "Dhaka Metro",
+      "areaMappings": 0
+    },
+    {
+      "slug": "dhaka-metro-north",
+      "name": "North Zone",
+      "areaMappings": 22
+    },
+    {
+      "slug": "dhaka-metro-west",
+      "name": "West Zone",
+      "areaMappings": 9
+    },
+    {
+      "slug": "dhaka-metro-central",
+      "name": "Central Zone",
+      "areaMappings": 6
+    },
+    {
+      "slug": "dhaka-metro-east",
+      "name": "East Zone",
+      "areaMappings": 5
+    },
+    {
+      "slug": "dhaka-metro-south",
+      "name": "South Zone",
+      "areaMappings": 11
+    }
+  ],
+  "passed": true
+}

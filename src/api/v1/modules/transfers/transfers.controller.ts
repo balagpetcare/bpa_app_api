@@ -10,7 +10,45 @@ const {
  * Set process.env.BLOCK_LEGACY_TRANSFERS=true to block new StockTransfer creation.
  */
 function isLegacyTransferBlocked(): boolean {
-  return process.env.BLOCK_LEGACY_TRANSFERS === "true";
+  return (
+    process.env.BLOCK_LEGACY_TRANSFERS === "true" ||
+    String(process.env.DISABLE_LEGACY_STOCK_TRANSFER || "").toLowerCase() === "true"
+  );
+}
+
+function legacyTransferMutationErrorResponse(e: unknown): { status: number; body: Record<string, unknown> } | null {
+  const raw = String((e as Error)?.message || "");
+  if (raw.startsWith("ALLOCATION_PLAN_BLOCKS_LEGACY:")) {
+    return {
+      status: 409,
+      body: {
+        success: false,
+        code: "ALLOCATION_PLAN_BLOCKS_LEGACY",
+        message: raw.replace(/^ALLOCATION_PLAN_BLOCKS_LEGACY:\s*/, "").trim(),
+      },
+    };
+  }
+  if (raw.startsWith("LEGACY_STOCK_REQUEST_FULFILL_DISABLED:")) {
+    return {
+      status: 403,
+      body: {
+        success: false,
+        code: "LEGACY_STOCK_REQUEST_FULFILL_DISABLED",
+        message: raw.replace(/^LEGACY_STOCK_REQUEST_FULFILL_DISABLED:\s*/, "").trim(),
+      },
+    };
+  }
+  if (raw.startsWith("LEGACY_STOCK_TRANSFER_DISABLED:")) {
+    return {
+      status: 403,
+      body: {
+        success: false,
+        code: "LEGACY_STOCK_TRANSFER_DISABLED",
+        message: raw.replace(/^LEGACY_STOCK_TRANSFER_DISABLED:\s*/, "").trim(),
+      },
+    };
+  }
+  return null;
 }
 
 /**
@@ -84,6 +122,8 @@ exports.createTransfer = async (req, res) => {
     });
   } catch (error) {
     console.error("createTransfer error:", error);
+    const mapped = legacyTransferMutationErrorResponse(error);
+    if (mapped) return res.status(mapped.status).json(mapped.body);
     return res.status(400).json({
       success: false,
       message: (error as Error).message || "Failed to create transfer",
@@ -116,6 +156,8 @@ exports.sendTransfer = async (req, res) => {
     });
   } catch (error) {
     console.error("sendTransfer error:", error);
+    const mapped = legacyTransferMutationErrorResponse(error);
+    if (mapped) return res.status(mapped.status).json(mapped.body);
     const code = (error as any).code;
     if (code === "LOT_EXPIRED" || code === INVENTORY_ERROR_CODES.LOT_EXPIRED) {
       return res.status(400).json({

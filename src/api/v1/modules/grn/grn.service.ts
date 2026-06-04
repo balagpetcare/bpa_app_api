@@ -453,7 +453,12 @@ export async function listGrns(filter: ListGrnFilter) {
         vendor: { select: { id: true, name: true } },
         location: { select: { id: true, name: true, branch: { select: { id: true, name: true } } } },
         purchaseOrder: { select: { id: true, poNumber: true, status: true } },
-        lines: { include: { variant: { select: { id: true, sku: true, title: true } } } },
+        lines: {
+          include: {
+            variant: { select: { id: true, sku: true, title: true } },
+            purchaseOrderLine: { select: { orderedQty: true } },
+          },
+        },
         vendorReceiveSession: {
           select: { id: true, status: true, submittedAt: true, confirmedAt: true },
         },
@@ -1119,6 +1124,28 @@ export async function receiveGrn(grnId: number, orgId: number, userId: number, o
         createdByUserId: userId,
       });
 
+      try {
+        const receiveLoc = await tx.inventoryLocation.findUnique({
+          where: { id: grn.locationId },
+          select: { branchId: true },
+        });
+        if (receiveLoc?.branchId && userId && lotId) {
+          const vaccineBridge = require("../clinic/vaccineInventoryBridge.service");
+          await vaccineBridge.mirrorVendorGrnLineToClinicalStock(tx, {
+            orgId: org,
+            branchId: receiveLoc.branchId,
+            grnLineId: line.id,
+            productVariantId: line.variantId,
+            stockLotId: lotId,
+            quantityReceived: qtyIn,
+            unitCost: unitCost ?? undefined,
+            actorUserId: userId,
+          });
+        }
+      } catch (mirrorErr: any) {
+        console.warn("[grn.clinicalMirror]", grnId, line.id, mirrorErr?.message || mirrorErr);
+      }
+
       if (qcInbound && qcWarehouseId != null && lotId) {
         await tx.qcInspection.create({
           data: {
@@ -1172,6 +1199,9 @@ export async function receiveGrn(grnId: number, orgId: number, userId: number, o
     const poId = grn.purchaseOrderId;
     if (poId != null) {
       await purchaseOrderHooks.applyGrnReceiveToPurchaseOrder(tx, grnId, poId, org);
+
+      const procurementDemandSvc = require("../procurement_demand/procurementDemand.service");
+      await procurementDemandSvc.syncProcurementDemandsFromPurchaseOrderLines(tx, { orgId: org, purchaseOrderId: poId });
 
       // Sync linked StockRequest status based on PO receiving progress
       const linkedRequests = await tx.stockRequest.findMany({
@@ -1250,6 +1280,13 @@ export async function receiveGrn(grnId: number, orgId: number, userId: number, o
       recomputeNetworkBalance({ orgId, userId }).catch((e) => console.error("recomputeNetworkBalance after GRN", e))
     )
     .catch(() => {});
+
+  try {
+    const { scheduleProcurementDemandAutoDispatchAfterGrn } = require("../fulfillment/autoFulfillmentQueue.service");
+    scheduleProcurementDemandAutoDispatchAfterGrn(grnId, orgId);
+  } catch (e) {
+    console.error("scheduleProcurementDemandAutoDispatchAfterGrn", e);
+  }
 
   return getGrnById(grnId, orgId);
 }

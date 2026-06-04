@@ -153,3 +153,100 @@ export async function getStockRequestListBranchIdsForUser(userId: number): Promi
 
   return Array.from(ids);
 }
+
+/** Stock requests that can appear on the warehouse requisition queue (subset of Prisma statuses). */
+const WAREHOUSE_FULFILLMENT_VIEW_STATUSES = new Set([
+  "SUBMITTED",
+  "OWNER_REVIEW",
+  "APPROVED",
+  "PARTIALLY_DISPATCHED",
+  "FULFILLED_PARTIAL",
+]);
+
+/**
+ * Warehouse / outbound staff may view a stock request that belongs to another branch when:
+ * - they have warehouse or outbound permissions,
+ * - they are assigned to a warehouse in the same org as the request, and
+ * - the request is in an active fulfillment state and either matches requisition "approval" rows or
+ *   has pick/dispatch activity from that warehouse's locations (same idea as warehouse operations queue).
+ */
+export async function canUserViewStockRequestViaWarehouseFulfillment(
+  userId: number,
+  stockRequestId: number,
+  permissions: string[]
+): Promise<boolean> {
+  const p = new Set(permissions ?? []);
+  if (
+    !p.has("warehouse.view") &&
+    !p.has("warehouse.operations") &&
+    !p.has("warehouse.manage") &&
+    !p.has("warehouse.pick.execute") &&
+    !p.has("warehouse.pick") &&
+    !p.has("outbound.read")
+  ) {
+    return false;
+  }
+
+  const assignments = await prisma.warehouseStaffAssignment.findMany({
+    where: { userId, isActive: true, warehouse: { isActive: true } },
+    select: {
+      warehouse: {
+        select: {
+          orgId: true,
+          locations: { where: { isActive: true }, select: { id: true } },
+        },
+      },
+    },
+  });
+  const orgIds = new Set(assignments.map((a) => a.warehouse.orgId));
+  const locIds = new Set<number>();
+  for (const a of assignments) {
+    for (const loc of a.warehouse.locations) {
+      locIds.add(loc.id);
+    }
+  }
+  if (!orgIds.size) return false;
+
+  const sr = await prisma.stockRequest.findUnique({
+    where: { id: stockRequestId },
+    select: {
+      orgId: true,
+      status: true,
+      requestIntent: true,
+      dispatches: { select: { fromLocationId: true } },
+      allocationPlans: {
+        where: { parentPlanId: null },
+        orderBy: { id: "desc" },
+        take: 1,
+        select: {
+          fromLocationId: true,
+          pickLists: { select: { fromLocationId: true } },
+        },
+      },
+    },
+  });
+  if (!sr || !orgIds.has(sr.orgId)) return false;
+  const st = String(sr.status || "").toUpperCase();
+  if (!WAREHOUSE_FULFILLMENT_VIEW_STATUSES.has(st)) return false;
+
+  if (st === "SUBMITTED" || st === "OWNER_REVIEW") {
+    return true;
+  }
+
+  if (!locIds.size) {
+    return st === "APPROVED" && String(sr.requestIntent || "") === "INTERNAL_TRANSFER" && sr.allocationPlans.length === 0;
+  }
+  for (const d of sr.dispatches) {
+    if (locIds.has(d.fromLocationId)) return true;
+  }
+  for (const plan of sr.allocationPlans) {
+    if (plan.fromLocationId != null && locIds.has(plan.fromLocationId)) return true;
+    for (const pl of plan.pickLists) {
+      if (locIds.has(pl.fromLocationId)) return true;
+    }
+  }
+  if (st === "APPROVED" && String(sr.requestIntent || "") === "INTERNAL_TRANSFER" && sr.allocationPlans.length === 0) {
+    return true;
+  }
+  return false;
+}

@@ -1,30 +1,23 @@
 /*
   Seed helpers index (TypeScript)
   - Keeps seed.ts clean
-  - Bridges to existing CommonJS dhaka seeders
 */
 
-export async function runDhakaCitySeed(prisma: any) {
-  // Prefer the JSON-based seed (expandable), fall back to sample list.
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { seedLocationsDhaka } = require('./seedLocationsDhaka');
-    if (typeof seedLocationsDhaka === 'function') {
-      await seedLocationsDhaka(prisma);
-      return;
-    }
-  } catch (e) {
-    // ignore and fall back
-  }
+import { PrismaClient } from '@prisma/client';
+import { runDhakaCitySeed as runDhakaCityBdAreaSeed } from './dhaka/runDhakaCitySeed';
 
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { seedCityCorporationsAndAreas } = require('./seedCityCorporationsAndAreas');
-    if (typeof seedCityCorporationsAndAreas === 'function') {
-      await seedCityCorporationsAndAreas(prisma);
-      return;
-    }
-  } catch (e) {
-    // ignore
-  }
+export async function runDhakaCitySeed(prisma: PrismaClient) {
+  await runDhakaCityBdAreaSeed(prisma);
+}
+
+export async function runCoverageZoneSeed(prisma: PrismaClient) {
+  const seedCoverageZones = (await import('./coverage/seedCoverageZones')).default;
+  const seedDhakaNorthCity = (await import('./coverage/seedDhakaNorthCity')).default;
+  const seedDhakaSouthCity = (await import('./coverage/seedDhakaSouthCity')).default;
+  const seedBusinessCoverageReadiness = (await import('./coverage/seedBusinessCoverageReadiness')).default;
+
+  await seedCoverageZones(prisma);
+  await seedDhakaNorthCity(prisma);
+  await seedDhakaSouthCity(prisma);
+  await seedBusinessCoverageReadiness(prisma);
 }

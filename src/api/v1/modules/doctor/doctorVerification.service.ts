@@ -4,6 +4,7 @@
  */
 const prisma =
   require("../../../../infrastructure/db/prismaClient").default ?? require("../../../../infrastructure/db/prismaClient");
+const centralizedLocationService = require("../../../../modules/location/location.service");
 
 const DOCTOR_DOC_TYPES = new Set([
   "DOCTOR_REGISTRATION",
@@ -46,16 +47,47 @@ async function upsertDraft(
     licenseNumber?: string | null;
     registrationBody?: string | null;
     primaryCountryCode?: string | null;
+    divisionId?: number | null;
+    districtId?: number | null;
+    upazilaId?: number | null;
+    unionId?: number | null;
+    areaId?: number | null;
     specializationTags?: string[] | null;
     qualifications?: object[] | null;
     nidNumber?: string | null;
     metadataJson?: object | null;
   }
 ) {
+  let normalizedLocation = {
+    divisionId: data.divisionId != null ? Number(data.divisionId) || null : null,
+    districtId: data.districtId != null ? Number(data.districtId) || null : null,
+    upazilaId: data.upazilaId != null ? Number(data.upazilaId) || null : null,
+    unionId: data.unionId != null ? Number(data.unionId) || null : null,
+    areaId: data.areaId != null ? Number(data.areaId) || null : null,
+  };
+  if (
+    normalizedLocation.divisionId ||
+    normalizedLocation.districtId ||
+    normalizedLocation.upazilaId ||
+    normalizedLocation.unionId ||
+    normalizedLocation.areaId
+  ) {
+    const validated = await centralizedLocationService.validateSelection(prisma, normalizedLocation);
+    if (!validated?.ok) {
+      throw new Error(validated?.message || "Invalid location selection");
+    }
+    normalizedLocation = validated.normalized || normalizedLocation;
+  }
+
   const payload: any = {
     licenseNumber: data.licenseNumber != null ? String(data.licenseNumber).trim() || null : undefined,
     registrationBody: data.registrationBody != null ? String(data.registrationBody).trim() || null : undefined,
     primaryCountryCode: data.primaryCountryCode != null ? String(data.primaryCountryCode).trim().toUpperCase() || null : undefined,
+    divisionId: normalizedLocation.divisionId,
+    districtId: normalizedLocation.districtId,
+    upazilaId: normalizedLocation.upazilaId,
+    unionId: normalizedLocation.unionId,
+    areaId: normalizedLocation.areaId,
     specializationTags: Array.isArray(data.specializationTags) ? data.specializationTags : undefined,
     qualifications: Array.isArray(data.qualifications) ? data.qualifications : undefined,
     nidNumber: data.nidNumber != null ? String(data.nidNumber).trim() || null : undefined,

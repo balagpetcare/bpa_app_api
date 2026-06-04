@@ -1,0 +1,232 @@
+{
+  "executedAt": "2026-06-02T13:28:40.761Z",
+  "baseUrl": "http://localhost:3000",
+  "scenarios": {
+    "Scenario 10 — Regression smoke": {
+      "steps": [
+        {
+          "step": "10.1 Public campaign list",
+          "status": "PASS",
+          "detail": "HTTP 200"
+        },
+        {
+          "step": "10.x SMS health",
+          "status": "PASS",
+          "detail": "false"
+        },
+        {
+          "step": "10.x OTP",
+          "status": "PASS",
+          "detail": ""
+        },
+        {
+          "step": "10.2 E2E FREE booking",
+          "status": "PASS",
+          "detail": ""
+        },
+        {
+          "step": "10.3 Staff vaccination",
+          "status": "SKIP",
+          "detail": "Staff JWT required"
+        },
+        {
+          "step": "10.4 Certificate verify",
+          "status": "PASS",
+          "detail": "HTTP 404"
+        },
+        {
+          "step": "10.5 Admin dashboard",
+          "status": "SKIP",
+          "detail": "bpa_web"
+        },
+        {
+          "step": "10.6 Flutter hub",
+          "status": "SKIP",
+          "detail": "bpa_app"
+        }
+      ],
+      "pass": 5,
+      "fail": 0,
+      "skip": 3
+    },
+    "Scenario 7 — Certificate verification": {
+      "steps": [
+        {
+          "step": "7.1 Landing verify UI",
+          "status": "SKIP",
+          "detail": "UI — requires browser; API verify below"
+        },
+        {
+          "step": "7.3 Invalid token",
+          "status": "PASS",
+          "detail": "HTTP 404"
+        }
+      ],
+      "pass": 1,
+      "fail": 0,
+      "skip": 1
+    },
+    "Scenario 1 — Free campaign booking": {
+      "steps": [
+        {
+          "step": "1.1 Landing UI",
+          "status": "SKIP",
+          "detail": "Manual/browser — not executed in this run"
+        },
+        {
+          "step": "1.2 Wizard UI",
+          "status": "SKIP",
+          "detail": "Manual/browser"
+        },
+        {
+          "step": "1.3 OTP verify",
+          "status": "PASS",
+          "detail": "Session token received"
+        },
+        {
+          "step": "1.4 Select slot",
+          "status": "PASS",
+          "detail": "slot 1"
+        },
+        {
+          "step": "1.5 Confirm FREE booking",
+          "status": "PASS",
+          "detail": "VAC-7UL46V"
+        },
+        {
+          "step": "1.6 SMS",
+          "status": "SKIP",
+          "detail": "Requires SMS worker / inbox check"
+        },
+        {
+          "step": "1.13 Admin stats proxy",
+          "status": "PASS",
+          "detail": "payment-status OK"
+        }
+      ],
+      "pass": 4,
+      "fail": 0,
+      "skip": 3
+    },
+    "Scenario 2 — Paid campaign + payment": {
+      "steps": [
+        {
+          "step": "2.1 PAID booking",
+          "status": "SKIP",
+          "detail": "Full flow needs UI + gateway"
+        },
+        {
+          "step": "2.5 Webhook missing order",
+          "status": "PASS",
+          "detail": "HTTP 404"
+        },
+        {
+          "step": "2.6 Webhook idempotent retry",
+          "status": "PASS",
+          "detail": "Same 404 expected"
+        },
+        {
+          "step": "2.7 QR before payment",
+          "status": "SKIP",
+          "detail": "Needs DRAFT unpaid booking + staff JWT"
+        }
+      ],
+      "pass": 2,
+      "fail": 0,
+      "skip": 2
+    },
+    "Scenario 3 — Booking cancellation": {
+      "steps": [
+        {
+          "step": "3.1 Cancel booking",
+          "status": "PASS",
+          "detail": "HTTP 200"
+        },
+        {
+          "step": "3.2 Slot restored",
+          "status": "SKIP",
+          "detail": "Requires second booking attempt"
+        }
+      ],
+      "pass": 1,
+      "fail": 0,
+      "skip": 1
+    },
+    "Scenario 4 — Walk-in": {
+      "steps": [
+        {
+          "step": "4.1–4.3",
+          "status": "SKIP",
+          "detail": "Requires staff JWT + CampaignStaff row"
+        }
+      ],
+      "pass": 0,
+      "fail": 0,
+      "skip": 1
+    },
+    "Scenario 5 — Staff portal": {
+      "steps": [
+        {
+          "step": "5.1–5.6",
+          "status": "SKIP",
+          "detail": "bpa_web UI — requires browser + staff login"
+        }
+      ],
+      "pass": 0,
+      "fail": 0,
+      "skip": 1
+    },
+    "Scenario 6 — Admin campaign setup": {
+      "steps": [
+        {
+          "step": "6.1–6.6",
+          "status": "SKIP",
+          "detail": "Requires admin JWT + campaign.manage permission"
+        }
+      ],
+      "pass": 0,
+      "fail": 0,
+      "skip": 1
+    },
+    "Scenario 8 — BPA app linking": {
+      "steps": [
+        {
+          "step": "8.1–8.7",
+          "status": "SKIP",
+          "detail": "Flutter app — not executed in API runner"
+        }
+      ],
+      "pass": 0,
+      "fail": 0,
+      "skip": 1
+    },
+    "Scenario 9 — SMS failure recovery": {
+      "steps": [
+        {
+          "step": "9.1–9.2 Worker queue",
+          "status": "PASS",
+          "detail": "redisEnabled=false queue=null"
+        },
+        {
+          "step": "9.3 Provider fallback",
+          "status": "SKIP",
+          "detail": "Code verified in unit tests"
+        },
+        {
+          "step": "9.4 Admin SMS log",
+          "status": "SKIP",
+          "detail": "Needs admin route + UI"
+        }
+      ],
+      "pass": 1,
+      "fail": 0,
+      "skip": 2
+    }
+  },
+  "summary": {
+    "pass": 14,
+    "fail": 0,
+    "skip": 16,
+    "blocked": 0
+  }
+}

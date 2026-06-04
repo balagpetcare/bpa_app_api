@@ -107,7 +107,16 @@ describe("dispatches.service", () => {
       });
       await expect(
         receiveDispatch(1, {
-          items: [{ variantId: 1, lotId: 1, quantityReceived: 5, quantityDamaged: 0, quantityShort: 0 }],
+          items: [
+            {
+              variantId: 1,
+              lotId: 1,
+              quantityReceived: 5,
+              quantityDamaged: 0,
+              quantityShort: 0,
+              lineNote: "partial — idempotency probe",
+            },
+          ],
           createdByUserId: 1,
           idempotencyKey: "same-key",
         })
@@ -334,6 +343,7 @@ describe("dispatches.service", () => {
             quantityReceived: 5,
             quantityDamaged: 0,
             quantityShort: 0,
+            lineNote: "partial receive wave",
           },
         ],
         createdByUserId: 1,
@@ -391,6 +401,7 @@ describe("dispatches.service", () => {
             ]),
           },
           grn: { create: jest.fn().mockResolvedValue({ id: 1, lines: [] }) },
+          stockDispatchDiscrepancy: { create: jest.fn().mockResolvedValue({}) },
           stockRequest: { findUnique: jest.fn().mockResolvedValue(null), update: jest.fn() },
           medicineRequisition: { findFirst: jest.fn().mockResolvedValue(null), update: jest.fn() },
         };
@@ -404,6 +415,7 @@ describe("dispatches.service", () => {
             quantityReceived: 8,
             quantityDamaged: 2,
             quantityShort: 0,
+            lineNote: "outer carton crushed",
           },
         ],
         createdByUserId: 1,
@@ -419,7 +431,7 @@ describe("dispatches.service", () => {
       );
     });
 
-    it("updates StockRequest only to PARTIALLY_RECEIVED or RECEIVED_FULL", async () => {
+    it("updates StockRequest only to PARTIALLY_RECEIVED or RECEIVED (enterprise full receive)", async () => {
       const stockRequestUpdate = jest.fn().mockResolvedValue({});
       prismaMock.$transaction.mockImplementation(async (cb: (tx: any) => Promise<any>) => {
         const tx = {
@@ -470,7 +482,7 @@ describe("dispatches.service", () => {
         expect.objectContaining({
           where: { id: 100 },
           data: expect.objectContaining({
-            status: expect.stringMatching(/^(PARTIALLY_RECEIVED|RECEIVED_FULL)$/),
+            status: expect.stringMatching(/^(PARTIALLY_RECEIVED|RECEIVED|RECEIVED_FULL)$/),
           }),
         })
       );

@@ -7,7 +7,7 @@
  * Any permission used in UI but not discoverable from the above is added manually with a comment.
  */
 
-export type PermissionScope = "admin" | "producer" | "both" | "branch";
+export type PermissionScope = "admin" | "producer" | "both" | "branch" | "org";
 
 export type PermissionEntry = {
   key: string;
@@ -115,6 +115,11 @@ const REGISTRY: PermissionEntry[] = [
   { key: "delivery.manage", label: "Manage deliveries", group: "Warehouse", description: "Progress delivery assignment lifecycle.", scope: "both" },
   { key: "procurement.po.view", label: "View purchase orders", group: "Warehouse", description: "List and read purchase orders.", scope: "both" },
   { key: "procurement.po.manage", label: "Manage purchase orders", group: "Warehouse", description: "Create, approve, and cancel purchase orders.", scope: "both" },
+  { key: "procurement.demand.view", label: "View procurement demand", group: "Warehouse", description: "Allocation shortage lines pending PO/GRN.", scope: "both" },
+  { key: "procurement.demand.manage", label: "Manage procurement demand", group: "Warehouse", description: "Link demand to PO lines and cancel demand.", scope: "both" },
+  { key: "procurement.demand.link_po", label: "Link demand to PO line", group: "Warehouse", description: "Attach shortage demand to a purchase order line.", scope: "both" },
+  { key: "fulfillment.backorder.view", label: "View backorder status", group: "Warehouse", description: "See branch line backorder / procurement state.", scope: "both" },
+  { key: "fulfillment.backorder.process", label: "Process backorder hooks", group: "Warehouse", description: "Trigger procurement-demand processing after GRN.", scope: "both" },
   { key: "warehouse.allocation.manage", label: "Allocation plans", group: "Warehouse", description: "Create allocation plans and run FEFO.", scope: "both" },
   { key: "warehouse.pick.execute", label: "Execute pick lists", group: "Warehouse", description: "Pick, complete pick lists, and handoff to dispatch.", scope: "both" },
   { key: "delivery.pod.submit", label: "Submit proof of delivery", group: "Warehouse", description: "Complete deliveries with POD capture.", scope: "both" },
@@ -133,21 +138,38 @@ const REGISTRY: PermissionEntry[] = [
   { key: "customers.view", label: "View customers (branch)", group: "People", description: "View customers in staff branch context.", scope: "both" },
   { key: "reports.read", label: "View reports", group: "Reports", description: "View reports and analytics.", scope: "both" },
   { key: "reports.view", label: "View reports (branch)", group: "Reports", description: "View reports in staff branch context.", scope: "both" },
+  { key: "pricing.central.read", label: "View central pricing & governance", group: "Pricing", description: "Read org pricing governance policy and central price context (no catalog edits).", scope: "org" },
   { key: "pricing.central.write", label: "Central catalog pricing", group: "Pricing", description: "Set org MRP/base/floor on product pricing.", scope: "org" },
   { key: "pricing.branch.override", label: "Branch price overrides", group: "Pricing", description: "Set branch overrides within central band when enforced.", scope: "both" },
   { key: "pricing.audit.view", label: "Pricing audit", group: "Pricing", description: "View pricing change audit log.", scope: "org" },
   { key: "pricing.retail.rule.manage", label: "Retail discount rules", group: "Pricing", description: "Manage retail discount caps and approval thresholds.", scope: "org" },
   { key: "retail.discount.apply", label: "Apply retail discounts", group: "Pricing", description: "Apply POS/retail line discounts subject to rules.", scope: "branch" },
   { key: "retail.discount.approve", label: "Approve retail discounts", group: "Pricing", description: "Approve over-threshold retail discounts.", scope: "branch" },
+  { key: "pricing.campaign.manage", label: "Manage pricing campaigns", group: "Pricing", description: "Create and publish retail pricing campaigns.", scope: "org" },
+  { key: "pricing.membership.manage", label: "Manage membership tiers", group: "Pricing", description: "Configure membership discount tiers and exclusions.", scope: "org" },
+  { key: "pricing.branch.override.request", label: "Request branch price override", group: "Pricing", description: "Submit branch special price requests for approval.", scope: "branch" },
+  { key: "pricing.branch.override.approve", label: "Approve branch price overrides", group: "Pricing", description: "Review branch override requests and publish overrides.", scope: "org" },
+  { key: "pricing.approval.matrix.manage", label: "Manage pricing approval matrix", group: "Pricing", description: "Configure role-based pricing approval routing.", scope: "org" },
+  { key: "pricing.emergency.override", label: "Emergency price override", group: "Pricing", description: "Issue time-limited emergency POS price tokens.", scope: "org" },
+  { key: "pricing.analytics.view", label: "Pricing analytics", group: "Pricing", description: "View margin, discount, and campaign analytics.", scope: "org" },
+  { key: "pricing.bulk.import", label: "Bulk price import", group: "Pricing", description: "Import or bulk-update catalog prices.", scope: "org" },
   { key: "settings.read", label: "View settings", group: "Settings", description: "View settings.", scope: "both" },
   // ----- Staff Branch (branchSidebarConfig) -----
   { key: "dashboard.view", label: "View dashboard", group: "Staff Branch", description: "View branch dashboard.", scope: "both" },
   { key: "tasks.view", label: "View tasks", group: "Staff Branch", description: "View and manage tasks.", scope: "both" },
   { key: "approvals.view", label: "View approvals", group: "Staff Branch", description: "View pending approvals.", scope: "both" },
   { key: "pos.view", label: "View POS", group: "Staff Branch", description: "Access POS / sales.", scope: "both" },
+  { key: "pos.sell", label: "Complete POS sales", group: "Staff Branch", description: "Create carts, add lines, finalize sales.", scope: "branch" },
+  { key: "pos.refund", label: "POS refunds / full cancel", group: "Staff Branch", description: "Line returns and full order cancel at branch POS.", scope: "branch" },
+  { key: "pos.discount.override", label: "POS discount override", group: "Staff Branch", description: "Apply custom discounts beyond cashier presets (with governance).", scope: "branch" },
+  { key: "cashdrawer.open", label: "Open cash drawer shift", group: "Staff Branch", description: "Open POS shift / starting cash.", scope: "branch" },
+  { key: "cashdrawer.close", label: "Close cash drawer shift", group: "Staff Branch", description: "Close POS shift and count cash.", scope: "branch" },
   { key: "staff.view", label: "View staff", group: "Staff Branch", description: "View staff and shifts.", scope: "both" },
   { key: "clinic.overview.manage", label: "Manage clinic overview", group: "Clinic Setup", description: "Manage clinic overview and settings.", scope: "both" },
   { key: "settings.manage", label: "Manage settings", group: "Settings", description: "Change settings.", scope: "both" },
+  // ----- Vaccination Campaign 2026 (BPA national campaign module) -----
+  { key: "campaign.manage", label: "Manage vaccination campaigns", group: "Vaccination Campaign", description: "Create, configure, publish, and operate BPA vaccination campaigns (locations, slots, staff).", scope: "admin" },
+  { key: "campaign.view", label: "View vaccination campaigns", group: "Vaccination Campaign", description: "Read campaign configuration, bookings, and reports.", scope: "admin" },
   // ----- Clinic (permissionMenu clinic) -----
   { key: "service.read", label: "View services", group: "Clinic", description: "View clinic service catalog.", scope: "both" },
   { key: "clinic.appointments.read", label: "View appointments", group: "Clinic", description: "View clinic appointments.", scope: "both" },

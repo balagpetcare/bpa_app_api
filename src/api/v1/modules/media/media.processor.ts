@@ -133,6 +133,70 @@ async function processUploadFile(file) {
   return file;
 }
 
-module.exports = { processUploadFile, isImage, isVideo };
+function makeInvalidImagePayloadError(cause?: unknown) {
+  const e = new Error("INVALID_IMAGE_PAYLOAD") as Error & { code?: string; cause?: unknown };
+  e.code = "INVALID_IMAGE_PAYLOAD";
+  if (cause !== undefined) e.cause = cause;
+  return e;
+}
+
+/**
+ * Profile avatar pipeline: square cover crop + WebP for predictable small objects.
+ * Input may already be cropped client-side (typically JPEG/PNG); this normalizes server-side.
+ * Env: PROFILE_PHOTO_MAX_SIDE (default 512), PROFILE_PHOTO_WEBP_QUALITY (default 82).
+ * Throws Error with code INVALID_IMAGE_PAYLOAD if input cannot be decoded or processed.
+ */
+async function optimizeProfilePhotoFile(file) {
+  if (!file?.buffer) return file;
+  const maxSide = Number(process.env.PROFILE_PHOTO_MAX_SIDE || 512);
+  const quality = Number(process.env.PROFILE_PHOTO_WEBP_QUALITY || 82);
+
+  let meta;
+  try {
+    meta = await sharp(file.buffer).metadata();
+  } catch (err) {
+    if (process.env.NODE_ENV !== 'production') {
+      console.warn('optimizeProfilePhotoFile: input buffer failed metadata probe', {
+        mimetype: file?.mimetype,
+        originalname: file?.originalname,
+        size: file?.size || file?.buffer?.length || 0,
+        message: err?.message || String(err),
+      });
+    }
+    throw makeInvalidImagePayloadError(err);
+  }
+  if (!meta.width || !meta.height) {
+    throw makeInvalidImagePayloadError();
+  }
+
+  let outBuf;
+  try {
+    outBuf = await sharp(file.buffer)
+      .rotate()
+      .resize(maxSide, maxSide, { fit: 'cover', position: 'attention' })
+      .webp({ quality })
+      .toBuffer();
+  } catch (err) {
+    if (process.env.NODE_ENV !== 'production') {
+      console.warn('optimizeProfilePhotoFile: sharp pipeline failed', {
+        mimetype: file?.mimetype,
+        originalname: file?.originalname,
+        size: file?.size || file?.buffer?.length || 0,
+        message: err?.message || String(err),
+      });
+    }
+    throw makeInvalidImagePayloadError(err);
+  }
+  const base = (file.originalname || 'avatar').replace(/\.[^/.]+$/, '');
+  return {
+    ...file,
+    buffer: outBuf,
+    mimetype: 'image/webp',
+    originalname: `${base}.webp`,
+    size: outBuf.length,
+  };
+}
+
+module.exports = { processUploadFile, isImage, isVideo, optimizeProfilePhotoFile };
 
 export {};

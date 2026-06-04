@@ -37,7 +37,8 @@ CREATE UNIQUE INDEX "warehouse_bins_rackId_code_key" ON "warehouse_bins"("rackId
 
 CREATE INDEX "warehouse_bins_rackId_isActive_idx" ON "warehouse_bins"("rackId", "isActive");
 
-ALTER TABLE "warehouse_racks" ADD CONSTRAINT "warehouse_racks_zoneId_fkey" FOREIGN KEY ("zoneId") REFERENCES "warehouse_zones"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+-- FK to warehouse_zones deferred: table is created in 20260430140000_warehouse_phase4_qc_zones_audit.
+-- Applied in 20260430140100_warehouse_racks_zone_id_fkey_deferred.
 
 ALTER TABLE "warehouse_bins" ADD CONSTRAINT "warehouse_bins_rackId_fkey" FOREIGN KEY ("rackId") REFERENCES "warehouse_racks"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 

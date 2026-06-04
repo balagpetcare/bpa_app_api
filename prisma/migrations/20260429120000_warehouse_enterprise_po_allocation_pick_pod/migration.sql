@@ -224,7 +224,9 @@ CREATE TABLE "pick_lists" (
     CONSTRAINT "pick_lists_pkey" PRIMARY KEY ("id")
 );
 
-CREATE UNIQUE INDEX "pick_lists_allocationPlanId_key" ON "pick_lists"("allocationPlanId");
+-- Non-unique: multiple pick lists per allocation plan (multi-wave dispatch). Consolidated ordering fix
+-- replaces prior early migration `20260411191500_pick_lists_allow_multiple_per_allocation_plan`.
+CREATE INDEX "pick_lists_allocationPlanId_idx" ON "pick_lists"("allocationPlanId");
 CREATE UNIQUE INDEX "pick_lists_stockDispatchId_key" ON "pick_lists"("stockDispatchId");
 CREATE INDEX "pick_lists_orgId_status_idx" ON "pick_lists"("orgId", "status");
 CREATE INDEX "pick_lists_assignedPickerUserId_idx" ON "pick_lists"("assignedPickerUserId");
@@ -314,3 +316,38 @@ ALTER TABLE "proof_of_deliveries" ADD CONSTRAINT "proof_of_deliveries_deliveryAs
 ALTER TABLE "proof_of_deliveries" ADD CONSTRAINT "proof_of_deliveries_recordedByUserId_fkey" FOREIGN KEY ("recordedByUserId") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 ALTER TABLE "grns" ADD CONSTRAINT "grns_purchaseOrderId_fkey" FOREIGN KEY ("purchaseOrderId") REFERENCES "purchase_orders"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- Deferred from 20260405120000: backfill vendor receive sessions for PO-only GRNs (column added above)
+INSERT INTO "vendor_receive_sessions" ("orgId", "grnId", "status", "createdAt", "updatedAt")
+SELECT g."orgId", g."id", 'DRAFT'::"VendorReceiveSessionStatus", CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+FROM "grns" g
+WHERE g."status" = 'DRAFT'
+  AND g."stockDispatchId" IS NULL
+  AND g."purchaseOrderId" IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM "vendor_receive_sessions" v WHERE v."grnId" = g."id");
+
+-- Deferred from 20260403140000 when `purchase_order_lines` did not exist yet
+DO $$
+BEGIN
+  IF to_regclass('public.grn_lines') IS NOT NULL
+     AND to_regclass('public.purchase_order_lines') IS NOT NULL
+     AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'grn_lines_purchaseOrderLineId_fkey')
+  THEN
+    ALTER TABLE "grn_lines" ADD CONSTRAINT "grn_lines_purchaseOrderLineId_fkey"
+      FOREIGN KEY ("purchaseOrderLineId") REFERENCES "purchase_order_lines"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS "grn_lines_purchaseOrderLineId_idx" ON "grn_lines" ("purchaseOrderLineId");
+
+-- Deferred from 20260403163736_stock_request_procurement_intent
+DO $$
+BEGIN
+  IF to_regclass('public.stock_requests') IS NOT NULL
+     AND to_regclass('public.purchase_orders') IS NOT NULL
+     AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'stock_requests_linkedPurchaseOrderId_fkey')
+  THEN
+    ALTER TABLE "stock_requests" ADD CONSTRAINT "stock_requests_linkedPurchaseOrderId_fkey"
+      FOREIGN KEY ("linkedPurchaseOrderId") REFERENCES "purchase_orders"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
+END $$;

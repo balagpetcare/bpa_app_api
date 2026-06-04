@@ -1,5 +1,6 @@
 const router = require("express").Router();
 const controller = require("./inventory.controller");
+const staffBatchPricingController = require("./staffBatchPricing.controller");
 const authenticateToken = require("../../../../middleware/auth.middleware");
 const { inventoryWarehouseMutationLimiter } = require("../../../../middleware/rateLimiters");
 
@@ -91,6 +92,23 @@ router.get(
   controller.getInventoryBatches
 );
 
+// Branch manager: SHOP batch list + batch sell price / expiry (enterprise batch rules, audit via enterprise pricing log)
+router.get(
+  "/shop-batches",
+  requirePermission("inventory.batch.pricing"),
+  staffBatchPricingController.getShopBatches
+);
+router.get(
+  "/shop-batches/:lotId",
+  requirePermission("inventory.batch.pricing"),
+  staffBatchPricingController.getShopBatchDetail
+);
+router.patch(
+  "/shop-batches/:lotId",
+  requirePermission("inventory.batch.pricing"),
+  staffBatchPricingController.patchShopBatch
+);
+
 // GET /api/v1/inventory/variants/search - Product picker: q=, orgId=, limit=, page=, categoryId=, brandId=, variantActive=all|active
 router.get(
   "/variants/search",
@@ -149,6 +167,38 @@ router.get(
   "/ledger",
   requirePermission("inventory.read", "org.read"),
   controller.getInventoryLedger
+);
+
+// Vendor receipt (GRN) print aliases — same auth surface as GET /api/v1/grn/:id/print*
+router.get(
+  "/vendor-receipts/:id(\\d+)/print/grn",
+  requirePermission(
+    "inbound.grn",
+    "inbound.receive",
+    "purchase.receive",
+    "grn.view",
+    "grn.create",
+    "grn.post",
+    "grn.void",
+    "grn.confirm.warehouse_manager",
+    "inventory.emergency.override"
+  ),
+  controller.printVendorReceiptGrnHtml
+);
+router.get(
+  "/vendor-receipts/:id(\\d+)/print/delivery-note",
+  requirePermission(
+    "inbound.grn",
+    "inbound.receive",
+    "purchase.receive",
+    "grn.view",
+    "grn.create",
+    "grn.post",
+    "grn.void",
+    "grn.confirm.warehouse_manager",
+    "inventory.emergency.override"
+  ),
+  controller.printVendorReceiptDeliveryNoteHtml
 );
 
 // ============================

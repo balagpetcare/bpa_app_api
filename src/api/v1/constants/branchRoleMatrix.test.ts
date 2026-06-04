@@ -13,6 +13,9 @@ const {
 
 const shopBranch = { types: [{ type: { code: "SHOP" } }] };
 const deliveryBranch = { types: [{ type: { code: "DELIVERY_HUB" } }] };
+const warehouseDcBranch = { types: [{ type: { code: "WAREHOUSE_DC" } }] };
+const pharmacyBranch = { types: [{ type: { code: "PHARMACY_DIAGNOSTICS" } }] };
+const clinicBranch = { types: [{ type: { code: "CLINIC" } }] };
 
 function run() {
   // Normalize: STAFF -> BRANCH_STAFF, uppercase
@@ -55,6 +58,22 @@ function run() {
   // Allowed roles for delivery hub
   const deliveryAllowed = getAllowedInviteRolesForBranch(deliveryBranch);
   assert.ok(deliveryAllowed.includes("DELIVERY_MANAGER") && deliveryAllowed.includes("DELIVERY_STAFF"));
+
+  const whAllowed = getAllowedInviteRolesForBranch(warehouseDcBranch);
+  assert.ok(whAllowed.includes("WAREHOUSE_MANAGER") && whAllowed.includes("RECEIVING_STAFF"));
+  const rWh = canInviteRole("OWNER", "WAREHOUSE_MANAGER", warehouseDcBranch);
+  assert.strictEqual(rWh.allowed, true, "OWNER can invite WAREHOUSE_MANAGER on WAREHOUSE_DC");
+
+  const rxAllowed = getAllowedInviteRolesForBranch(pharmacyBranch);
+  assert.ok(rxAllowed.includes("PHARMACIST"));
+  const rPh = canInviteRole("OWNER", "PHARMACIST", pharmacyBranch);
+  assert.strictEqual(rPh.allowed, true);
+
+  const rClinicStaff = canInviteRole("OWNER", "CLINIC_STAFF", clinicBranch);
+  assert.strictEqual(rClinicStaff.allowed, true);
+
+  const rBad = canInviteRole("OWNER", "WAREHOUSE_MANAGER", clinicBranch);
+  assert.strictEqual(rBad.allowed, false, "WAREHOUSE_MANAGER invalid on clinic-only branch");
 
   console.log("All branchRoleMatrix tests passed.");
 }

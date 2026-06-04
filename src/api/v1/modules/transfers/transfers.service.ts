@@ -1,4 +1,5 @@
 import prisma from "../../../../infrastructure/db/prismaClient";
+import { assertLegacyStockTransferAllowedForDraftPayload } from "../../services/legacyFulfillmentGuard.service";
 const ledgerService = require("../inventory/ledger.service");
 
 /**
@@ -47,6 +48,16 @@ async function createTransfer(data: {
   }>;
   createdByUserId?: number;
 }) {
+  const lineIds = data.items
+    .map((i) => i.stockRequestItemId)
+    .filter((x): x is number => typeof x === "number" && x > 0);
+  await assertLegacyStockTransferAllowedForDraftPayload({
+    stockRequestId: null,
+    stockRequestItemIds: lineIds,
+    source: "transfers.createTransfer",
+    actorUserId: data.createdByUserId ?? null,
+  });
+
   const transfer = await prisma.stockTransfer.create({
     data: {
       fromLocationId: data.fromLocationId,
@@ -98,6 +109,30 @@ async function createTransfer(data: {
  */
 async function sendTransfer(transferId: number, createdByUserId?: number) {
   console.warn("[DEPRECATED] sendTransfer called. Use StockDispatch flow instead. Transfer ID:", transferId);
+
+  const transferPreview = await prisma.stockTransfer.findUnique({
+    where: { id: transferId },
+    include: { items: true },
+  });
+
+  if (!transferPreview) {
+    throw new Error("Transfer not found");
+  }
+
+  if (transferPreview.status !== "DRAFT") {
+    throw new Error(`Transfer is already ${transferPreview.status}`);
+  }
+
+  const lineIds = transferPreview.items
+    .map((i) => i.stockRequestItemId)
+    .filter((x): x is number => x != null && x > 0);
+  await assertLegacyStockTransferAllowedForDraftPayload({
+    stockRequestId: transferPreview.stockRequestId ?? null,
+    stockRequestItemIds: lineIds,
+    source: "transfers.sendTransfer",
+    actorUserId: createdByUserId ?? null,
+  });
+
   return await prisma.$transaction(async (tx) => {
     const transfer = await tx.stockTransfer.findUnique({
       where: { id: transferId },
@@ -250,6 +285,17 @@ async function receiveTransfer(
 
     if (!transfer) {
       throw new Error("Transfer not found");
+    }
+
+    if (transfer.stockRequestId) {
+      const n = await tx.stockDispatch.count({
+        where: { stockRequestId: transfer.stockRequestId },
+      });
+      if (n > 0) {
+        throw new Error(
+          "This stock request is fulfilled via StockDispatch (enterprise). Receive goods using the dispatch receive session, not StockTransfer receive."
+        );
+      }
     }
 
     const allowedStatuses = ["SENT", "IN_TRANSIT"];

@@ -1,5 +1,24 @@
 import * as service from "./allocationPlan.service";
 import { getOrgIdsForUser } from "../grn/grn.service";
+import { MultiWarehouseFulfillmentError, parseMultiWarehouseError } from "../../services/multiWarehouseFulfillment.errors";
+
+function sendPlanError(res: any, e: unknown) {
+  if (e instanceof MultiWarehouseFulfillmentError) {
+    return res.status(e.httpStatus).json({
+      success: false,
+      message: e.message,
+      code: e.code,
+      details: e.details ?? null,
+    });
+  }
+  const p = parseMultiWarehouseError(e);
+  return res.status(p.httpStatus).json({
+    success: false,
+    message: p.message,
+    code: p.code,
+    details: p.details ?? null,
+  });
+}
 
 function getUserId(req: any): number | null {
   const id = req?.user?.id ?? req?.user?.userId;
@@ -22,7 +41,10 @@ export async function createFromStockRequest(req: any, res: any) {
   try {
     const ctx = await resolveOrg(req);
     if (!ctx) return res.status(403).json({ success: false, message: "No organization access" });
-    const { stockRequestId, fromLocationId, warehouseId, skipAutoAllocation } = req.body || {};
+    const {
+      stockRequestId, fromLocationId, warehouseId, skipAutoAllocation,
+      allocationScope, sourceLocationIds, autoBackorder,
+    } = req.body || {};
     if (!stockRequestId || !fromLocationId) {
       return res.status(400).json({ success: false, message: "stockRequestId and fromLocationId required" });
     }
@@ -33,11 +55,16 @@ export async function createFromStockRequest(req: any, res: any) {
       warehouseId: warehouseId != null ? Number(warehouseId) : undefined,
       createdByUserId: ctx.userId,
       skipAutoAllocation: Boolean(skipAutoAllocation),
+      allocationScope: allocationScope === "MULTI_SOURCE" ? "MULTI_SOURCE" : undefined,
+      sourceLocationIds: Array.isArray(sourceLocationIds)
+        ? sourceLocationIds.map(Number).filter(Number.isFinite)
+        : undefined,
+      autoBackorder: autoBackorder != null ? Boolean(autoBackorder) : undefined,
     });
     return res.status(201).json({ success: true, data: plan });
   } catch (e: any) {
     console.error("allocationPlan.createFromStockRequest", e);
-    return res.status(400).json({ success: false, message: e?.message || "Failed" });
+    return sendPlanError(res, e);
   }
 }
 
@@ -77,6 +104,28 @@ export async function runFefo(req: any, res: any) {
   }
 }
 
+export async function createSupplementaryFromBackorders(req: any, res: any) {
+  try {
+    const ctx = await resolveOrg(req, req.body);
+    if (!ctx) return res.status(403).json({ success: false, message: "No organization access" });
+    const parentPlanId = Number(req.params.id);
+    const { fromLocationId } = req.body || {};
+    if (!fromLocationId) {
+      return res.status(400).json({ success: false, message: "fromLocationId required" });
+    }
+    const plan = await service.createSupplementaryPlanFromBackorders({
+      parentPlanId,
+      orgId: ctx.orgId,
+      fromLocationId: Number(fromLocationId),
+      createdByUserId: ctx.userId,
+    });
+    return res.status(201).json({ success: true, data: plan });
+  } catch (e: any) {
+    console.error("allocationPlan.createSupplementaryFromBackorders", e);
+    return sendPlanError(res, e);
+  }
+}
+
 export async function confirm(req: any, res: any) {
   try {
     const ctx = await resolveOrg(req, req.body);
@@ -89,7 +138,7 @@ export async function confirm(req: any, res: any) {
     return res.status(200).json({ success: true, data: plan });
   } catch (e: any) {
     console.error("allocationPlan.confirm", e);
-    return res.status(400).json({ success: false, message: e?.message || "Failed" });
+    return sendPlanError(res, e);
   }
 }
 

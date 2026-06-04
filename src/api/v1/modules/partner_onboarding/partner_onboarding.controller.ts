@@ -1,8 +1,16 @@
 const prisma = require("../../../../infrastructure/db/prismaClient");
+const centralizedLocationService = require("../../../../modules/location/location.service");
 
 function pickJson(bodyVal, fallback) {
   if (bodyVal === undefined) return fallback;
   return bodyVal;
+}
+
+function asIntOrNull(v) {
+  if (v === undefined || v === null || v === "") return null;
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.trunc(n);
 }
 
 async function requireApprovedPartner(userId) {
@@ -242,12 +250,36 @@ exports.createOrganization = async (req, res) => {
       return res.status(400).json({ success: false, message: "Country not resolved for organization" });
     }
 
+    let normalizedLocation = {
+      divisionId: asIntOrNull(req.body?.divisionId),
+      districtId: asIntOrNull(req.body?.districtId),
+      upazilaId: asIntOrNull(req.body?.upazilaId),
+      unionId: asIntOrNull(req.body?.unionId),
+      areaId: asIntOrNull(req.body?.areaId ?? req.body?.bdAreaId),
+    };
+    if (
+      normalizedLocation.divisionId ||
+      normalizedLocation.districtId ||
+      normalizedLocation.upazilaId ||
+      normalizedLocation.unionId ||
+      normalizedLocation.areaId
+    ) {
+      const validated = await centralizedLocationService.validateSelection(prisma, normalizedLocation);
+      if (!validated?.ok) return res.status(400).json({ success: false, message: validated?.message || "Invalid location selection" });
+      normalizedLocation = validated.normalized || normalizedLocation;
+    }
+
     const org = await prisma.organization.create({
       data: {
         ownerUserId: userId,
         status: "APPROVED",
         name,
         supportPhone: supportPhone || null,
+        divisionId: normalizedLocation.divisionId,
+        districtId: normalizedLocation.districtId,
+        upazilaId: normalizedLocation.upazilaId,
+        unionId: normalizedLocation.unionId,
+        areaId: normalizedLocation.areaId,
         addressJson: addressJson || null,
         countryId,
       },
@@ -284,6 +316,25 @@ exports.createBranch = async (req, res) => {
     const org = await prisma.organization.findFirst({ where: { id: orgId, ownerUserId: userId } });
     if (!org) return res.status(404).json({ success: false, message: "Organization not found" });
 
+    let normalizedLocation = {
+      divisionId: asIntOrNull(req.body?.divisionId),
+      districtId: asIntOrNull(req.body?.districtId),
+      upazilaId: asIntOrNull(req.body?.upazilaId),
+      unionId: asIntOrNull(req.body?.unionId),
+      areaId: asIntOrNull(req.body?.areaId ?? req.body?.bdAreaId),
+    };
+    if (
+      normalizedLocation.divisionId ||
+      normalizedLocation.districtId ||
+      normalizedLocation.upazilaId ||
+      normalizedLocation.unionId ||
+      normalizedLocation.areaId
+    ) {
+      const validated = await centralizedLocationService.validateSelection(prisma, normalizedLocation);
+      if (!validated?.ok) return res.status(400).json({ success: false, message: validated?.message || "Invalid location selection" });
+      normalizedLocation = validated.normalized || normalizedLocation;
+    }
+
     const branch = await prisma.branch.create({
       data: {
         orgId,
@@ -291,6 +342,11 @@ exports.createBranch = async (req, res) => {
         status: "DRAFT",
         capabilitiesJson: capabilitiesJson || {},
         featuresJson: {},
+        divisionId: normalizedLocation.divisionId,
+        districtId: normalizedLocation.districtId,
+        upazilaId: normalizedLocation.upazilaId,
+        unionId: normalizedLocation.unionId,
+        areaId: normalizedLocation.areaId,
         addressJson: addressJson || null,
         verificationStatus: "UNSUBMITTED",
       },
@@ -322,10 +378,34 @@ exports.updateBranch = async (req, res) => {
       // Allowed fields could be whitelisted later.
     }
 
+    let normalizedLocation = {
+      divisionId: asIntOrNull(body?.divisionId),
+      districtId: asIntOrNull(body?.districtId),
+      upazilaId: asIntOrNull(body?.upazilaId),
+      unionId: asIntOrNull(body?.unionId),
+      areaId: asIntOrNull(body?.areaId ?? body?.bdAreaId),
+    };
+    if (
+      normalizedLocation.divisionId ||
+      normalizedLocation.districtId ||
+      normalizedLocation.upazilaId ||
+      normalizedLocation.unionId ||
+      normalizedLocation.areaId
+    ) {
+      const validated = await centralizedLocationService.validateSelection(prisma, normalizedLocation);
+      if (!validated?.ok) return res.status(400).json({ success: false, message: validated?.message || "Invalid location selection" });
+      normalizedLocation = validated.normalized || normalizedLocation;
+    }
+
     const updated = await prisma.branch.update({
       where: { id: branchId },
       data: {
         name: body.name ?? undefined,
+        divisionId: normalizedLocation.divisionId ?? undefined,
+        districtId: normalizedLocation.districtId ?? undefined,
+        upazilaId: normalizedLocation.upazilaId ?? undefined,
+        unionId: normalizedLocation.unionId ?? undefined,
+        areaId: normalizedLocation.areaId ?? undefined,
         addressJson: pickJson(body.addressJson, undefined),
         capabilitiesJson: pickJson(body.capabilitiesJson, undefined),
         verificationStatus: body.verificationStatus ?? undefined,

@@ -6,6 +6,7 @@ const clinicService = require("./ownerClinic.service");
 const doctorRequestService = require("../doctor/doctorRequest.service");
 const appointmentAvailabilityService = require("../../services/appointmentAvailability.service");
 const appointmentService = require("../clinic/appointment.service");
+const vaccinationService = require("../clinic/vaccination.service");
 const { writeAudit: writeClinicAudit } = require("../../../../middlewares/auditWriter");
 
 function getPrisma(req: any) {
@@ -80,6 +81,69 @@ exports.getClinicDashboardStats = async (req: any, res: any) => {
     console.error(e);
     const isProd = String(process.env.NODE_ENV || "").toLowerCase() === "production";
     return res.status(500).json({
+      success: false,
+      message: isProd ? "Server error" : (e?.message || "Server error"),
+    });
+  }
+};
+
+// GET /api/v1/owner/clinic/branches/:branchId/vaccine-inventory-mappings
+exports.getVaccineInventoryMappings = async (req: any, res: any) => {
+  try {
+    const userId = getUserId(req);
+    const branchId = asInt(req.params.branchId);
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    if (!branchId) return res.status(400).json({ success: false, message: "Invalid branchId" });
+
+    const data = await vaccinationService.getBranchVaccineInventoryMappings(branchId);
+    return res.json({ success: true, data });
+  } catch (e: any) {
+    console.error(e);
+    const isProd = String(process.env.NODE_ENV || "").toLowerCase() === "production";
+    return res.status(e?.statusCode ?? 500).json({
+      success: false,
+      message: isProd ? "Server error" : (e?.message || "Server error"),
+    });
+  }
+};
+
+// PUT /api/v1/owner/clinic/branches/:branchId/vaccine-inventory-mappings/:vaccineTypeId
+exports.upsertVaccineInventoryMapping = async (req: any, res: any) => {
+  try {
+    const userId = getUserId(req);
+    const branchId = asInt(req.params.branchId);
+    const vaccineTypeId = asInt(req.params.vaccineTypeId);
+    const body = req.body || {};
+    const clinicalItemId = asInt(body.clinicalItemId != null ? String(body.clinicalItemId) : undefined);
+    const clinicalItemVariantId =
+      body.clinicalItemVariantId == null || body.clinicalItemVariantId === ""
+        ? null
+        : asInt(String(body.clinicalItemVariantId));
+    const isActive = body.isActive !== undefined ? body.isActive === true : undefined;
+    const notes = body.notes != null ? String(body.notes) : undefined;
+
+    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+    if (!branchId) return res.status(400).json({ success: false, message: "Invalid branchId" });
+    if (!vaccineTypeId) return res.status(400).json({ success: false, message: "Invalid vaccineTypeId" });
+    if (!clinicalItemId) return res.status(400).json({ success: false, message: "Invalid clinicalItemId" });
+    if (body.clinicalItemVariantId != null && body.clinicalItemVariantId !== "" && !clinicalItemVariantId) {
+      return res.status(400).json({ success: false, message: "Invalid clinicalItemVariantId" });
+    }
+
+    const data = await vaccinationService.upsertVaccineInventoryMapping({
+      branchId,
+      vaccineTypeId,
+      clinicalItemId,
+      clinicalItemVariantId,
+      isActive,
+      notes,
+      actorUserId: userId,
+    });
+    return res.json({ success: true, data });
+  } catch (e: any) {
+    console.error(e);
+    const isProd = String(process.env.NODE_ENV || "").toLowerCase() === "production";
+    return res.status(e?.statusCode ?? 500).json({
       success: false,
       message: isProd ? "Server error" : (e?.message || "Server error"),
     });
