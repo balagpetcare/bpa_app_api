@@ -1,0 +1,61 @@
+# =============================================================================
+# BPA/WPA — Centralized SEO, Analytics & OAuth Environment Template
+# Copy relevant sections into each app's .env file.
+# Full guide: docs/setup/SEO_AND_AUTH_SETUP.md
+# =============================================================================
+
+# ─── backend-api (port 3000) ─────────────────────────────────────────────────
+GOOGLE_CLIENT_ID=
+FACEBOOK_APP_ID=
+FACEBOOK_APP_SECRET=
+COOKIE_DOMAIN=.bangladeshpetassociation.com
+
+# ─── bpa-landing (port 3101) — bangladeshpetassociation.com ─────────────────
+NEXT_PUBLIC_SITE_URL=https://bangladeshpetassociation.com
+NEXT_PUBLIC_SITE_NAME=Bangladesh Pet Association
+NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION=
+NEXT_PUBLIC_FACEBOOK_DOMAIN_VERIFICATION=
+NEXT_PUBLIC_OG_IMAGE_URL=/og-image.png
+NEXT_PUBLIC_TWITTER_SITE=bangladeshpet
+NEXT_PUBLIC_SEO_APP_SURFACE=landing
+NEXT_PUBLIC_ANALYTICS_APP_SURFACE=landing
+NEXT_PUBLIC_GA_MEASUREMENT_ID=
+NEXT_PUBLIC_GTM_CONTAINER_ID=
+NEXT_PUBLIC_META_PIXEL_ID=
+NEXT_PUBLIC_CLARITY_PROJECT_ID=
+NEXT_PUBLIC_GOOGLE_CLIENT_ID=
+NEXT_PUBLIC_FACEBOOK_APP_ID=
+
+# ─── vaccination_2026 (port 3110) — vaccination.bangladeshpetassociation.com ─
+NEXT_PUBLIC_SITE_URL=https://vaccination.bangladeshpetassociation.com
+NEXT_PUBLIC_SITE_NAME=BPA Vaccination Campaign
+NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION=
+NEXT_PUBLIC_FACEBOOK_DOMAIN_VERIFICATION=
+NEXT_PUBLIC_OG_IMAGE_URL=
+NEXT_PUBLIC_TWITTER_SITE=bangladeshpet
+NEXT_PUBLIC_SEO_APP_SURFACE=campaign
+NEXT_PUBLIC_ANALYTICS_APP_SURFACE=campaign
+NEXT_PUBLIC_GA_MEASUREMENT_ID=
+NEXT_PUBLIC_GTM_CONTAINER_ID=
+NEXT_PUBLIC_META_PIXEL_ID=
+NEXT_PUBLIC_CLARITY_PROJECT_ID=
+
+# ─── bpa_web panels (ports 3100–3107) ────────────────────────────────────────
+# Set NEXT_PUBLIC_SITE_URL per deployed panel subdomain.
+NEXT_PUBLIC_SITE_URL=https://owner.bangladeshpetassociation.com
+NEXT_PUBLIC_SITE_NAME=BPA Owner Panel
+NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION=
+NEXT_PUBLIC_SEO_APP_SURFACE=panel
+NEXT_PUBLIC_ANALYTICS_APP_SURFACE=panel
+NEXT_PUBLIC_GA_MEASUREMENT_ID=
+NEXT_PUBLIC_GTM_CONTAINER_ID=
+NEXT_PUBLIC_META_PIXEL_ID=
+NEXT_PUBLIC_GOOGLE_CLIENT_ID=
+NEXT_PUBLIC_FACEBOOK_APP_ID=
+
+# ─── Alternate brand domains (when deployed) ─────────────────────────────────
+# communitypetsclinic.com — clinic brand
+# communitypetshop.com — shop brand
+# petsmartsolution.com — WPA product brand
+# pranidoctor.com — telemedicine brand
+# Use the same SEO/analytics vars with NEXT_PUBLIC_SITE_URL set to each domain.

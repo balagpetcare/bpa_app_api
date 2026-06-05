@@ -1,0 +1,1006 @@
+{
+  "total": 244,
+  "vars": {
+    "ADMIN_2FA_REQUIRED": [
+      "src/middleware/admin2fa.middleware.ts"
+    ],
+    "ADMIN_2FA_TOTP_SECRET": [
+      "src/middleware/admin2fa.middleware.ts"
+    ],
+    "ADMIN_APP_URL": [
+      "src/api/v1/modules/owner/owner.controller.ts"
+    ],
+    "ADMIN_EMAILS": [
+      "prisma/seeders/seedGlobalCountryRoles.ts",
+      "src/api/v1/modules/auth/auth.controller.ts",
+      "src/api/v1/services/authUnified.service.ts",
+      "src/middleware/admin.middleware.ts"
+    ],
+    "ADMIN_KEY": [
+      "src/middleware/adminMiddleware.ts"
+    ],
+    "ADMIN_PHONES": [
+      "prisma/seeders/seedGlobalCountryRoles.ts",
+      "src/api/v1/modules/auth/auth.controller.ts",
+      "src/api/v1/services/authUnified.service.ts",
+      "src/middleware/admin.middleware.ts"
+    ],
+    "ADMIN_TOKEN": [
+      "scripts/governance_smoke.ts"
+    ],
+    "ADMIN_USER_IDS": [
+      "prisma/seeders/seedGlobalCountryRoles.ts",
+      "src/api/v1/modules/auth/auth.controller.ts",
+      "src/api/v1/services/authUnified.service.ts",
+      "src/middleware/admin.middleware.ts",
+      "src/middleware/adminMiddleware.ts",
+      "src/middlewares/optionalAuth.ts",
+      "src/middlewares/requireTeamOwner.ts"
+    ],
+    "AI_AUTO_DRAFT_STOCK_REQUEST": [
+      "src/api/v1/modules/ai_intelligence/replenishment.service.ts"
+    ],
+    "ALLOW_EXPIRED_VACCINE_CLINICAL_SYNC": [
+      "src/api/v1/modules/clinic/clinicalStockTransfer.service.ts",
+      "src/api/v1/modules/clinic/vaccineInventoryBridge.service.ts"
+    ],
+    "ALLOW_LEGACY_FULFILL_WITH_ALLOCATION_DRAFT": [
+      "src/api/v1/services/stockRequestStatus.service.ts",
+      "tests/flow/legacyFulfillmentAllocationConflict.test.ts",
+      "tests/flow/stockRequest.conflictGuard.e2e.test.ts"
+    ],
+    "AMARPAY_BASE_URL": [
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "AMARPAY_IPN_URL": [
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "AMARPAY_SANDBOX": [
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "AMARPAY_SIGNATURE_KEY": [
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "AMARPAY_STORE_ID": [
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "API_BASE_URL": [
+      "scripts/test-producer-org-status.ts",
+      "scripts/verify-campaign-booking-schema.js",
+      "src/api/v1/modules/admin_verifications/admin_verifications.controller.ts",
+      "src/api/v1/modules/doctor/doctorVerification.controller.ts",
+      "src/api/v1/modules/owner/owner.controller.ts"
+    ],
+    "API_PREFIX": [
+      "src/app.ts",
+      "src/config/env.ts",
+      "src/index.ts"
+    ],
+    "API_PUBLIC_BASE_URL": [
+      "src/api/v1/providers/paymentProvider.config.test.ts",
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "API_VERSION": [
+      "src/config/appConfig.ts"
+    ],
+    "APP_BASE_URL": [
+      "src/api/v1/modules/producer/producer.service.ts"
+    ],
+    "APP_URL": [
+      "src/api/v1/modules/campaign/campaign.routes.ts",
+      "src/api/v1/modules/payment/eps/eps.controller.ts",
+      "src/api/v1/modules/producer/producerStaffInvite.service.ts",
+      "src/api/v1/payments/payment.controller.ts",
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "AUTH_CODE_ENC_SECRET": [
+      "src/api/v1/utils/authCodeHasher.ts"
+    ],
+    "AUTH_CODE_HMAC_SECRET": [
+      "src/api/v1/utils/authCodeHasher.ts"
+    ],
+    "AUTH_SERIAL_SIGNING_SECRET": [
+      "src/api/v1/utils/serialSigner.ts"
+    ],
+    "AUTO_PROCUREMENT_DEMAND_DISPATCH": [
+      "src/api/v1/modules/procurement_demand/procurementDemand.service.ts"
+    ],
+    "AWS_ACCESS_KEY_ID": [
+      "scripts/storage-env.mjs",
+      "src/infrastructure/storage/storage.config.test.ts",
+      "src/infrastructure/storage/storage.config.ts"
+    ],
+    "AWS_BUCKET_NAME": [
+      "scripts/audit-media-urls.mjs",
+      "scripts/repair-media-urls.mjs",
+      "scripts/storage-env.mjs",
+      "src/infrastructure/storage/storage.config.test.ts",
+      "src/infrastructure/storage/storage.config.ts"
+    ],
+    "AWS_ENDPOINT": [
+      "scripts/audit-media-urls.mjs",
+      "scripts/repair-media-urls.mjs",
+      "scripts/storage-env.mjs",
+      "src/infrastructure/storage/storage.config.test.ts",
+      "src/infrastructure/storage/storage.config.ts"
+    ],
+    "AWS_FORCE_PATH_STYLE": [
+      "scripts/storage-env.mjs"
+    ],
+    "AWS_REGION": [
+      "scripts/storage-env.mjs",
+      "src/infrastructure/storage/storage.config.ts"
+    ],
+    "AWS_SECRET_ACCESS_KEY": [
+      "scripts/storage-env.mjs",
+      "src/infrastructure/storage/storage.config.test.ts",
+      "src/infrastructure/storage/storage.config.ts"
+    ],
+    "BACKEND_PUBLIC_URL": [
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "BASE_URL": [
+      "scripts/governance_smoke.ts"
+    ],
+    "BKASH_APP_KEY": [
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "BKASH_APP_SECRET": [
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "BKASH_BASE_URL": [
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "BKASH_CALLBACK_URL": [
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "BKASH_PASSWORD": [
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "BKASH_SANDBOX": [
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "BKASH_USERNAME": [
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "BLOCK_LEGACY_TRANSFERS": [
+      "src/api/v1/modules/inventory/warehouseTransferOrder.controller.ts",
+      "src/api/v1/modules/transfers/transfers.controller.ts"
+    ],
+    "BULKSMSBD_API_KEY": [
+      "src/integrations/sms/bulkSmsBd.provider.test.ts",
+      "src/integrations/sms/bulkSmsBd.provider.ts",
+      "src/shared/services/sms/sms.constants.ts"
+    ],
+    "BULKSMSBD_API_MODE": [
+      "src/integrations/sms/bulkSmsBd.provider.test.ts",
+      "src/integrations/sms/bulkSmsBd.provider.ts"
+    ],
+    "BULKSMSBD_API_TOKEN": [
+      "src/integrations/sms/bulkSmsBd.provider.test.ts",
+      "src/integrations/sms/bulkSmsBd.provider.ts",
+      "src/shared/services/sms/sms.constants.ts"
+    ],
+    "BULKSMSBD_BASE_URL": [
+      "src/integrations/sms/bulkSmsBd.provider.test.ts",
+      "src/integrations/sms/bulkSmsBd.provider.ts",
+      "src/shared/services/sms/sms.constants.ts"
+    ],
+    "BULKSMSBD_LEGACY_URL": [
+      "src/integrations/sms/bulkSmsBd.provider.ts"
+    ],
+    "BULKSMSBD_SENDER_ID": [
+      "src/integrations/sms/bulkSmsBd.provider.test.ts",
+      "src/integrations/sms/bulkSmsBd.provider.ts",
+      "src/shared/services/sms/sms.constants.ts",
+      "src/shared/services/sms/sms.service.ts"
+    ],
+    "CAMPAIGN_BASE_URL": [
+      "src/api/v1/modules/campaign/booking.service.ts",
+      "src/api/v1/modules/campaign/qr.service.ts",
+      "src/api/v1/modules/campaign/sms.service.ts",
+      "src/api/v1/modules/campaign/ticket.service.ts",
+      "src/api/v1/modules/campaign/vaccination.service.ts"
+    ],
+    "CAMPAIGN_BOOKING_COUPONS": [
+      "src/api/v1/modules/campaign/campaignCoupon.service.ts",
+      "src/api/v1/modules/campaign/campaignPricing.service.test.ts"
+    ],
+    "CAMPAIGN_CHECKOUT_BRANCH_CODE": [
+      "scripts/seed-campaign-checkout-anchor.ts"
+    ],
+    "CAMPAIGN_CHECKOUT_BRANCH_NAME": [
+      "scripts/seed-campaign-checkout-anchor.ts"
+    ],
+    "CAMPAIGN_JWT_SECRET": [
+      "src/api/v1/modules/campaign/otp.service.test.ts",
+      "src/api/v1/modules/campaign/otp.service.ts"
+    ],
+    "CAMPAIGN_LANDING_URL": [
+      "src/api/v1/modules/campaign/campaign.routes.ts",
+      "src/api/v1/modules/campaign/checkout.service.ts",
+      "src/api/v1/modules/campaign/sms.service.ts",
+      "src/api/v1/modules/payment/eps/eps.controller.ts",
+      "src/api/v1/payments/payment.controller.ts"
+    ],
+    "CAMPAIGN_ORGANIZER_ORG_NAME": [
+      "scripts/seed-campaign-checkout-anchor.ts",
+      "scripts/verify-campaign-checkout-anchor.ts"
+    ],
+    "CAMPAIGN_PAYMENT_CALLBACK_PREFIX": [
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "CAMPAIGN_PAYMENT_TIMEOUT_MINUTES": [
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "CAMPAIGN_PAYMENT_WEBHOOK_SECRET": [
+      "src/api/v1/modules/campaign/campaign.routes.ts",
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "CAMPAIGN_QR_SECRET": [
+      "src/api/v1/modules/campaign/qr.service.ts"
+    ],
+    "CAMPAIGN_SEED_SLUG": [
+      "scripts/seed-campaign-included-vaccines.js"
+    ],
+    "CAMPAIGN_SMS_SENDER_ID": [
+      "src/integrations/sms/bulkSmsBd.provider.ts",
+      "src/integrations/sms/sslWireless.provider.ts",
+      "src/shared/services/sms/sms.constants.ts"
+    ],
+    "CAMPAIGN_SMS_WEBHOOK_SECRET": [
+      "src/api/v1/modules/campaign/sms.controller.ts"
+    ],
+    "CAMPAIGN_TEST_OTP": [
+      "scripts/uat-campaign-execute.mjs",
+      "src/api/v1/modules/campaign/otp.service.ts"
+    ],
+    "COOKIE_DOMAIN": [
+      "src/api/v1/modules/admin_auth/admin_auth.controller.ts",
+      "src/api/v1/modules/auth/auth.controller.ts",
+      "src/api/v1/modules/auth/oauth.controller.ts",
+      "src/api/v1/modules/doctor_auth/doctor_auth.controller.ts",
+      "src/api/v1/modules/producer/producer.controller.ts"
+    ],
+    "CORS_ORIGINS": [
+      "src/app.ts",
+      "src/controllers/files.controller.ts"
+    ],
+    "COUNTRY_DEFAULT": [
+      "src/middlewares/countryContext.ts"
+    ],
+    "COUNTRY_PANEL_PUBLIC_URL": [
+      "src/api/v1/modules/country_access_invites/country_access_invites.controller.ts"
+    ],
+    "DATABASE_URL": [
+      "prisma.config.ts",
+      "scripts/audit-media-urls.mjs",
+      "scripts/backfill-campaign-pricing-split.js",
+      "scripts/check-migration-integrity.js",
+      "scripts/check-schema.js",
+      "scripts/forensic-request1.js",
+      "scripts/forensic-stock-audit.js",
+      "scripts/forensic-stock-wider.js",
+      "scripts/hard-verify-stock.js",
+      "scripts/reconcile-migrations.js",
+      "scripts/repair-media-urls.mjs",
+      "scripts/repair-stock-request-fulfilled-qty.js",
+      "scripts/seed-campaign-included-vaccines.js",
+      "scripts/seed-test-stock.js",
+      "scripts/tmp-inspect-orgs-branches.js",
+      "scripts/verify-api-response.js",
+      "scripts/verify-campaign-booking-schema.js",
+      "src/api/v1/services/multiWarehouseFulfillment.test.ts",
+      "src/infrastructure/db/prismaClient.ts",
+      "src/scripts/linkWarehousesToBranches.ts"
+    ],
+    "DISABLE_LEGACY_STOCK_REQUEST_FULFILL": [
+      "src/api/v1/modules/stock_requests/stock_requests.service.ts",
+      "src/api/v1/services/legacyFulfillmentGuard.service.ts",
+      "tests/flow/legacyFulfillmentAllocationConflict.test.ts"
+    ],
+    "DISABLE_LEGACY_STOCK_TRANSFER": [
+      "src/api/v1/modules/transfers/transfers.controller.ts",
+      "src/api/v1/services/legacyFulfillmentGuard.service.ts",
+      "tests/flow/legacyFulfillmentAllocationConflict.test.ts"
+    ],
+    "DONATION_FRAUD_MAX_PER_HOUR": [
+      "src/api/v1/modules/fundraising/fundraising.service.ts"
+    ],
+    "DONATION_POINTS_PER_100": [
+      "src/api/v1/modules/fundraising/fundraising.service.ts"
+    ],
+    "DRY_RUN": [
+      "scripts/backfill-branch-verified-to-active.ts",
+      "scripts/backfill-publish-status-legacy.ts",
+      "scripts/migrate-producer-kyc-to-verification-case.ts"
+    ],
+    "ENTERPRISE_DISPATCH_RECEIVE_SESSION_ONLY": [
+      "src/api/v1/modules/dispatches/dispatches.service.ts",
+      "src/api/v1/modules/stock_requests/stock_requests.service.ts"
+    ],
+    "EPS_BASE_URL": [
+      "scripts/test-eps-connection.ts",
+      "scripts/verify-eps-endpoint.js",
+      "src/api/v1/modules/payment/eps/eps.config.ts",
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "EPS_CANCEL_URL": [
+      "src/api/v1/modules/payment/eps/eps.config.ts",
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "EPS_FAIL_URL": [
+      "src/api/v1/modules/payment/eps/eps.config.ts",
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "EPS_HASH": [
+      "scripts/verify-eps-endpoint.js",
+      "src/api/v1/modules/payment/eps/eps.config.ts",
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "EPS_HASH_KEY": [
+      "scripts/verify-eps-endpoint.js",
+      "src/api/v1/modules/payment/eps/eps.config.ts",
+      "src/api/v1/providers/paymentProvider.config.test.ts",
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "EPS_MERCHANTID": [
+      "src/api/v1/modules/payment/eps/eps.config.ts",
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "EPS_MERCHANT_ID": [
+      "src/api/v1/modules/payment/eps/eps.config.ts",
+      "src/api/v1/providers/paymentProvider.config.test.ts",
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "EPS_PASSWORD": [
+      "scripts/verify-eps-endpoint.js",
+      "src/api/v1/modules/payment/eps/eps.config.ts",
+      "src/api/v1/providers/paymentProvider.config.test.ts",
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "EPS_SANDBOX": [
+      "scripts/test-eps-connection.ts",
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "EPS_STORE_ID": [
+      "src/api/v1/modules/payment/eps/eps.config.ts",
+      "src/api/v1/providers/paymentProvider.config.test.ts",
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "EPS_SUCCESS_URL": [
+      "src/api/v1/modules/payment/eps/eps.config.ts",
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "EPS_TIMEOUT_MS": [
+      "src/api/v1/modules/payment/eps/eps.config.ts",
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "EPS_USERNAME": [
+      "scripts/verify-eps-endpoint.js",
+      "src/api/v1/modules/payment/eps/eps.config.ts",
+      "src/api/v1/providers/paymentProvider.config.test.ts",
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "EXPIRY_ENGINE_INTERVAL_MS": [
+      "src/index.ts"
+    ],
+    "FFMPEG_PATH": [
+      "src/api/v1/modules/media/media.processor.ts"
+    ],
+    "FLOW_AUDIT_LIMIT": [
+      "scripts/auditStockFlow.ts"
+    ],
+    "FLOW_AUTO_DISCOVER": [
+      "scripts/simulateStockFlow.ts"
+    ],
+    "FLOW_E2E_DB": [
+      "tests/flow/flowE2eContext.ts",
+      "tests/flow/stockRequest.normalBranch.e2e.test.ts",
+      "tests/flow/stockRequest.warehouseBranch.e2e.test.ts"
+    ],
+    "FLOW_NORMAL_BRANCH_ID": [
+      "scripts/simulateStockFlow.ts"
+    ],
+    "FLOW_ORG_ID": [
+      "scripts/auditStockFlow.ts",
+      "scripts/repairStockFlowData.ts",
+      "scripts/simulateStockFlow.ts",
+      "tests/flow/flowE2eContext.ts"
+    ],
+    "FLOW_PRODUCT_ID": [
+      "scripts/simulateStockFlow.ts"
+    ],
+    "FLOW_REQUESTED_QTY": [
+      "scripts/simulateStockFlow.ts"
+    ],
+    "FLOW_REQUESTER_USER_ID": [
+      "scripts/simulateStockFlow.ts"
+    ],
+    "FLOW_SKIP_PROCUREMENT_SCENARIO": [
+      "scripts/simulateStockFlow.ts"
+    ],
+    "FLOW_SKIP_RECEIVE": [
+      "scripts/simulateStockFlow.ts"
+    ],
+    "FLOW_TO_LOCATION_ID": [
+      "scripts/simulateStockFlow.ts"
+    ],
+    "FLOW_VARIANT_ID": [
+      "scripts/simulateStockFlow.ts"
+    ],
+    "FLOW_WAREHOUSE_BRANCH_ID": [
+      "scripts/simulateStockFlow.ts"
+    ],
+    "FLOW_WAREHOUSE_FROM_LOCATION_ID": [
+      "scripts/simulateStockFlow.ts"
+    ],
+    "FRONTEND_BASE_URL": [
+      "src/api/v1/modules/producer/producerStaffInvite.service.ts"
+    ],
+    "FRONTEND_URL": [
+      "src/api/v1/modules/producer/producer.service.ts",
+      "src/api/v1/modules/producer/producerStaffInvite.service.ts"
+    ],
+    "FULFILLMENT_RESERVATION_ENABLED": [
+      "src/api/v1/modules/fulfillment/reservation.service.ts"
+    ],
+    "GOOGLE_CLIENT_ID": [
+      "src/api/v1/modules/auth/oauth.controller.ts"
+    ],
+    "GOVERNANCE_TRACE_LOG": [
+      "src/api/v1/middlewares/governanceTrace.middleware.ts"
+    ],
+    "GOVT_REPORTING_DONATION_THRESHOLD": [
+      "src/api/v1/services/govtReporting.service.ts"
+    ],
+    "GOVT_REPORTING_WEBHOOK_URL": [
+      "src/api/v1/services/govtReporting.service.ts"
+    ],
+    "HOST": [
+      "src/config/appConfig.ts"
+    ],
+    "IMAGE_JPEG_QUALITY": [
+      "src/api/v1/modules/media/media.processor.ts",
+      "src/config/appConfig.ts"
+    ],
+    "IMAGE_MAX_SIDE": [
+      "src/api/v1/modules/media/media.processor.ts",
+      "src/config/appConfig.ts"
+    ],
+    "INVITE_CLEANUP_INTERVAL_MS": [
+      "src/common/jobs/staffInviteCleanup.ts"
+    ],
+    "JWT_EXPIRES_IN": [
+      "src/config/appConfig.ts"
+    ],
+    "JWT_SECRET": [
+      "scripts/test-producer-org-status.ts",
+      "src/api/v1/modules/campaign/otp.service.ts",
+      "src/api/v1/modules/campaign/qr.service.ts",
+      "src/config/appConfig.ts",
+      "src/lib/auth.ts",
+      "src/middleware/auth.middleware.tokenVersion.test.ts",
+      "src/realtime/socketio.gateway.ts"
+    ],
+    "KYC_EXPIRY_DAYS": [
+      "src/api/v1/modules/owner/owner.controller.ts"
+    ],
+    "KYC_RETENTION_GRACE_DAYS": [
+      "src/common/jobs/kycExpiryRetention.job.ts"
+    ],
+    "MAX_UPLOAD_BYTES": [
+      "src/api/v1/modules/doctor/doctor.routes.ts",
+      "src/api/v1/modules/doctor/doctorVerification.controller.ts",
+      "src/api/v1/modules/media/media.routes.ts",
+      "src/api/v1/modules/owner/owner.controller.ts",
+      "src/api/v1/modules/owner/owner.routes.ts",
+      "src/api/v1/modules/owner/owner.verification.controller.ts",
+      "src/api/v1/modules/producer/producer.routes.ts",
+      "src/api/v1/modules/producer/producerKyc.controller.ts",
+      "src/api/v1/modules/products/products.routes.ts",
+      "src/config/appConfig.ts",
+      "src/middleware/upload.memory.ts"
+    ],
+    "MEDICINE_IMPORT_MAX_FILE_BYTES": [
+      "src/api/v1/constants/medicineImportLimits.ts"
+    ],
+    "MEDICINE_IMPORT_MAX_ROWS": [
+      "src/api/v1/constants/medicineImportLimits.ts"
+    ],
+    "MINIO_PUBLIC_URL": [
+      "scripts/audit-media-urls.mjs",
+      "scripts/repair-media-urls.mjs",
+      "scripts/storage-env.mjs",
+      "src/infrastructure/storage/storage.config.test.ts",
+      "src/infrastructure/storage/storage.config.ts"
+    ],
+    "MULTI_SOURCE_ALLOCATION_ENABLED": [
+      "src/api/v1/services/multiSourceAllocator.service.ts"
+    ],
+    "MULTI_WAREHOUSE_LOG_VERBOSE": [
+      "src/api/v1/services/multiWarehouseFulfillment.logger.ts"
+    ],
+    "NAGAD_BASE_URL": [
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "NAGAD_CALLBACK_URL": [
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "NAGAD_MERCHANT_ID": [
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "NAGAD_MERCHANT_NUMBER": [
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "NAGAD_PRIVATE_KEY": [
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "NAGAD_PUBLIC_KEY": [
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "NAGAD_SANDBOX": [
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "NEXT_PUBLIC_APP_URL": [
+      "src/api/v1/modules/producer/producerStaffInvite.service.ts"
+    ],
+    "NODE_ENV": [
+      "src/api/v1/middlewares/errors.ts",
+      "src/api/v1/modules/admin_access_invites/admin_access_invites.controller.ts",
+      "src/api/v1/modules/admin_auth/admin_auth.controller.ts",
+      "src/api/v1/modules/admin_verifications/admin_verifications.controller.ts",
+      "src/api/v1/modules/auth/auth.controller.ts",
+      "src/api/v1/modules/auth/oauth.controller.ts",
+      "src/api/v1/modules/branches/branches.controller.ts",
+      "src/api/v1/modules/campaign/otp.service.ts",
+      "src/api/v1/modules/campaign/sms.service.ts",
+      "src/api/v1/modules/clinic/vaccination.service.ts",
+      "src/api/v1/modules/country_access_invites/country_access_invites.controller.ts",
+      "src/api/v1/modules/dispatches/dispatches.service.ts",
+      "src/api/v1/modules/doctor_auth/doctor_auth.controller.ts",
+      "src/api/v1/modules/me/meProfile.service.ts",
+      "src/api/v1/modules/media/media.processor.ts",
+      "src/api/v1/modules/notifications/notifications.controller.ts",
+      "src/api/v1/modules/owner/owner.controller.ts",
+      "src/api/v1/modules/owner/ownerClinic.controller.ts",
+      "src/api/v1/modules/owner/ownerClinic.service.ts",
+      "src/api/v1/modules/pick_lists/pickList.service.ts",
+      "src/api/v1/modules/producer/producer.controller.ts",
+      "src/api/v1/modules/producer/producer.service.ts",
+      "src/api/v1/modules/producer/producerStaffInvite.service.ts",
+      "src/api/v1/modules/social/social.controller.ts",
+      "src/api/v1/modules/state_access_invites/state_access_invites.controller.ts",
+      "src/api/v1/modules/warehouse/warehouse.controller.ts",
+      "src/api/v1/payments/paymentProvider.bootstrap.ts",
+      "src/app.ts",
+      "src/config/env.ts",
+      "src/index.ts",
+      "src/infrastructure/db/prismaClient.ts",
+      "src/infrastructure/storage/storage.bootstrap.ts",
+      "src/integrations/sms/mock.provider.ts",
+      "src/integrations/sms/smsGateway.service.test.ts",
+      "src/integrations/sms/smsGateway.service.ts",
+      "src/middleware/admin.middleware.ts",
+      "src/middlewares/requirePermission.ts",
+      "src/shared/services/sms/sms.constants.ts"
+    ],
+    "NOTIFICATIONS_RETENTION_DAYS_READ": [
+      "src/common/jobs/notificationRetention.job.ts"
+    ],
+    "NOTIFICATION_RETENTION_DAYS": [
+      "src/common/jobs/notificationRetention.job.ts"
+    ],
+    "NOTIFICATION_RETENTION_INTERVAL_MS": [
+      "src/index.ts"
+    ],
+    "NOTIFICATION_RETENTION_PRODUCER_ONLY": [
+      "src/common/jobs/notificationRetention.job.ts"
+    ],
+    "ORG_ID": [
+      "scripts/governance_smoke.ts",
+      "scripts/seed-clinic-vaccine-items.ts"
+    ],
+    "OWNERS_ANOMALY_THRESHOLD": [
+      "src/common/services/ownersTeamAutomation.service.ts"
+    ],
+    "OWNERS_AUDIT_EXPORT_DIR": [
+      "src/common/services/ownersTeamAutomation.service.ts"
+    ],
+    "OWNERS_AUTOMATION_ENABLED": [
+      "src/common/jobs/ownersTeamAutomation.job.ts"
+    ],
+    "OWNERS_CHECK_INTERVAL_MS": [
+      "src/common/jobs/ownersTeamAutomation.job.ts"
+    ],
+    "OWNERS_SYNC_INTERVAL_MS": [
+      "src/common/jobs/ownersTeamAutomation.job.ts"
+    ],
+    "OWNER_APP_URL": [
+      "src/api/v1/modules/owner/owner.controller.ts"
+    ],
+    "OWNER_WEB_URL": [
+      "src/api/v1/services/branchAccessNotification.service.ts"
+    ],
+    "PANEL_PUBLIC_URL": [
+      "src/api/v1/modules/admin_access_invites/admin_access_invites.controller.ts",
+      "src/api/v1/modules/country_access_invites/country_access_invites.controller.ts",
+      "src/api/v1/modules/owner/owner.controller.ts",
+      "src/api/v1/modules/state_access_invites/state_access_invites.controller.ts",
+      "src/api/v1/services/staffInvite.service.ts",
+      "src/api/v1/services/unifiedStaffOrchestration.service.ts"
+    ],
+    "PAYMENT_PROVIDER": [
+      "src/api/v1/payments/paymentProvider.bootstrap.ts",
+      "src/api/v1/providers/paymentProvider.config.test.ts",
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "PAYMENT_RECOVERY_INTERVAL_MS": [
+      "src/index.ts"
+    ],
+    "PAYMENT_WEBHOOK_SECRET": [
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "POLICY_CACHE_TTL_SEC": [
+      "src/api/v1/services/policyEngine.service.ts"
+    ],
+    "PORT": [
+      "src/api/v1/modules/admin_verifications/admin_verifications.controller.ts",
+      "src/api/v1/modules/doctor/doctorVerification.controller.ts",
+      "src/api/v1/modules/owner/controllers/organizations.controller.ts",
+      "src/api/v1/modules/owner/owner.controller.ts",
+      "src/config/appConfig.ts",
+      "src/config/env.ts",
+      "src/index.ts"
+    ],
+    "PRODUCER_PANEL_URL": [
+      "src/api/v1/modules/producer/producerStaffInvite.service.ts"
+    ],
+    "PRODUCT_IMPORT_MAX_FILE_BYTES": [
+      "src/api/v1/constants/productImportLimits.ts"
+    ],
+    "PRODUCT_IMPORT_MAX_ROWS": [
+      "src/api/v1/constants/productImportLimits.ts"
+    ],
+    "PRODUCT_IMPORT_SUGGEST_THRESHOLD": [
+      "src/api/v1/constants/productImportLimits.ts"
+    ],
+    "PROFILE_PHOTO_MAX_SIDE": [
+      "src/api/v1/modules/media/media.processor.ts"
+    ],
+    "PROFILE_PHOTO_WEBP_QUALITY": [
+      "src/api/v1/modules/media/media.processor.ts"
+    ],
+    "PUBLIC_ADMIN_APP_URL": [
+      "src/api/v1/modules/owner/owner.controller.ts"
+    ],
+    "PUBLIC_API_BASE_URL": [
+      "src/api/v1/modules/admin_verifications/admin_verifications.controller.ts",
+      "src/api/v1/modules/doctor/doctorVerification.controller.ts",
+      "src/api/v1/modules/owner/owner.controller.ts"
+    ],
+    "PUBLIC_BASE_URL": [
+      "src/api/v1/modules/owner/controllers/organizations.controller.ts"
+    ],
+    "PUBLIC_DEEPLINK_SCHEME": [
+      "src/config/env.ts"
+    ],
+    "PUBLIC_OWNER_APP_URL": [
+      "src/api/v1/modules/owner/owner.controller.ts"
+    ],
+    "PUBLIC_WEB_URL": [
+      "src/api/v1/modules/admin_access_invites/admin_access_invites.controller.ts",
+      "src/api/v1/modules/country_access_invites/country_access_invites.controller.ts",
+      "src/api/v1/modules/owner/owner.controller.ts",
+      "src/api/v1/modules/state_access_invites/state_access_invites.controller.ts",
+      "src/api/v1/services/branchAccessNotification.service.ts",
+      "src/api/v1/services/staffInvite.service.ts",
+      "src/api/v1/services/unifiedStaffOrchestration.service.ts",
+      "src/config/env.ts"
+    ],
+    "REDIS_CONNECT_TIMEOUT_MS": [
+      "src/infrastructure/redis/redisConnection.ts"
+    ],
+    "REDIS_DB": [
+      "src/infrastructure/redis/redisConnection.ts"
+    ],
+    "REDIS_ENABLED": [
+      "src/infrastructure/redis/redisConnection.test.ts",
+      "src/infrastructure/redis/redisConnection.ts"
+    ],
+    "REDIS_HOST": [
+      "src/infrastructure/redis/redisConnection.test.ts",
+      "src/infrastructure/redis/redisConnection.ts"
+    ],
+    "REDIS_MAX_CONNECT_RETRIES": [
+      "src/infrastructure/redis/redisConnection.ts"
+    ],
+    "REDIS_PASSWORD": [
+      "src/infrastructure/redis/redisConnection.ts"
+    ],
+    "REDIS_PORT": [
+      "src/infrastructure/redis/redisConnection.test.ts",
+      "src/infrastructure/redis/redisConnection.ts"
+    ],
+    "REDIS_TLS": [
+      "src/infrastructure/redis/redisConnection.ts"
+    ],
+    "REDIS_URL": [
+      "src/api/v1/services/notificationQueue.test.ts",
+      "src/infrastructure/redis/redisConnection.test.ts",
+      "src/infrastructure/redis/redisConnection.ts"
+    ],
+    "REDIS_USERNAME": [
+      "src/infrastructure/redis/redisConnection.ts"
+    ],
+    "REPAIR_ACTOR_USER_ID": [
+      "scripts/repairStockFlowData.ts"
+    ],
+    "REPAIR_LIMIT": [
+      "scripts/repairStockFlowData.ts"
+    ],
+    "S3_ACCESS_KEY": [
+      "scripts/storage-env.mjs",
+      "src/infrastructure/storage/storage.config.test.ts",
+      "src/infrastructure/storage/storage.config.ts"
+    ],
+    "S3_BUCKET": [
+      "scripts/audit-media-urls.mjs",
+      "scripts/repair-media-urls.mjs",
+      "scripts/storage-env.mjs",
+      "src/infrastructure/storage/storage.config.test.ts",
+      "src/infrastructure/storage/storage.config.ts"
+    ],
+    "S3_ENDPOINT": [
+      "scripts/audit-media-urls.mjs",
+      "scripts/repair-media-urls.mjs",
+      "scripts/storage-env.mjs",
+      "src/infrastructure/storage/storage.config.test.ts",
+      "src/infrastructure/storage/storage.config.ts"
+    ],
+    "S3_FORCE_PATH_STYLE": [
+      "scripts/storage-env.mjs"
+    ],
+    "S3_REGION": [
+      "scripts/storage-env.mjs",
+      "src/infrastructure/storage/storage.config.test.ts",
+      "src/infrastructure/storage/storage.config.ts"
+    ],
+    "S3_SECRET_KEY": [
+      "scripts/storage-env.mjs",
+      "src/infrastructure/storage/storage.config.test.ts",
+      "src/infrastructure/storage/storage.config.ts"
+    ],
+    "SEED_INBOUND_RECEIVE_QA": [
+      "prisma/seeders/seedInboundReceiveQaFixtures.ts"
+    ],
+    "SEED_SUPERADMIN_EMAIL": [
+      "src/seed.ts"
+    ],
+    "SEED_SUPERADMIN_PHONE": [
+      "src/seed.ts"
+    ],
+    "SEED_WAREHOUSE_PHASE1": [
+      "prisma/seed.ts"
+    ],
+    "SHADOW_DATABASE_URL": [
+      "prisma.config.ts"
+    ],
+    "SLACK_WEBHOOK_URL": [
+      "src/common/services/ownersTeamAutomation.service.ts"
+    ],
+    "SMS_ALLOW_DEV_FAKE_SENT": [
+      "src/api/v1/modules/campaign/sms.service.ts"
+    ],
+    "SMS_ALLOW_MOCK": [
+      "src/integrations/sms/smsGateway.service.ts",
+      "src/shared/services/sms/sms.constants.ts"
+    ],
+    "SMS_API_KEY": [
+      "src/integrations/sms/bulkSmsBd.provider.ts",
+      "src/shared/services/sms/sms.constants.ts"
+    ],
+    "SMS_BASE_URL": [
+      "src/integrations/sms/bulkSmsBd.provider.ts",
+      "src/shared/services/sms/sms.constants.ts"
+    ],
+    "SMS_CHARS_PER_SEGMENT": [
+      "src/integrations/sms/smsCost.test.ts",
+      "src/integrations/sms/smsCost.ts"
+    ],
+    "SMS_COST_PER_SEGMENT_BDT": [
+      "src/integrations/sms/smsCost.test.ts",
+      "src/integrations/sms/smsCost.ts"
+    ],
+    "SMS_ENABLED": [
+      "src/integrations/sms/smsGateway.service.test.ts",
+      "src/integrations/sms/smsGateway.service.ts",
+      "src/shared/services/sms/sms.constants.ts"
+    ],
+    "SMS_FALLBACK_PROVIDER": [
+      "src/integrations/sms/smsGateway.service.test.ts",
+      "src/integrations/sms/smsGateway.service.ts"
+    ],
+    "SMS_HTTP_TIMEOUT_MS": [
+      "src/integrations/sms/bulkSmsBd.provider.ts",
+      "src/integrations/sms/sslWireless.provider.ts",
+      "src/shared/services/sms/sms.service.ts"
+    ],
+    "SMS_PRIMARY_PROVIDER": [
+      "src/integrations/sms/smsGateway.service.test.ts",
+      "src/integrations/sms/smsGateway.service.ts",
+      "src/shared/services/sms/sms.constants.ts"
+    ],
+    "SMS_PROVIDER": [
+      "src/integrations/sms/bulkSmsBd.provider.ts",
+      "src/integrations/sms/smsGateway.service.ts",
+      "src/shared/services/sms/sms.constants.ts"
+    ],
+    "SMS_QUEUE_ATTEMPTS": [
+      "src/shared/services/sms/sms.constants.ts"
+    ],
+    "SMS_QUEUE_BACKOFF_MS": [
+      "src/shared/services/sms/sms.constants.ts"
+    ],
+    "SMS_SENDER_ID": [
+      "src/integrations/sms/bulkSmsBd.provider.ts",
+      "src/shared/services/sms/sms.constants.ts",
+      "src/shared/services/sms/sms.service.ts"
+    ],
+    "SMS_STUCK_RECOVERY_MINUTES": [
+      "src/api/v1/modules/campaign/smsQueueRecovery.service.ts"
+    ],
+    "SMS_WORKER_CONCURRENCY": [
+      "src/common/jobs/notificationWorker.ts"
+    ],
+    "SMTP_FROM": [
+      "src/utils/smtpMailer.ts"
+    ],
+    "SMTP_HOST": [
+      "src/utils/smtpMailer.ts"
+    ],
+    "SMTP_PASS": [
+      "src/utils/smtpMailer.ts"
+    ],
+    "SMTP_PORT": [
+      "src/utils/smtpMailer.ts"
+    ],
+    "SMTP_SECURE": [
+      "src/utils/smtpMailer.ts"
+    ],
+    "SMTP_USER": [
+      "src/utils/smtpMailer.ts"
+    ],
+    "SSLCOMMERZ_CANCEL_URL": [
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "SSLCOMMERZ_FAIL_URL": [
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "SSLCOMMERZ_IPN_URL": [
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "SSLCOMMERZ_SANDBOX": [
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "SSLCOMMERZ_SESSION_URL": [
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "SSLCOMMERZ_STORE_ID": [
+      "src/api/v1/providers/paymentProvider.config.test.ts",
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "SSLCOMMERZ_STORE_PASSWORD": [
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "SSLCOMMERZ_SUCCESS_URL": [
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "SSLCOMMERZ_VALIDATION_URL": [
+      "src/api/v1/providers/paymentProvider.config.ts"
+    ],
+    "SSL_WIRELESS_API_TOKEN": [
+      "src/integrations/sms/sslWireless.provider.test.ts",
+      "src/integrations/sms/sslWireless.provider.ts"
+    ],
+    "SSL_WIRELESS_BASE_URL": [
+      "src/integrations/sms/sslWireless.provider.test.ts",
+      "src/integrations/sms/sslWireless.provider.ts"
+    ],
+    "SSL_WIRELESS_SENDER_ID": [
+      "src/integrations/sms/sslWireless.provider.test.ts",
+      "src/integrations/sms/sslWireless.provider.ts"
+    ],
+    "STORAGE_PROVIDER": [
+      "scripts/audit-media-urls.mjs",
+      "scripts/repair-media-urls.mjs",
+      "scripts/storage-env.mjs",
+      "src/infrastructure/storage/storage.config.test.ts",
+      "src/infrastructure/storage/storage.config.ts"
+    ],
+    "STORAGE_PUBLIC_URL": [
+      "scripts/audit-media-urls.mjs",
+      "scripts/repair-media-urls.mjs",
+      "scripts/storage-env.mjs",
+      "src/infrastructure/storage/storage.config.test.ts",
+      "src/infrastructure/storage/storage.config.ts"
+    ],
+    "STORAGE_USE_PRESIGNED_PRIVATE_URLS": [
+      "src/shared/storage/fileAccessUrl.ts"
+    ],
+    "SUPER_ADMIN_EMAIL": [
+      "scripts/bootstrap-super-admin.ts",
+      "scripts/verify-super-admin.ts"
+    ],
+    "SUPER_ADMIN_NAME": [
+      "scripts/bootstrap-super-admin.ts"
+    ],
+    "SUPER_ADMIN_PASSWORD": [
+      "scripts/bootstrap-super-admin.ts"
+    ],
+    "SUPER_ADMIN_PHONE": [
+      "scripts/bootstrap-super-admin.ts",
+      "scripts/verify-super-admin.ts"
+    ],
+    "SUPER_ADMIN_WHITELIST_EMAILS": [
+      "prisma/seeders/seedGlobalCountryRoles.ts",
+      "prisma/seeders/seedSuperAdminWhitelist.ts",
+      "scripts/bootstrap-super-admin.ts",
+      "scripts/verify-super-admin.ts",
+      "src/api/v1/services/authUnified.service.ts",
+      "src/middleware/admin.middleware.ts"
+    ],
+    "SUPER_ADMIN_WHITELIST_PHONES": [
+      "prisma/seeders/seedGlobalCountryRoles.ts",
+      "prisma/seeders/seedSuperAdminWhitelist.ts",
+      "scripts/bootstrap-super-admin.ts",
+      "scripts/verify-super-admin.ts",
+      "src/api/v1/services/authUnified.service.ts",
+      "src/middleware/admin.middleware.ts"
+    ],
+    "UAT_API_BASE": [
+      "scripts/uat-campaign-execute.mjs"
+    ],
+    "UAT_TEST_PHONE": [
+      "scripts/uat-campaign-execute.mjs"
+    ],
+    "UPLOAD_DIR": [
+      "src/api/v1/modules/owner/controllers/organizations.controller.ts",
+      "src/api/v1/modules/owner/routes/organizations.routes.ts"
+    ],
+    "VERIFICATION_HARD_LOCK": [
+      "src/api/v1/modules/owner/owner.controller.ts"
+    ],
+    "VIDEO_TRANSCODE": [
+      "src/api/v1/modules/media/media.processor.ts",
+      "src/config/appConfig.ts"
+    ],
+    "VIDEO_TRANSCODE_MAX_MB": [
+      "src/api/v1/modules/media/media.processor.ts"
+    ],
+    "WALLET_PAYOUT_DETAILS_KEY": [
+      "src/utils/crypto/payoutDetailsCrypto.ts"
+    ],
+    "WALLET_PAYOUT_MAX_ATTEMPTS": [
+      "src/api/v1/modules/wallet/payout_orchestrator.ts"
+    ],
+    "WALLET_PAYOUT_MODE": [
+      "src/api/v1/modules/wallet/payout_orchestrator.ts"
+    ],
+    "WALLET_PAYOUT_RETRY_DELAY_SECONDS": [
+      "src/api/v1/modules/wallet/payout_orchestrator.ts"
+    ],
+    "WEBHOOK_SIGNATURE_REQUIRED": [
+      "src/api/v1/modules/wallet/payout_orchestrator.ts"
+    ],
+    "WEB_APP_URL": [
+      "src/api/v1/modules/producer/producerStaffInvite.service.ts"
+    ],
+    "WRITEOFF_AUTO_APPROVE_MAX_COST": [
+      "src/api/v1/modules/inventory/writeOffRequest.service.ts"
+    ],
+    "WRITEOFF_AUTO_APPROVE_MAX_QTY": [
+      "src/api/v1/modules/inventory/writeOffRequest.service.ts"
+    ]
+  }
+}

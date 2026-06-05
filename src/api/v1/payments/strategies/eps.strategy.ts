@@ -54,6 +54,6 @@ export const epsStrategy: PaymentProviderStrategy = {
     });
     if (verified) return verified;
 
-    return eps.parseCallbackQuery(record);
+    return eps.parseEpsCallbackQuery(record);
   },
 };

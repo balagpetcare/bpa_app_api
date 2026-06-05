@@ -16,6 +16,31 @@ type AreaSeed = {
   type: string;
 };
 
+type IdCodeRow = { id: number; code: string };
+
+function buildIdByCodeMap(rows: IdCodeRow[]): Map<string, number> {
+  const map = new Map<string, number>();
+  for (const row of rows) {
+    map.set(row.code, row.id);
+  }
+  return map;
+}
+
+function lookupId(map: Map<string, number>, code: string | undefined): number | null {
+  if (!code) return null;
+  return map.get(code) ?? null;
+}
+
+function resolveUnionId(area: AreaSeed, unionIdByCode: Map<string, number>): number | null {
+  if (area.unionCode) {
+    return lookupId(unionIdByCode, area.unionCode);
+  }
+  if (String(area.type || '').toUpperCase() === 'UNION') {
+    return lookupId(unionIdByCode, area.code);
+  }
+  return null;
+}
+
 function resolveSeedDataDir(): string {
   const candidates = [
     path.join(__dirname, '..', 'seed-data'),
@@ -28,11 +53,6 @@ function resolveSeedDataDir(): string {
 }
 
 const SEED_DATA_DIR = resolveSeedDataDir();
-
-function readJson<T>(fileName: string): T {
-  const p = path.join(SEED_DATA_DIR, fileName);
-  return JSON.parse(fs.readFileSync(p, 'utf-8')) as T;
-}
 
 function readJsonIfExists<T>(fileName: string): T | null {
   try {
@@ -53,7 +73,6 @@ function readJsonIfExists<T>(fileName: string): T | null {
  * Skips gracefully if seed-data folder or any file is missing.
  */
 export default async function seedBaseBdLocations(prisma: PrismaClient) {
-  const prismaAny: any = prisma;
   const divisions = readJsonIfExists<DivisionSeed[]>('bd.divisions.json');
   if (!divisions || divisions.length === 0) {
     console.warn('⚠️ seedBaseBdLocations skipped: prisma/seed-data/bd.divisions.json not found or empty');
@@ -73,7 +92,7 @@ export default async function seedBaseBdLocations(prisma: PrismaClient) {
   }
 
   const divRows = await prisma.bdDivision.findMany({ select: { id: true, code: true } });
-  const divIdByCode = new Map(divRows.map((r) => [r.code, r.id] as const));
+  const divIdByCode = buildIdByCodeMap(divRows);
 
   // 2) Districts
   for (const dis of districts) {
@@ -88,7 +107,7 @@ export default async function seedBaseBdLocations(prisma: PrismaClient) {
   }
 
   const disRows = await prisma.bdDistrict.findMany({ select: { id: true, code: true } });
-  const disIdByCode = new Map(disRows.map((r) => [r.code, r.id] as const));
+  const disIdByCode = buildIdByCodeMap(disRows);
 
   // 3) Upazilas
   for (const upz of upazilas) {
@@ -103,43 +122,37 @@ export default async function seedBaseBdLocations(prisma: PrismaClient) {
   }
 
   const upzRows = await prisma.bdUpazila.findMany({ select: { id: true, code: true } });
-  const upzIdByCode = new Map(upzRows.map((r) => [r.code, r.id] as const));
+  const upzIdByCode = buildIdByCodeMap(upzRows);
 
   // 4) Canonical unions (new centralized level)
   const unionSeeds = areas.filter((a) => String(a.type || '').toUpperCase() === 'UNION');
-  if (prismaAny.bdUnion && typeof prismaAny.bdUnion.upsert === 'function') {
-    for (const u of unionSeeds) {
-      const upazilaId = u.upazilaCode ? (upzIdByCode.get(u.upazilaCode) ?? null) : null;
-      if (!upazilaId) continue;
-      await prismaAny.bdUnion.upsert({
-        where: { code: u.code },
-        update: {
-          nameEn: u.nameEn,
-          nameBn: u.nameBn ?? null,
-          upazilaId,
-        },
-        create: {
-          code: u.code,
-          nameEn: u.nameEn,
-          nameBn: u.nameBn ?? null,
-          upazilaId,
-        },
-      });
-    }
+  for (const u of unionSeeds) {
+    const upazilaId = lookupId(upzIdByCode, u.upazilaCode);
+    if (upazilaId === null) continue;
+    await prisma.bdUnion.upsert({
+      where: { code: u.code },
+      update: {
+        nameEn: u.nameEn,
+        nameBn: u.nameBn ?? null,
+        upazilaId,
+      },
+      create: {
+        code: u.code,
+        nameEn: u.nameEn,
+        nameBn: u.nameBn ?? null,
+        upazilaId,
+      },
+    });
   }
 
-  const unionRows = prismaAny.bdUnion && typeof prismaAny.bdUnion.findMany === 'function'
-    ? await prismaAny.bdUnion.findMany({ select: { id: true, code: true } })
-    : [];
-  const unionIdByCode = new Map(unionRows.map((r: { id: number; code: string }) => [r.code, r.id] as const));
+  const unionRows = await prisma.bdUnion.findMany({ select: { id: true, code: true } });
+  const unionIdByCode = buildIdByCodeMap(unionRows);
 
   // 5) Legacy-compatible bd_areas (kept for backward compatibility)
   for (const a of areas) {
-    const upazilaId = a.upazilaCode ? (upzIdByCode.get(a.upazilaCode) ?? null) : null;
-    const districtId = a.districtCode ? (disIdByCode.get(a.districtCode) ?? null) : null;
-    const unionId = a.unionCode
-      ? (unionIdByCode.get(a.unionCode) ?? null)
-      : (String(a.type || '').toUpperCase() === 'UNION' ? (unionIdByCode.get(a.code) ?? null) : null);
+    const upazilaId = lookupId(upzIdByCode, a.upazilaCode);
+    const districtId = lookupId(disIdByCode, a.districtCode);
+    const unionId = resolveUnionId(a, unionIdByCode);
     await prisma.bdArea.upsert({
       where: { code: a.code },
       update: {
