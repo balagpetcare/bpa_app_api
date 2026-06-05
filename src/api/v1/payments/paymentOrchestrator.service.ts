@@ -16,6 +16,7 @@ import {
   logPaymentTransaction,
   updatePaymentTransactionLog,
 } from "./paymentTransaction.service";
+import { createPaymentTransaction } from "../modules/payment/paymentTransaction.service";
 import type {
   CreatePaymentInput,
   CreatePaymentResult,
@@ -112,6 +113,24 @@ export async function createUnifiedPayment(input: CreatePaymentInput): Promise<C
           providerPaymentId: result.providerPaymentId,
         },
       });
+      if (provider === "eps" && result.providerPaymentId) {
+        const txnId = await createPaymentTransaction({
+          transactionId: result.providerPaymentId,
+          gateway: "eps",
+          amount: input.amount,
+          status: "PENDING",
+          rawResponse: {
+            redirectUrl: result.redirectUrl,
+            referenceId: input.referenceId,
+          },
+        }).catch(() => 0);
+        return {
+          ...result,
+          provider,
+          logId,
+          paymentTransactionId: txnId || undefined,
+        };
+      }
       return {
         ...result,
         provider,
@@ -246,7 +265,27 @@ export async function handleUnifiedWebhook(input: WebhookHandleInput): Promise<W
       responseJson: event as unknown as Record<string, unknown>,
     });
 
+    if (provider === "eps") {
+      const { upsertPaymentTransaction, mapWebhookStatusToTransactionStatus } =
+        require("../modules/payment/paymentTransaction.service") as typeof import("../modules/payment/paymentTransaction.service");
+      await upsertPaymentTransaction({
+        transactionId: event.transactionId,
+        gateway: "eps",
+        amount: event.amount,
+        status: mapWebhookStatusToTransactionStatus(event.status),
+        rawResponse: event as unknown as Record<string, unknown>,
+      }).catch(() => undefined);
+    }
+
     const result = await dispatchVerifiedEvent(event);
+    if (provider === "eps" && result.bookingId) {
+      const { updatePaymentTransaction, findPaymentTransactionByGatewayTx } =
+        require("../modules/payment/paymentTransaction.service") as typeof import("../modules/payment/paymentTransaction.service");
+      const row = await findPaymentTransactionByGatewayTx("eps", event.transactionId);
+      if (row) {
+        await updatePaymentTransaction(row.id, { bookingId: result.bookingId }).catch(() => undefined);
+      }
+    }
     return { ...result };
   } catch (error) {
     const message = (error as Error).message || "Webhook processing failed";

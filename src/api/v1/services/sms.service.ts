@@ -1,7 +1,13 @@
 /**
- * Shared SMS send entry point for API services and fallbacks.
+ * Shared SMS send entry point for API services — delegates to central SMS module.
  */
-import { sendSmsViaGateway } from "../../../integrations/sms/smsGateway.service";
+import {
+  sendSMS as sendSmsCentral,
+  sendBulkSMS,
+  sendOtpSMS,
+  sendCampaignSMS,
+  sendTemplatedSMS,
+} from "../../../shared/services/sms/sms.service";
 import type { SmsSendContext, SmsSendResult } from "../../../integrations/sms/types";
 
 export async function sendSms(
@@ -9,7 +15,30 @@ export async function sendSms(
   message: string,
   context?: SmsSendContext
 ): Promise<SmsSendResult> {
-  return sendSmsViaGateway(phone, message, context);
+  const result = await sendSmsCentral({
+    phone,
+    message,
+    template: context?.template,
+    meta: {
+      jobId: context?.jobId,
+      campaignSmsLogId: context?.campaignSmsLogId,
+    },
+  });
+
+  return {
+    success: result.success,
+    messageId: result.messageId,
+    provider: result.provider || "bulksmsbd",
+    error: result.error,
+  };
 }
+
+export {
+  sendBulkSMS,
+  sendOtpSMS,
+  sendCampaignSMS,
+  sendTemplatedSMS,
+  sendSMS,
+} from "../../../shared/services/sms/sms.service";
 
 export default { sendSms };

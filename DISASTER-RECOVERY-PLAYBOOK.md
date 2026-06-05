@@ -117,9 +117,9 @@ psql -d bpa_dr_test -c "SELECT COUNT(*) FROM campaign_bookings;"
 
 ---
 
-### 4.2 MinIO (object storage)
+### 4.2 Object storage (MinIO dev / Backblaze B2 production)
 
-**Configuration:** `AWS_ENDPOINT`, `AWS_BUCKET_NAME` (default `bpa-pets`), optional `STORAGE_USE_COUNTRY_PREFIX=true` → keys like `BD/...`.
+**Configuration:** `STORAGE_PROVIDER=minio|b2`, `AWS_*` (MinIO) or `S3_*` (B2), `STORAGE_PUBLIC_URL`, optional `STORAGE_USE_COUNTRY_PREFIX=true` → keys like `BD/...`. See `docs/integrations/storage-providers.md`.
 
 **Expected production pattern:**
 
@@ -143,7 +143,7 @@ aws s3 ls s3://bpa-pets/ --endpoint-url https://<minio-host>:9000
 - [ ] Bucket `bpa-pets` (or prod name) exists
 - [ ] Last mirror/sync < 24h
 - [ ] `MINIO_PUBLIC_URL` / `AWS_ENDPOINT` in vault
-- [ ] Init script tested: `npm run minio:init` (dev only)
+- [ ] Init script tested: `npm run storage:init` (MinIO dev only; B2 via console)
 
 **Campaign impact if MinIO lost:** **Low** for core booking/QR/cert flows. **High** only if clinics uploaded media via owner/clinic modules during campaign.
 

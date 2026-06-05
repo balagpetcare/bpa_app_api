@@ -52,12 +52,18 @@ npm run seed:roles-permissions
 # 1. Build application
 npm run build
 
-# 2. Start application
+# 2. Configure object storage (production: STORAGE_PROVIDER=b2 + S3_* — see docs/integrations/storage-providers.md)
+#    Dev/docker: STORAGE_PROVIDER=minio + npm run storage:init
+
+# 3. Start application (storage HeadBucket check runs on boot)
 npm start
 # OR for PM2: pm2 restart bpa-api
 
-# 3. Health check
+# 4. Health check
 curl http://localhost:3000/health
+
+# 5. Storage smoke test (optional)
+npm run storage:test-upload
 ```
 
 ### 2.3 Frontend deployment

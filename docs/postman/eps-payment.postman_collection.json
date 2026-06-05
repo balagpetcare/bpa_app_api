@@ -1,0 +1,129 @@
+{
+  "info": {
+    "name": "BPA EPS Payment Gateway",
+    "description": "EPS Bangladesh payment integration for BPA campaign booking.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:3000" },
+    { "key": "checkoutId", "value": "" },
+    { "key": "merchantTransactionId", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "EPS Callback URLs",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/api/v1/payment/eps/callback-urls"
+      }
+    },
+    {
+      "name": "Unified Payment Callback URLs",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/api/v1/payments/callback-urls"
+      }
+    },
+    {
+      "name": "Campaign Checkout Init",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "const json = pm.response.json();",
+              "if (json.data && json.data.checkoutId) {",
+              "  pm.collectionVariables.set('checkoutId', json.data.checkoutId);",
+              "}"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"campaignSlug\": \"national-cat-vaccination-2026\",\n  \"phone\": \"01700000001\",\n  \"locationId\": 1,\n  \"catCount\": 1\n}"
+        },
+        "url": "{{baseUrl}}/api/v1/campaign/public/checkout/init"
+      }
+    },
+    {
+      "name": "Checkout Status",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/api/v1/campaign/public/checkout/{{checkoutId}}/status"
+      }
+    },
+    {
+      "name": "EPS Initiate (direct)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "const json = pm.response.json();",
+              "if (json.data && json.data.merchantTransactionId) {",
+              "  pm.collectionVariables.set('merchantTransactionId', json.data.merchantTransactionId);",
+              "}"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"referenceId\": \"CKO-TEST0001\",\n  \"amount\": 350,\n  \"metadata\": {\n    \"phone\": \"01700000001\",\n    \"name\": \"Test User\",\n    \"description\": \"Campaign test payment\"\n  }\n}"
+        },
+        "url": "{{baseUrl}}/api/v1/payment/eps/initiate"
+      }
+    },
+    {
+      "name": "EPS Validate",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"merchantTransactionId\": \"{{merchantTransactionId}}\"\n}"
+        },
+        "url": "{{baseUrl}}/api/v1/payment/eps/validate"
+      }
+    },
+    {
+      "name": "EPS Webhook (simulate)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "x-payment-webhook-secret", "value": "{{webhookSecret}}", "disabled": true }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"merchantTransactionId\": \"{{merchantTransactionId}}\",\n  \"status\": \"success\"\n}"
+        },
+        "url": "{{baseUrl}}/api/v1/payment/eps/webhook"
+      }
+    },
+    {
+      "name": "Unified Create Payment",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"amount\": 350,\n  \"currency\": \"BDT\",\n  \"referenceId\": \"CKO-UNIFIED01\",\n  \"returnUrl\": \"https://example.com/book/success\",\n  \"metadata\": {\n    \"phone\": \"01700000001\",\n    \"name\": \"Guest\"\n  }\n}"
+        },
+        "url": "{{baseUrl}}/api/v1/payments/create"
+      }
+    }
+  ]
+}

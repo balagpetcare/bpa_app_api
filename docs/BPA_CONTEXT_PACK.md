@@ -129,7 +129,7 @@ Every change must include:
 ### D) Development Environment
 
 * **API Base URL:** `http://localhost:3000/api/v1`
-* **CORS:** Configured for Next.js apps (ports 3100-3104)
+* **CORS:** Configured for Next.js apps (bpa_web 3100–3107, bpa-landing 3101, vaccination_2026 3110)
 * **Environment Variables:** `.env` files (see `.env.example`)
 
 ---
@@ -464,7 +464,7 @@ PRIORITY:
 - Fix broken API endpoints (404, 500 errors)
 - Fix Prisma select/unknown fields errors
 - Fix permission middleware issues
-- Ensure CORS allows Next.js apps (ports 3100-3104)
+- Ensure CORS allows Next.js apps (bpa_web 3100–3107, bpa-landing 3101, vaccination_2026 3110)
 ```
 
 ---

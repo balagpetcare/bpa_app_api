@@ -28,7 +28,7 @@ export async function assignVenueToZoneBooking(
   });
 
   if (!booking) {
-    throw BookingErrors.NOT_FOUND(bookingId);
+    throw BookingErrors.NOT_FOUND(String(bookingId));
   }
   if (booking.bookingMode !== "ZONE_INTEREST") {
     throw ValidationErrors.INVALID_INPUT("Booking is not a zone-interest registration");
@@ -101,7 +101,7 @@ export async function assignVenueToZoneBooking(
       slotId: result.slotId,
       bookingDate: result.bookingDate,
     },
-    userId: assignedByUserId,
+    actorUserId: assignedByUserId,
   });
 
   sendVenueAssignmentSms(bookingId).catch((err) =>

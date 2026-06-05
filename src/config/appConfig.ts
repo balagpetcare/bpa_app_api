@@ -24,22 +24,21 @@ module.exports = {
     expiresIn: process.env.JWT_EXPIRES_IN || "7d",
   },
 
-  storage: {
-    region: process.env.AWS_REGION || "us-east-1",
-    bucketName: process.env.AWS_BUCKET_NAME || "bpa-pets",
-    // Phase 3: per-country prefix in key (e.g. BD/, IN/) when true; single bucket
-    useCountryPrefix: boolEnv("STORAGE_USE_COUNTRY_PREFIX", true),
-    // Internal endpoint (API container -> MinIO). In docker-compose this is usually http://bpa-storage:9000
-    endpoint: process.env.AWS_ENDPOINT || "http://localhost:9000",
-    // Public URL (mobile/browser). Should be reachable from the client device.
-    // Example: http://192.168.x.x:9000
-    publicUrl: process.env.MINIO_PUBLIC_URL || "",
-    forcePathStyle: boolEnv("AWS_FORCE_PATH_STYLE", true),
-
-    // Credentials
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID || "admin",
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || "password123",
-  },
+  storage: (() => {
+    const { resolveStorageConfig } = require("../infrastructure/storage/storage.config");
+    const cfg = resolveStorageConfig();
+    return {
+      provider: cfg.provider,
+      region: cfg.region,
+      bucketName: cfg.bucketName,
+      useCountryPrefix: cfg.useCountryPrefix,
+      endpoint: cfg.endpoint,
+      publicUrl: cfg.publicUrl,
+      forcePathStyle: cfg.forcePathStyle,
+      accessKeyId: cfg.accessKeyId,
+      secretAccessKey: cfg.secretAccessKey,
+    };
+  })(),
 
   mediaPolicy: {
     // Single source of truth for upload limits & compression.

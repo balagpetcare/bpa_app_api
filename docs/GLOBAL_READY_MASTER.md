@@ -19,7 +19,7 @@
 
 | DO | DON'T |
 |----|--------|
-| Send `X-Country-Code` from web/app for all API calls | Change fixed ports (API 3000, Next.js 3100–3104) |
+| Send `X-Country-Code` from web/app for all API calls | Change fixed ports (API 3000; bpa_web 3100–3107; bpa-landing 3101; vaccination_2026 3110 — see [infrastructure/PORT_AND_DOMAIN_MAP.md](./infrastructure/PORT_AND_DOMAIN_MAP.md)) |
 | Resolve country: header → user/org → default BD | Redesign UI; follow WowDash patterns |
 | Gate donation/ads UI by policy features | Overwrite existing code without merging |
 | Use policy engine cache (e.g. Redis) for active policy | Add new country without policy seed |

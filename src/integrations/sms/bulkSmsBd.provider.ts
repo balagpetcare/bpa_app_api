@@ -5,6 +5,8 @@ import { formatBdMsisdn } from "./phone";
 type BulkSmsBdMode = "rest_v3" | "legacy";
 
 function getMode(): BulkSmsBdMode {
+  const provider = String(process.env.SMS_PROVIDER || "").toLowerCase();
+  if (provider === "bulksmsbd") return "legacy";
   const mode = String(process.env.BULKSMSBD_API_MODE || "rest_v3").toLowerCase();
   return mode === "legacy" ? "legacy" : "rest_v3";
 }
@@ -13,8 +15,14 @@ export class BulkSmsBdProvider implements SmsProvider {
   readonly name = "bulksmsbd";
 
   isConfigured(): boolean {
-    const token = process.env.BULKSMSBD_API_TOKEN || process.env.BULKSMSBD_API_KEY;
-    const senderId = process.env.BULKSMSBD_SENDER_ID || process.env.CAMPAIGN_SMS_SENDER_ID;
+    const token =
+      process.env.SMS_API_KEY ||
+      process.env.BULKSMSBD_API_TOKEN ||
+      process.env.BULKSMSBD_API_KEY;
+    const senderId =
+      process.env.SMS_SENDER_ID ||
+      process.env.BULKSMSBD_SENDER_ID ||
+      process.env.CAMPAIGN_SMS_SENDER_ID;
     return Boolean(token && senderId);
   }
 
@@ -23,9 +31,19 @@ export class BulkSmsBdProvider implements SmsProvider {
   }
 
   private async sendRestV3(phone: string, message: string): Promise<SmsSendResult> {
-    const apiToken = process.env.BULKSMSBD_API_TOKEN || process.env.BULKSMSBD_API_KEY;
-    const senderId = process.env.BULKSMSBD_SENDER_ID || process.env.CAMPAIGN_SMS_SENDER_ID;
-    const baseUrl = (process.env.BULKSMSBD_BASE_URL || "https://app.bulksmsbd.xyz").replace(/\/+$/, "");
+    const apiToken =
+      process.env.SMS_API_KEY ||
+      process.env.BULKSMSBD_API_TOKEN ||
+      process.env.BULKSMSBD_API_KEY;
+    const senderId =
+      process.env.SMS_SENDER_ID ||
+      process.env.BULKSMSBD_SENDER_ID ||
+      process.env.CAMPAIGN_SMS_SENDER_ID;
+    const baseUrl = (
+      process.env.SMS_BASE_URL ||
+      process.env.BULKSMSBD_BASE_URL ||
+      "https://app.bulksmsbd.xyz"
+    ).replace(/\/+$/, "");
 
     if (!apiToken || !senderId) {
       return { success: false, provider: this.name, error: "BulkSMSBD is not configured" };
@@ -83,9 +101,20 @@ export class BulkSmsBdProvider implements SmsProvider {
   }
 
   private async sendLegacy(phone: string, message: string): Promise<SmsSendResult> {
-    const apiKey = process.env.BULKSMSBD_API_KEY || process.env.BULKSMSBD_API_TOKEN;
-    const senderId = process.env.BULKSMSBD_SENDER_ID || process.env.CAMPAIGN_SMS_SENDER_ID;
-    const legacyUrl = process.env.BULKSMSBD_LEGACY_URL || "http://bulksmsbd.net/api/smsapi";
+    const apiKey =
+      process.env.SMS_API_KEY ||
+      process.env.BULKSMSBD_API_KEY ||
+      process.env.BULKSMSBD_API_TOKEN;
+    const senderId =
+      process.env.SMS_SENDER_ID ||
+      process.env.BULKSMSBD_SENDER_ID ||
+      process.env.CAMPAIGN_SMS_SENDER_ID;
+    const baseUrl = (
+      process.env.SMS_BASE_URL ||
+      process.env.BULKSMSBD_BASE_URL ||
+      "http://bulksmsbd.net/api"
+    ).replace(/\/+$/, "");
+    const legacyUrl = process.env.BULKSMSBD_LEGACY_URL || `${baseUrl}/smsapi`;
 
     if (!apiKey || !senderId) {
       return { success: false, provider: this.name, error: "BulkSMSBD legacy API is not configured" };

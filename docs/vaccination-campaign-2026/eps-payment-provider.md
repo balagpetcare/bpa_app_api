@@ -13,7 +13,7 @@
 | `EPS_BASE_URL` | Recommended | Sandbox API: `https://sandboxpgapi.eps.com.bd` (live: `https://pgapi.eps.com.bd`) |
 | `EPS_USERNAME` | Yes | Merchant username (email) |
 | `EPS_PASSWORD` | Yes | Merchant password |
-| `EPS_HASH` | Yes | EPS hash key (base64) |
+| `EPS_HASH_KEY` | Yes | EPS hash key (base64); `EPS_HASH` legacy alias |
 | `EPS_MERCHANT_ID` | Yes | Merchant UUID from EPS panel |
 | `EPS_STORE_ID` | Yes | Store UUID from EPS panel |
 | `EPS_SANDBOX` | Optional | Default `true` when unset; used to pick default base URL if `EPS_BASE_URL` empty |
@@ -34,7 +34,7 @@ CAMPAIGN_LANDING_URL=http://localhost:5173
 EPS_BASE_URL=https://sandboxpgapi.eps.com.bd
 EPS_USERNAME=your_sandbox_username
 EPS_PASSWORD=your_sandbox_password
-EPS_HASH=your_base64_hash_key
+EPS_HASH_KEY=your_base64_hash_key
 EPS_MERCHANT_ID=your-merchant-uuid
 EPS_STORE_ID=your-store-uuid
 EPS_SANDBOX=true
@@ -61,9 +61,10 @@ Run `node scripts/verify-eps-endpoint.js` after changing EPS env.
 | Initialize | `POST .../v1/EPSEngine/InitializeEPS` | `eps.provider.ts` (`createIntent`) |
 | Redirect | `RedirectURL` in response | Returned as `paymentUrl` in checkout |
 | Status check | `GET .../CheckMerchantTransactionStatus` | `eps.provider.ts` (`checkTransactionStatus`) |
-| Success callback | `GET /api/v1/payments/webhook/redirect/success?merchantTransactionId=...` | `payment.controller` → `eps.strategy.handleWebhook` |
-| Fail callback | `.../redirect/fail` | Same |
-| Cancel callback | `.../redirect/cancel` | Same |
+| Success callback | `GET /api/v1/payment/eps/callback/success` | `modules/payment/eps` |
+| Fail callback | `GET /api/v1/payment/eps/callback/fail` | Same |
+| Cancel callback | `GET /api/v1/payment/eps/callback/cancel` | Same |
+| Dedicated module | `/api/v1/payment/eps/*` | `eps.routes.ts` |
 
 Callbacks **always re-verify** status with EPS before fulfilling orders (same pattern as SSLCommerz IPN validation).
 
@@ -122,7 +123,9 @@ npx cross-env TS_NODE_TRANSPILE_ONLY=1 node -r ts-node/register scripts/verify-c
 
 | File | Role |
 |------|------|
-| `src/api/v1/providers/eps.provider.ts` | GetToken, Initialize, Status, callbacks |
+| `src/api/v1/modules/payment/eps/` | Dedicated EPS module (initiate, callbacks, validate) |
+| `src/api/v1/modules/payment/paymentTransaction.service.ts` | `payment_transactions` table |
+| `src/api/v1/providers/eps.provider.ts` | Back-compat re-export for unified strategy |
 | `src/api/v1/providers/eps.utils.ts` | HMAC hash + transaction id helpers |
 | `src/api/v1/payments/strategies/eps.strategy.ts` | Strategy registration |
 | `src/api/v1/providers/paymentProvider.config.ts` | Env + readiness |

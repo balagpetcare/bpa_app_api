@@ -172,6 +172,12 @@ export function callbackUrlsHandler(_req: Request, res: Response) {
         fail: getEpsConfig().failUrl,
         cancel: getEpsConfig().cancelUrl,
         baseUrl: getEpsConfig().baseUrl,
+        module: {
+          initiate: `${prefix}/payment/eps/initiate`,
+          validate: `${prefix}/payment/eps/validate`,
+          webhook: `${prefix}/payment/eps/webhook`,
+          callbackUrls: `${prefix}/payment/eps/callback-urls`,
+        },
       },
     },
   });

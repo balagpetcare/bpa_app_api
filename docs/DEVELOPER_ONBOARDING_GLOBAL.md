@@ -75,7 +75,8 @@ Helpers: `sendPolicyDenied(res, reason_code, message)` in `src/api/v1/utils/poli
 ## 4. Key Repos / Ports
 
 - **backend-api:** 3000 (API), Prisma, Redis (policy cache), MinIO
-- **bpa_web:** Next.js 3100–3104 (mother, shop, clinic, admin, owner)
+- **bpa_web:** Next.js 3100–3107 (mother/staff, shop, clinic, admin, owner, producer, country, doctor)
+- **bpa-landing:** 3101 · **vaccination_2026:** 3110 · **API:** 3000 — see [infrastructure/PORT_AND_DOMAIN_MAP.md](./infrastructure/PORT_AND_DOMAIN_MAP.md)
 - **bpa_app:** Flutter (Riverpod), uses same API base URL
 
 ---

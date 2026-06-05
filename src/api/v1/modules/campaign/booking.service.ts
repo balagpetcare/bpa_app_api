@@ -32,7 +32,7 @@ import {
   formatDate,
 } from "./campaign.utils";
 import { validateCampaignForBooking, logCampaignAudit } from "./campaign.service";
-import { sendBookingConfirmation } from "./sms.service";
+import { sendBookingConfirmation, sendBookingRequestSms } from "./sms.service";
 import {
   formatCampaignTimeLabel,
   isPastBookingCutoff,
@@ -233,6 +233,10 @@ export async function createBooking(
     });
 
     const details = mapToBookingDetails(booking, slot, slot.location, pets);
+
+    sendBookingRequestSms(booking.id).catch((err) =>
+      console.warn("[Campaign] booking request SMS failed:", err?.message)
+    );
 
     if (campaign.pricingType === "FREE") {
       sendBookingConfirmation(booking.id).catch((err) =>
@@ -486,10 +490,17 @@ export async function checkInBooking(
   locationId: number
 ): Promise<CheckInResult> {
   // Find booking
+  const petByTicket = await prisma.campaignPet.findFirst({
+    where: { ticketToken: identifier },
+    select: { bookingId: true },
+  });
+
   let booking = await prisma.campaignBooking.findFirst({
-    where: {
-      OR: [{ qrToken: identifier }, { bookingRef: identifier.toUpperCase() }],
-    },
+    where: petByTicket
+      ? { id: petByTicket.bookingId }
+      : {
+          OR: [{ qrToken: identifier }, { bookingRef: identifier.toUpperCase() }],
+        },
     include: {
       slot: true,
       location: true,
@@ -815,8 +826,10 @@ export function mapBookingRecordToDetails(booking: {
     name: string;
     vaccinationStatus: string;
     certificateToken?: string | null;
+    ticketToken?: string | null;
   }>;
 }): BookingDetails {
+  const ticketBase = process.env.CAMPAIGN_BASE_URL || "https://vaccine.bpa.org.bd";
   const pendingAssignment =
     booking.bookingMode === "ZONE_INTEREST" && booking.status === "PENDING_ASSIGNMENT";
 
@@ -857,7 +870,9 @@ export function mapBookingRecordToDetails(booking: {
       id: p.id,
       name: p.name,
       vaccinationStatus: p.vaccinationStatus as BookingDetails["pets"][0]["vaccinationStatus"],
-      certificateToken: p.certificateToken,
+      certificateToken: p.certificateToken ?? undefined,
+      ticketToken: p.ticketToken ?? undefined,
+      ticketUrl: p.ticketToken ? `${ticketBase}/ticket/${p.ticketToken}` : undefined,
     })),
     paymentStatus: booking.paymentStatus as BookingDetails["paymentStatus"],
     queueNumber: booking.queueNumber ?? undefined,

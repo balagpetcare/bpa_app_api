@@ -8,6 +8,12 @@ import { Worker, Job } from "bullmq";
 import prisma from "../../infrastructure/db/prismaClient";
 import { renderNotificationEmail, renderNotificationSms } from "../../utils/notificationTemplates";
 import { sendSmsViaGateway, logSmsFailure } from "../../integrations/sms/smsGateway.service";
+import {
+  processSmsQueueJob,
+  SMS_LEGACY_QUEUE_NAME,
+  SMS_QUEUE_NAME,
+} from "../../shared/services/sms/sms.service";
+import type { SmsJobPayload } from "../../shared/services/sms/sms.types";
 
 import { areRedisQueuesEnabled } from "../../infrastructure/redis/redis.client";
 import { getRedisConnectionOptions, isRedisEnabled } from "../../infrastructure/redis/redisConnection";
@@ -207,9 +213,16 @@ function run() {
     { connection: redisConfig, concurrency: 2 }
   );
   const smsWorker = new Worker<Payload>(
-    "notif_sms",
+    SMS_LEGACY_QUEUE_NAME,
     async (job) => {
       await handleSmsJob(job);
+    },
+    { connection: redisConfig, concurrency: Number(process.env.SMS_WORKER_CONCURRENCY || 5) }
+  );
+  const centralSmsWorker = new Worker<SmsJobPayload>(
+    SMS_QUEUE_NAME,
+    async (job) => {
+      await processSmsQueueJob(job.data);
     },
     { connection: redisConfig, concurrency: Number(process.env.SMS_WORKER_CONCURRENCY || 5) }
   );
@@ -218,12 +231,19 @@ function run() {
   emailWorker.on("completed", (job) => console.log("[NotificationWorker] Email job", job.id, "completed"));
   emailWorker.on("failed", (job, err) => console.warn("[NotificationWorker] Email job", job?.id, "failed", err?.message));
   smsWorker.on("error", (err) => console.warn("[NotificationWorker] SMS worker error", (err as Error)?.message || err));
-  smsWorker.on("completed", (job) => console.log("[NotificationWorker] SMS job", job.id, "completed"));
+  smsWorker.on("completed", (job) => console.log("[NotificationWorker] Legacy SMS job", job.id, "completed"));
   smsWorker.on("failed", (job, err) =>
+    console.warn("[NotificationWorker] Legacy SMS job", job?.id, "failed", err?.message, `(attempt ${job?.attemptsMade})`)
+  );
+  centralSmsWorker.on("error", (err) =>
+    console.warn("[NotificationWorker] Central SMS worker error", (err as Error)?.message || err)
+  );
+  centralSmsWorker.on("completed", (job) => console.log("[NotificationWorker] SMS job", job.id, "completed"));
+  centralSmsWorker.on("failed", (job, err) =>
     console.warn("[NotificationWorker] SMS job", job?.id, "failed", err?.message, `(attempt ${job?.attemptsMade})`)
   );
 
-  console.log("[NotificationWorker] Started notif_email and notif_sms workers");
+  console.log("[NotificationWorker] Started notif_email, notif_sms (legacy), and smsQueue workers");
 }
 
 run();

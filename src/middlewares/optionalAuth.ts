@@ -4,14 +4,28 @@ const prisma = require("../infrastructure/db/prismaClient");
 
 /**
  * Optional auth middleware.
- * - If cookie/bearer token exists and valid: sets req.user
- * - If missing/invalid: does NOT block; continues without req.user
- *
- * This is required for resources like <img src="/api/v1/files/..."> where
- * browsers cannot attach custom Authorization headers.
+ * - Cookie/bearer JWT → req.user
+ * - ?token= FILE_VIEW JWT → req.fileViewAuth (for <img src="/api/v1/files/...?token=">)
+ * - Missing/invalid: continues without blocking
  */
 module.exports = async function optionalAuth(req, _res, next) {
   try {
+    const queryToken = req.query?.token ? String(req.query.token) : null;
+    if (queryToken) {
+      try {
+        const payload = jwt.verify(queryToken, appConfig.jwt.secret);
+        if (payload?.purpose === "FILE_VIEW" && payload?.fileKey && payload?.userId) {
+          req.fileViewAuth = {
+            fileKey: String(payload.fileKey),
+            userId: Number(payload.userId),
+            role: payload.role ? String(payload.role).toUpperCase() : null,
+          };
+        }
+      } catch (_e) {
+        /* invalid query token — fall through to cookie/bearer */
+      }
+    }
+
     const cookieToken =
       (req.cookies &&
         (req.cookies.access_token || req.cookies.token || req.cookies.jwt)) ||

@@ -57,7 +57,7 @@ services:
     container_name: bpa_api
     # Ensure DB tables exist before starting API (prevents P2021: table does not exist).
     # With volumes (.:/app + /app/node_modules), node_modules can be empty; install deps so socket.io etc. are available.
-    command: sh -c "npm ci && npx prisma generate && npx prisma migrate deploy && npm run minio:init && npm run dev"
+    command: sh -c "npm ci && npx prisma generate && npx prisma migrate deploy && npm run storage:init && npm run dev"
     env_file:
       - .env.docker
     ports:

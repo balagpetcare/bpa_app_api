@@ -1,19 +1,8 @@
-const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
-const { GetObjectCommand } = require("@aws-sdk/client-s3");
-const { s3Client } = require("../infrastructure/storage/s3Client");
+const { getStorageProvider } = require("../infrastructure/storage/storage.factory");
 
-async function getPresignedGetUrl(key, expiresInSeconds = 600) {
-  const bucket =
-    process.env.AWS_BUCKET_NAME ||
-    process.env.MINIO_BUCKET ||
-    "bpa-pets";
-
-  const command = new GetObjectCommand({
-    Bucket: bucket,
-    Key: key,
-  });
-
-  return getSignedUrl(s3Client, command, { expiresIn: expiresInSeconds });
+async function getPresignedGetUrl(key: string, expiresInSeconds = 600): Promise<string> {
+  const provider = getStorageProvider();
+  return provider.getSignedGetUrl(key, expiresInSeconds);
 }
 
 module.exports = { getPresignedGetUrl };

@@ -51,5 +51,5 @@
 ## Ports (unchanged)
 
 - API: 3000
-- Next.js: 3100–3104
+- Next.js: 3100–3107 (bpa_web panels); bpa-landing 3101; vaccination_2026 3110 — see [infrastructure/PORT_AND_DOMAIN_MAP.md](./infrastructure/PORT_AND_DOMAIN_MAP.md)
 (BPA_STANDARD.md)

@@ -1,34 +1,47 @@
 /**
- * MinIO Bucket Initialization Script
- * 
- * This script:
- * 1. Creates the bpa-pets bucket if it doesn't exist
- * 2. Sets a public read policy on the bucket to allow direct URL access
- * 
- * Run: npm run minio:init
- * Or: npx ts-node --compiler-options '{"module":"CommonJS"}' scripts/init-minio.ts
+ * Storage bucket initialization (MinIO dev).
+ *
+ * - STORAGE_PROVIDER=minio: create bucket + public-read policy
+ * - STORAGE_PROVIDER=b2: skip (configure bucket in Backblaze console)
+ *
+ * Run: npm run storage:init
  */
 
 require("dotenv").config();
-const { S3Client, CreateBucketCommand, PutBucketPolicyCommand, HeadBucketCommand } = require("@aws-sdk/client-s3");
-const appConfig = require("../src/config/appConfig");
+const {
+  S3Client,
+  CreateBucketCommand,
+  PutBucketPolicyCommand,
+  HeadBucketCommand,
+} = require("@aws-sdk/client-s3");
+const { resolveStorageConfig } = require("../src/infrastructure/storage/storage.config");
+const { resolveStorageEndpoint } = require("../src/infrastructure/storage/s3Compatible.provider");
 
-// Use appConfig endpoint as-is (bpa-storage:9000 in Docker, localhost:9000 when run from host with matching .env)
-const endpoint = appConfig.storage.endpoint || "http://localhost:9000";
+const config = resolveStorageConfig();
 
+if (config.provider !== "minio") {
+  console.log(
+    `\n[storage:init] STORAGE_PROVIDER=${config.provider} — skipping MinIO bucket init.`
+  );
+  console.log(
+    "For B2, create the bucket and public access rules in the Backblaze console.\n"
+  );
+  process.exit(0);
+}
+
+const endpoint = resolveStorageEndpoint(config.endpoint);
 const s3Client = new S3Client({
-  region: appConfig.storage.region,
-  endpoint: endpoint,
-  forcePathStyle: appConfig.storage.forcePathStyle ?? true,
+  region: config.region,
+  endpoint,
+  forcePathStyle: config.forcePathStyle ?? true,
   credentials: {
-    accessKeyId: appConfig.storage.accessKeyId,
-    secretAccessKey: appConfig.storage.secretAccessKey,
+    accessKeyId: config.accessKeyId,
+    secretAccessKey: config.secretAccessKey,
   },
 });
 
-const bucketName = appConfig.storage.bucketName || "bpa-pets";
+const bucketName = config.bucketName;
 
-// Public read policy for the bucket
 const publicReadPolicy = {
   Version: "2012-10-17",
   Statement: [
@@ -66,7 +79,6 @@ async function initMinIO() {
       console.log(`\n🔧 Initializing MinIO bucket: ${bucketName} (attempt ${attempt}/${maxAttempts})`);
       console.log(`📍 Endpoint: ${endpoint}\n`);
 
-      // Check if bucket exists
       let bucketExists = false;
       try {
         await s3Client.send(new HeadBucketCommand({ Bucket: bucketName }));
@@ -83,7 +95,6 @@ async function initMinIO() {
         }
       }
 
-      // Create bucket if it doesn't exist
       if (!bucketExists) {
         try {
           await s3Client.send(new CreateBucketCommand({ Bucket: bucketName }));
@@ -99,7 +110,6 @@ async function initMinIO() {
         }
       }
 
-      // Set public read policy
       console.log(`\n🔓 Setting public read policy on bucket "${bucketName}"...`);
       await s3Client.send(
         new PutBucketPolicyCommand({
@@ -111,11 +121,15 @@ async function initMinIO() {
 
       console.log(`\n✨ MinIO initialization complete!`);
       console.log(`\n📝 Files can now be accessed via:`);
-      console.log(`   ${appConfig.storage.publicUrl || appConfig.storage.endpoint}/${bucketName}/<key>\n`);
+      console.log(
+        `   ${config.publicUrl || config.endpoint}/${bucketName}/<key>\n`
+      );
       return;
     } catch (error: any) {
       if (isRetryableError(error) && attempt < maxAttempts) {
-        console.warn(`⚠️ MinIO not ready (${error?.code || error?.message}), retrying in ${delayMs / 1000}s...`);
+        console.warn(
+          `⚠️ MinIO not ready (${error?.code || error?.message}), retrying in ${delayMs / 1000}s...`
+        );
         await sleep(delayMs);
       } else {
         console.error(`\n❌ Error initializing MinIO:`, error?.message || error);
@@ -129,7 +143,6 @@ async function initMinIO() {
   }
 }
 
-// Run if executed directly
 if (require.main === module) {
   initMinIO();
 }

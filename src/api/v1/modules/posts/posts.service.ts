@@ -1,5 +1,67 @@
 import type { Prisma, PostCategory } from "@prisma/client";
 const prisma = require('../../../../infrastructure/db/prismaClient');
+const { resolveClientMediaUrl } = require('../../../../shared/storage/publicMediaUrl');
+
+const mediaSelect = { id: true, url: true, key: true, type: true };
+const avatarMediaSelect = { url: true, key: true };
+
+function rewriteAvatarMedia(avatarMedia) {
+  if (!avatarMedia) return avatarMedia;
+  return {
+    ...avatarMedia,
+    url: resolveClientMediaUrl({ url: avatarMedia.url, key: avatarMedia.key }),
+  };
+}
+
+function rewriteProfile(profile) {
+  if (!profile) return profile;
+  return {
+    ...profile,
+    avatarMedia: rewriteAvatarMedia(profile.avatarMedia),
+  };
+}
+
+function mapPostForClient(post) {
+  const p = {
+    ...post,
+    isLikedByMe: Array.isArray(post.likes) && post.likes.length > 0,
+    likes: undefined,
+  };
+
+  if (p.author?.profile) {
+    p.author = { ...p.author, profile: rewriteProfile(p.author.profile) };
+  }
+
+  if (Array.isArray(p.media)) {
+    p.media = p.media.map((pm) => {
+      if (!pm?.media) return pm;
+      const m = pm.media;
+      return {
+        ...pm,
+        media: {
+          ...m,
+          url: resolveClientMediaUrl({ url: m.url, key: m.key }),
+        },
+      };
+    });
+  }
+
+  const fc = p.fundraisingCampaign;
+  if (fc?.donations) {
+    p.fundraisingCampaign = {
+      ...fc,
+      donations: fc.donations.map((d) => {
+        if (!d?.donor?.profile) return d;
+        return {
+          ...d,
+          donor: { ...d.donor, profile: rewriteProfile(d.donor.profile) },
+        };
+      }),
+    };
+  }
+
+  return p;
+}
 
 function normalizePostType(type) {
   const t = String(type || '').toUpperCase();
@@ -32,14 +94,14 @@ async function getFeed({ userId, limit = 50, cursor }) {
             select: {
               displayName: true,
               username: true,
-              avatarMedia: { select: { url: true } },
+              avatarMedia: { select: avatarMediaSelect },
             },
           },
         },
       },
       media: {
         orderBy: { order: 'asc' },
-        include: { media: { select: { id: true, url: true, type: true } } },
+        include: { media: { select: mediaSelect } },
       },
       fundraisingCampaign: {
         select: {
@@ -64,7 +126,7 @@ async function getFeed({ userId, limit = 50, cursor }) {
                     select: {
                       displayName: true,
                       username: true,
-                      avatarMedia: { select: { url: true } },
+                      avatarMedia: { select: avatarMediaSelect },
                     },
                   },
                 },
@@ -91,13 +153,7 @@ async function getFeed({ userId, limit = 50, cursor }) {
   }
 
   const posts = await prisma.post.findMany(args);
-  // Add a computed field for the mobile app
-  return posts.map((p) => ({
-    ...p,
-    isLikedByMe: Array.isArray(p.likes) && p.likes.length > 0,
-    // keep payload small
-    likes: undefined,
-  }));
+  return posts.map(mapPostForClient);
 }
 
 async function getUserFeed({ meId, userId, limit = 50, cursor }) {
@@ -120,14 +176,14 @@ async function getUserFeed({ meId, userId, limit = 50, cursor }) {
             select: {
               displayName: true,
               username: true,
-              avatarMedia: { select: { url: true } },
+              avatarMedia: { select: avatarMediaSelect },
             },
           },
         },
       },
       media: {
         orderBy: { order: 'asc' },
-        include: { media: { select: { id: true, url: true, type: true } } },
+        include: { media: { select: mediaSelect } },
       },
       fundraisingCampaign: {
         select: {
@@ -151,7 +207,7 @@ async function getUserFeed({ meId, userId, limit = 50, cursor }) {
                     select: {
                       displayName: true,
                       username: true,
-                      avatarMedia: { select: { url: true } },
+                      avatarMedia: { select: avatarMediaSelect },
                     },
                   },
                 },
@@ -177,11 +233,7 @@ async function getUserFeed({ meId, userId, limit = 50, cursor }) {
   }
 
   const posts = await prisma.post.findMany(args);
-  return posts.map((p) => ({
-    ...p,
-    isLikedByMe: Array.isArray(p.likes) && p.likes.length > 0,
-    likes: undefined,
-  }));
+  return posts.map(mapPostForClient);
 }
 
 async function getPostById({ meId, postId }) {
@@ -197,14 +249,14 @@ async function getPostById({ meId, postId }) {
             select: {
               displayName: true,
               username: true,
-              avatarMedia: { select: { url: true } },
+              avatarMedia: { select: avatarMediaSelect },
             },
           },
         },
       },
       media: {
         orderBy: { order: 'asc' },
-        include: { media: { select: { id: true, url: true, type: true } } },
+        include: { media: { select: mediaSelect } },
       },
       fundraisingCampaign: {
         select: {
@@ -228,7 +280,7 @@ async function getPostById({ meId, postId }) {
                     select: {
                       displayName: true,
                       username: true,
-                      avatarMedia: { select: { url: true } },
+                      avatarMedia: { select: avatarMediaSelect },
                     },
                   },
                 },
@@ -254,11 +306,7 @@ async function getPostById({ meId, postId }) {
     throw err;
   }
 
-  return {
-    ...post,
-    isLikedByMe: Array.isArray(post.likes) && post.likes.length > 0,
-    likes: undefined,
-  };
+  return mapPostForClient(post);
 }
 
 // Returns a light-weight media list for profile gallery screens.
@@ -281,7 +329,7 @@ async function getUserMediaGallery({ meId, userId, mediaType, limit = 50, cursor
     include: {
       media: {
         orderBy: { order: 'asc' },
-        include: { media: { select: { id: true, url: true, type: true } } },
+        include: { media: { select: mediaSelect } },
       },
     },
   };
@@ -303,7 +351,7 @@ async function getUserMediaGallery({ meId, userId, mediaType, limit = 50, cursor
       items.push({
         postId: p.id,
         mediaId: m.id,
-        url: m.url,
+        url: resolveClientMediaUrl({ url: m.url, key: m.key }),
         createdAt: p.createdAt,
       });
     }
@@ -391,14 +439,14 @@ async function createPost({ userId, caption, type, category, mediaIds = [] }) {
             select: {
               displayName: true,
               username: true,
-              avatarMedia: { select: { url: true } },
+              avatarMedia: { select: avatarMediaSelect },
             },
           },
         },
       },
       media: {
         orderBy: { order: 'asc' },
-        include: { media: { select: { id: true, url: true, type: true } } },
+        include: { media: { select: mediaSelect } },
       },
       fundraisingCampaign: {
         select: { id: true },
@@ -408,7 +456,7 @@ async function createPost({ userId, caption, type, category, mediaIds = [] }) {
     },
   });
 
-  return { ...created, isLikedByMe: false };
+  return mapPostForClient({ ...created, likes: [] });
 }
 
 async function updatePost({ userId, postId, caption, type, category, mediaIds }) {
@@ -482,14 +530,14 @@ async function updatePost({ userId, postId, caption, type, category, mediaIds })
               select: {
                 displayName: true,
                 username: true,
-                avatarMedia: { select: { url: true } },
+                avatarMedia: { select: avatarMediaSelect },
               },
             },
           },
         },
         media: {
           orderBy: { order: 'asc' },
-          include: { media: { select: { id: true, url: true, type: true } } },
+          include: { media: { select: mediaSelect } },
         },
         _count: { select: { likes: true, comments: true } },
       },
@@ -498,7 +546,7 @@ async function updatePost({ userId, postId, caption, type, category, mediaIds })
     return full;
   });
 
-  return { ...(updated || {}), isLikedByMe: false };
+  return mapPostForClient({ ...(updated || {}), likes: [] });
 }
 
 async function softDeletePost({ userId, postId }) {
@@ -563,7 +611,7 @@ async function listComments({ userId, postId, limit = 50 }) {
             select: {
               displayName: true,
               username: true,
-              avatarMedia: { select: { url: true } },
+              avatarMedia: { select: avatarMediaSelect },
             },
           },
         },
@@ -610,7 +658,7 @@ async function addComment({ userId, postId, text, parentId }) {
             select: {
               displayName: true,
               username: true,
-              avatarMedia: { select: { url: true } },
+              avatarMedia: { select: avatarMediaSelect },
             },
           },
         },

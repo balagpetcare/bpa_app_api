@@ -19,7 +19,7 @@ import {
   parseCouponCodeFromOrderNotes,
   parseIdempotencyKeyFromOrderNotes,
 } from "./campaign.paymentGuards";
-import { sendBookingConfirmation } from "./sms.service";
+import { sendBookingConfirmation, sendPaymentFailureSms } from "./sms.service";
 import { computeCampaignPriceBreakdown, amountsMatch } from "./campaignPricing.service";
 import { validateCampaignCoupon } from "./campaignCoupon.service";
 import {
@@ -630,7 +630,7 @@ export async function processPaymentWebhook(
     }
   }
 
-  if (confirmedBookingId && payload.status === "SUCCESS" && !checkoutSessionId) {
+  if (confirmedBookingId && payload.status === "SUCCESS") {
     sendBookingConfirmation(confirmedBookingId).catch((err) =>
       console.warn("[Campaign] post-payment confirmation SMS failed:", err?.message)
     );
@@ -650,6 +650,9 @@ export async function processPaymentWebhook(
       });
     }
   } else if (bookingId && payload.status !== "SUCCESS") {
+    sendPaymentFailureSms(bookingId).catch((err) =>
+      console.warn("[Campaign] payment failure SMS failed:", err?.message)
+    );
     const booking = await prisma.campaignBooking.findUnique({ where: { id: bookingId } });
     if (booking) {
       await logCampaignAudit({

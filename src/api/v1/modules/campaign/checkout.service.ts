@@ -37,6 +37,7 @@ import {
 } from "./zoneInterest.service";
 import { resolveDhakaCorporationCoverage } from "./dhakaBooking.service";
 import { sendZoneInterestConfirmation } from "./sms.service";
+import { issueTicketsForBooking } from "./ticket.service";
 import { getActivePaymentProvider } from "../../providers/paymentProvider.config";
 
 const CHECKOUT_TTL_MINUTES = 30;
@@ -105,6 +106,66 @@ function assertCheckoutRateLimit(phone: string) {
   if (entry.count > CHECKOUT_RATE_MAX) {
     throw CheckoutErrors.RATE_LIMIT();
   }
+}
+
+/** Reserve a booking row before EPS redirect — paymentStatus=PENDING until gateway confirms. */
+async function createPendingBookingForCheckout(
+  sessionId: string,
+  input: {
+    campaignId: number;
+    ownerPhone: string;
+    alternatePhone?: string | null;
+    catCount: number;
+    addressJson: Prisma.InputJsonValue;
+    zoneInterest?: ZoneInterestCoverage | null;
+  }
+): Promise<number> {
+  let bookingRef = generateBookingRef();
+  for (let i = 0; i < 10; i++) {
+    const exists = await prisma.campaignBooking.findUnique({ where: { bookingRef } });
+    if (!exists) break;
+    bookingRef = generateBookingRef();
+  }
+
+  const address = input.addressJson as Record<string, unknown>;
+  const isZoneInterest = input.zoneInterest != null || address.bookingMode === "ZONE_INTEREST";
+  const existingUser = await prisma.userAuth.findFirst({
+    where: { phone: input.ownerPhone },
+    include: { user: true },
+  });
+
+  const booking = await prisma.campaignBooking.create({
+    data: {
+      bookingRef,
+      qrToken: generateQrToken(),
+      campaignId: input.campaignId,
+      checkoutSessionId: sessionId,
+      ownerUserId: existingUser?.user.id,
+      ownerPhone: input.ownerPhone,
+      ownerAlternatePhone: input.alternatePhone,
+      ownerName: "Guest",
+      ownerAddressJson: input.addressJson,
+      bookingDate: startOfDay(new Date()),
+      petCount: input.catCount,
+      status: isZoneInterest ? "PENDING_ASSIGNMENT" : "DRAFT",
+      paymentStatus: "PENDING",
+      bookingMode: isZoneInterest ? "ZONE_INTEREST" : "VENUE",
+      coverageZoneId: input.zoneInterest?.coverageZoneId ?? null,
+      coverageZoneName: input.zoneInterest?.coverageZoneName ?? null,
+      bdAreaId: input.zoneInterest?.bdAreaId ?? null,
+      bookingArea: input.zoneInterest?.bookingArea ?? null,
+      linkSource: existingUser ? "EXISTING_USER" : "EXPRESS_CHECKOUT",
+      linkedAt: existingUser ? new Date() : null,
+      metadataJson: { pendingPayment: true } as Prisma.InputJsonValue,
+    },
+  });
+
+  await prisma.campaignCheckoutSession.update({
+    where: { id: sessionId },
+    data: { bookingId: booking.id },
+  });
+
+  return booking.id;
 }
 
 function buildAddressJson(
@@ -344,15 +405,14 @@ export async function initCheckout(input: CheckoutInitInput): Promise<CheckoutIn
     },
   });
 
-  await logCampaignAudit({
-    campaignId,
-    action: "CHECKOUT_INITIATED",
-    entityType: "CampaignCheckoutSession",
-    entityId: 0,
-    afterJson: { checkoutSessionId: session.id, phone: ownerPhone, catCount: input.catCount },
-  });
-
   if (pricing.total <= 0 || campaign.pricingType === "FREE") {
+    await logCampaignAudit({
+      campaignId,
+      action: "CHECKOUT_INITIATED",
+      entityType: "CampaignCheckoutSession",
+      entityId: 0,
+      afterJson: { checkoutSessionId: session.id, phone: ownerPhone, catCount: input.catCount },
+    });
     return {
       checkoutId: session.id,
       amount: 0,
@@ -361,6 +421,29 @@ export async function initCheckout(input: CheckoutInitInput): Promise<CheckoutIn
       expiresAt,
     };
   }
+
+  const pendingBookingId = await createPendingBookingForCheckout(session.id, {
+    campaignId,
+    ownerPhone,
+    alternatePhone: input.alternatePhone ? normalizePhone(input.alternatePhone) : null,
+    catCount: input.catCount,
+    addressJson: addressJson as Prisma.InputJsonValue,
+    zoneInterest,
+  });
+
+  await logCampaignAudit({
+    campaignId,
+    action: "CHECKOUT_INITIATED",
+    entityType: "CampaignCheckoutSession",
+    entityId: 0,
+    afterJson: {
+      checkoutSessionId: session.id,
+      phone: ownerPhone,
+      catCount: input.catCount,
+      pendingBookingId,
+      paymentStatus: "PENDING",
+    },
+  });
 
   const landingBase = (process.env.CAMPAIGN_LANDING_URL || "").replace(/\/+$/, "");
   const returnBase = input.returnUrl ?? (landingBase ? `${landingBase}/book/success` : "/book/success");
@@ -483,7 +566,7 @@ async function getValidCheckoutSession(checkoutId: string) {
 }
 
 export async function fulfillCheckoutSession(checkoutSessionId: string): Promise<BookingDetails> {
-  return prisma.$transaction(async (tx) => {
+  const details = await prisma.$transaction(async (tx) => {
     const session = await tx.campaignCheckoutSession.findUnique({
       where: { id: checkoutSessionId },
       include: { campaign: true },
@@ -544,62 +627,94 @@ export async function fulfillCheckoutSession(checkoutSessionId: string): Promise
         include: { user: true },
       });
 
-      let bookingRef = generateBookingRef();
-      for (let i = 0; i < 10; i++) {
-        const exists = await tx.campaignBooking.findUnique({ where: { bookingRef } });
-        if (!exists) break;
-        bookingRef = generateBookingRef();
-      }
-
-      const qrToken = generateQrToken();
       const isFree =
         session.campaign.pricingType === "FREE" || Number(session.amount) <= 0;
       const placeholderDate = startOfDay(session.campaign.startDate);
 
-      const booking = await tx.campaignBooking.create({
-        data: {
-          bookingRef,
-          qrToken,
-          campaignId: session.campaignId,
-          locationId: null,
-          slotId: null,
-          bookingMode: "ZONE_INTEREST",
-          rolloutRegionId: null,
-          coverageZoneId,
-          coverageZoneName,
-          bdAreaId,
-          bookingArea,
-          checkoutSessionId: session.id,
-          ownerUserId: existingUser?.user.id,
-          ownerPhone,
-          ownerAlternatePhone: session.alternatePhone,
-          ownerName: "Guest",
-          ownerAddressJson: session.addressJson as Prisma.InputJsonValue,
-          bookingDate: placeholderDate,
-          petCount: session.catCount,
-          status: "PENDING_ASSIGNMENT",
-          paymentStatus: isFree ? "NOT_REQUIRED" : "COMPLETED",
-          paidAmount: isFree ? null : session.amount,
-          paymentOrderId: session.orderId,
-          linkSource: existingUser ? "EXISTING_USER" : "EXPRESS_CHECKOUT",
-          linkedAt: existingUser ? new Date() : null,
-          metadataJson: { bookingMode: "ZONE_INTEREST" } as Prisma.InputJsonValue,
-        },
-        include: { pets: true },
-      });
-
-      await Promise.all(
-        Array.from({ length: session.catCount }, (_, i) =>
-          tx.campaignPet.create({
-            data: {
-              bookingId: booking.id,
-              name: `Cat ${i + 1}`,
-              animalTypeId: 2,
-              gender: "UNKNOWN",
-            },
+      const pendingBooking = session.bookingId
+        ? await tx.campaignBooking.findUnique({
+            where: { id: session.bookingId },
+            include: { pets: true },
           })
-        )
-      );
+        : null;
+
+      let booking;
+      if (pendingBooking && pendingBooking.paymentStatus === "PENDING") {
+        booking = await tx.campaignBooking.update({
+          where: { id: pendingBooking.id },
+          data: {
+            locationId: null,
+            slotId: null,
+            bookingMode: "ZONE_INTEREST",
+            rolloutRegionId: null,
+            coverageZoneId,
+            coverageZoneName,
+            bdAreaId,
+            bookingArea,
+            bookingDate: placeholderDate,
+            status: "PENDING_ASSIGNMENT",
+            paymentStatus: isFree ? "NOT_REQUIRED" : "COMPLETED",
+            paidAmount: isFree ? null : session.amount,
+            paymentOrderId: session.orderId,
+            metadataJson: { bookingMode: "ZONE_INTEREST" } as Prisma.InputJsonValue,
+          },
+          include: { pets: true },
+        });
+      } else {
+        let bookingRef = generateBookingRef();
+        for (let i = 0; i < 10; i++) {
+          const exists = await tx.campaignBooking.findUnique({ where: { bookingRef } });
+          if (!exists) break;
+          bookingRef = generateBookingRef();
+        }
+
+        booking = await tx.campaignBooking.create({
+          data: {
+            bookingRef,
+            qrToken: generateQrToken(),
+            campaignId: session.campaignId,
+            locationId: null,
+            slotId: null,
+            bookingMode: "ZONE_INTEREST",
+            rolloutRegionId: null,
+            coverageZoneId,
+            coverageZoneName,
+            bdAreaId,
+            bookingArea,
+            checkoutSessionId: session.id,
+            ownerUserId: existingUser?.user.id,
+            ownerPhone,
+            ownerAlternatePhone: session.alternatePhone,
+            ownerName: "Guest",
+            ownerAddressJson: session.addressJson as Prisma.InputJsonValue,
+            bookingDate: placeholderDate,
+            petCount: session.catCount,
+            status: "PENDING_ASSIGNMENT",
+            paymentStatus: isFree ? "NOT_REQUIRED" : "COMPLETED",
+            paidAmount: isFree ? null : session.amount,
+            paymentOrderId: session.orderId,
+            linkSource: existingUser ? "EXISTING_USER" : "EXPRESS_CHECKOUT",
+            linkedAt: existingUser ? new Date() : null,
+            metadataJson: { bookingMode: "ZONE_INTEREST" } as Prisma.InputJsonValue,
+          },
+          include: { pets: true },
+        });
+      }
+
+      if (booking.pets.length < session.catCount) {
+        await Promise.all(
+          Array.from({ length: session.catCount - booking.pets.length }, (_, i) =>
+            tx.campaignPet.create({
+              data: {
+                bookingId: booking.id,
+                name: `Cat ${booking.pets.length + i + 1}`,
+                animalTypeId: 2,
+                gender: "UNKNOWN",
+              },
+            })
+          )
+        );
+      }
 
       await tx.campaignCheckoutSession.update({
         where: { id: session.id },
@@ -617,10 +732,6 @@ export async function fulfillCheckoutSession(checkoutSessionId: string): Promise
         location: null,
         pets: withPets!.pets,
       });
-
-      sendZoneInterestConfirmation(booking.id).catch((err) =>
-        console.error("[checkout] zone-interest SMS failed", err)
-      );
 
       return details;
     }
@@ -663,15 +774,14 @@ export async function fulfillCheckoutSession(checkoutSessionId: string): Promise
       include: { user: true },
     });
 
-    let bookingRef = generateBookingRef();
-    for (let i = 0; i < 10; i++) {
-      const exists = await tx.campaignBooking.findUnique({ where: { bookingRef } });
-      if (!exists) break;
-      bookingRef = generateBookingRef();
-    }
-
-    const qrToken = generateQrToken();
     const isFree = session.campaign.pricingType === "FREE" || Number(session.amount) <= 0;
+
+    const pendingBooking = session.bookingId
+      ? await tx.campaignBooking.findUnique({
+          where: { id: session.bookingId },
+          include: { pets: true },
+        })
+      : null;
 
     const coverageZoneId =
       typeof address.coverageZoneId === "number" && address.coverageZoneId > 0
@@ -690,48 +800,86 @@ export async function fulfillCheckoutSession(checkoutSessionId: string): Promise
         ? address.bookingArea.trim().slice(0, 200)
         : null;
 
-    const booking = await tx.campaignBooking.create({
-      data: {
-        bookingRef,
-        qrToken,
-        campaignId: session.campaignId,
-        locationId: assignment.locationId,
-        slotId: assignment.slotId,
-        bookingMode: "VENUE",
-        rolloutRegionId: assignment.rolloutRegionId,
-        coverageZoneId,
-        coverageZoneName,
-        bdAreaId,
-        bookingArea,
-        checkoutSessionId: session.id,
-        ownerUserId: existingUser?.user.id,
-        ownerPhone,
-        ownerAlternatePhone: session.alternatePhone,
-        ownerName: "Guest",
-        ownerAddressJson: session.addressJson as Prisma.InputJsonValue,
-        bookingDate: assignment.slotDate,
-        petCount: session.catCount,
-        status: "CONFIRMED",
-        paymentStatus: isFree ? "NOT_REQUIRED" : "COMPLETED",
-        paidAmount: isFree ? null : session.amount,
-        paymentOrderId: session.orderId,
-        linkSource: existingUser ? "EXISTING_USER" : "EXPRESS_CHECKOUT",
-        linkedAt: existingUser ? new Date() : null,
-      },
-    });
+    let booking;
+    let bookingRef: string;
+    if (pendingBooking && pendingBooking.paymentStatus === "PENDING") {
+      bookingRef = pendingBooking.bookingRef;
+      booking = await tx.campaignBooking.update({
+        where: { id: pendingBooking.id },
+        data: {
+          locationId: assignment.locationId,
+          slotId: assignment.slotId,
+          bookingMode: "VENUE",
+          rolloutRegionId: assignment.rolloutRegionId,
+          coverageZoneId,
+          coverageZoneName,
+          bdAreaId,
+          bookingArea,
+          bookingDate: assignment.slotDate,
+          status: "CONFIRMED",
+          paymentStatus: isFree ? "NOT_REQUIRED" : "COMPLETED",
+          paidAmount: isFree ? null : session.amount,
+          paymentOrderId: session.orderId,
+        },
+      });
+    } else {
+      bookingRef = generateBookingRef();
+      for (let i = 0; i < 10; i++) {
+        const exists = await tx.campaignBooking.findUnique({ where: { bookingRef } });
+        if (!exists) break;
+        bookingRef = generateBookingRef();
+      }
 
+      booking = await tx.campaignBooking.create({
+        data: {
+          bookingRef,
+          qrToken: generateQrToken(),
+          campaignId: session.campaignId,
+          locationId: assignment.locationId,
+          slotId: assignment.slotId,
+          bookingMode: "VENUE",
+          rolloutRegionId: assignment.rolloutRegionId,
+          coverageZoneId,
+          coverageZoneName,
+          bdAreaId,
+          bookingArea,
+          checkoutSessionId: session.id,
+          ownerUserId: existingUser?.user.id,
+          ownerPhone,
+          ownerAlternatePhone: session.alternatePhone,
+          ownerName: "Guest",
+          ownerAddressJson: session.addressJson as Prisma.InputJsonValue,
+          bookingDate: assignment.slotDate,
+          petCount: session.catCount,
+          status: "CONFIRMED",
+          paymentStatus: isFree ? "NOT_REQUIRED" : "COMPLETED",
+          paidAmount: isFree ? null : session.amount,
+          paymentOrderId: session.orderId,
+          linkSource: existingUser ? "EXISTING_USER" : "EXPRESS_CHECKOUT",
+          linkedAt: existingUser ? new Date() : null,
+        },
+      });
+    }
+
+    const existingPetCount = pendingBooking?.pets?.length ?? 0;
     const pets = await Promise.all(
-      Array.from({ length: session.catCount }, (_, i) =>
+      Array.from({ length: session.catCount - existingPetCount }, (_, i) =>
         tx.campaignPet.create({
           data: {
             bookingId: booking.id,
-            name: `Cat ${i + 1}`,
+            name: `Cat ${existingPetCount + i + 1}`,
             animalTypeId: 2,
             gender: "UNKNOWN",
           },
         })
       )
     );
+    const allPets =
+      existingPetCount > 0 && pendingBooking
+        ? [...pendingBooking.pets, ...pets]
+        : pets.length > 0
+          ? pets
+          : await tx.campaignPet.findMany({ where: { bookingId: booking.id } });
 
     await tx.campaignSlot.update({
       where: { id: assignment.slotId },
@@ -775,7 +923,7 @@ export async function fulfillCheckoutSession(checkoutSessionId: string): Promise
       ...booking,
       slot: { ...slot, startTime: assignment.startTime, endTime: assignment.endTime },
       location,
-      pets,
+      pets: allPets,
     };
 
     return mapBookingRecordToDetails(fullBooking);
@@ -783,12 +931,28 @@ export async function fulfillCheckoutSession(checkoutSessionId: string): Promise
     isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
     maxWait: 5000,
     timeout: 15000,
-  }).then(async (details) => {
-    sendBookingConfirmation(details.id).catch((err) =>
+  });
+  return finalizeFulfilledBooking(details);
+}
+
+async function finalizeFulfilledBooking(details: BookingDetails): Promise<BookingDetails> {
+  await issueTicketsForBooking(details.id);
+  const refreshed = await prisma.campaignBooking.findFirst({
+    where: { id: details.id },
+    include: { slot: true, location: true, pets: true },
+  });
+  const mapped = refreshed ? mapBookingRecordToDetails(refreshed) : details;
+
+  if (mapped.bookingMode === "ZONE_INTEREST" && mapped.pendingAssignment) {
+    sendZoneInterestConfirmation(mapped.id).catch((err) =>
+      console.error("[checkout] zone-interest SMS failed", err)
+    );
+  } else {
+    sendBookingConfirmation(mapped.id).catch((err) =>
       console.warn("[Campaign] express booking SMS failed:", err?.message)
     );
-    return details;
-  });
+  }
+  return mapped;
 }
 
 export async function fulfillCheckoutFromOrder(orderId: number): Promise<number | undefined> {

@@ -29,7 +29,7 @@
 
 | Area | Status | Detail |
 |------|--------|--------|
-| Ports | OK | 3100-3104 (mother, shop, clinic, admin, owner) |
+| Ports | OK | 3000 API; bpa_web 3100–3107; bpa-landing 3101; vaccination_2026 3110 — see [infrastructure/PORT_AND_DOMAIN_MAP.md](./infrastructure/PORT_AND_DOMAIN_MAP.md) |
 | Country / subdomain | Missing | No X-Country-Code or subdomain-based routing |
 | Locale / i18n | Partial | LanguageLayer, CurrenciesLayer, CompanyLayer (limited) |
 

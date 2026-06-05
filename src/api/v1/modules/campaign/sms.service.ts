@@ -12,18 +12,71 @@ import {
 } from "./campaign.types";
 import { interpolateTemplate, normalizePhone, formatDate } from "./campaign.utils";
 import { generateVerificationCode } from "./qr.service";
+import { formatTicketUrlsForSms } from "./ticket.service";
 
-// Default SMS templates
+// Default SMS templates (BulkSMSBD / BPA standard)
 const DEFAULT_TEMPLATES: Record<SmsTemplateCode, string> = {
-  OTP: "Your BPA vaccination code: {{otp}}. Valid for 5 minutes. Do not share.",
-  BOOKING_CONFIRMED: "BPA Vaccination: Booking confirmed! ID: {{bookingRef}}. Code: {{verificationCode}}. {{catCount}} cat(s) — {{areaName}} on {{date}} at {{location}}, {{time}}. {{claimUrl}}",
+  OTP: "Your BPA OTP is {{otp}}",
+  BOOKING_REQUEST: `Dear {{ownerName}},
+
+Your booking request has been received.
+
+Booking ID: {{bookingRef}}
+
+You will receive further updates shortly.`,
+  PAYMENT_SUCCESS: `Dear {{ownerName}},
+
+Your BPA Cat Flu & Rabies Vaccination booking has been confirmed.
+
+Booking ID: {{bookingRef}}
+Date: {{date}}
+Location: {{location}}
+
+Thank you.
+Bangladesh Pet Association`,
+  PAYMENT_FAILED: `Dear {{ownerName}},
+
+Your payment could not be completed.
+Please try again.
+
+Booking ID: {{bookingRef}}
+
+Bangladesh Pet Association`,
+  BOOKING_CONFIRMED: `Dear {{ownerName}},
+
+Your BPA Cat Flu & Rabies Vaccination booking has been confirmed.
+
+Booking ID: {{bookingRef}}
+Date: {{date}}
+Location: {{location}}
+
+Thank you.
+Bangladesh Pet Association`,
   BOOKING_ZONE_INTEREST:
-    "BPA Vaccination: Interest registered! Ref {{bookingRef}}. Code {{verificationCode}}. Zone: {{zoneName}}, Area: {{bookingArea}}. {{catCount}} cat(s). We will SMS your venue, date & time before the campaign. {{claimUrl}}",
+    "BPA Vaccination: Interest registered! Ref {{bookingRef}}. Zone: {{zoneName}}, Area: {{bookingArea}}. {{catCount}} cat(s). We will SMS your venue, date & time before the campaign.",
   VENUE_ASSIGNED:
-    "BPA Vaccination: Your appointment is set! Ref {{bookingRef}}. {{catCount}} cat(s) — {{bookingArea}} on {{date}} at {{location}}, {{time}}. Code: {{verificationCode}}. {{claimUrl}}",
-  REMINDER_24H: "BPA Vaccination Reminder: {{petName}} tomorrow at {{time}}. Location: {{location}}. Ref: {{bookingRef}}",
+    "BPA Vaccination: Your appointment is set! Ref {{bookingRef}}. {{catCount}} cat(s) — {{bookingArea}} on {{date}} at {{location}}, {{time}}.",
+  SLOT_CONFIRMED: `Your vaccination slot has been confirmed.
+
+Date: {{date}}
+Time: {{time}}
+Location: {{location}}
+
+Booking ID: {{bookingRef}}`,
+  REMINDER_24H: `Reminder:
+
+Your BPA vaccination appointment is tomorrow.
+
+Date: {{date}}
+Time: {{time}}
+Location: {{location}}`,
   REMINDER_2H: "BPA Vaccination: {{petName}} in 2 hours at {{location}}. Please arrive 10 min early. Ref: {{bookingRef}}",
   VACCINATION_COMPLETE: "BPA Vaccination Complete! {{petName}} vaccinated. Certificate: {{certUrl}} Valid for 1 year.",
+  CERTIFICATE_READY: `Your BPA vaccination certificate is ready.
+
+Certificate ID: {{certificateId}}
+
+Download from your BPA account.`,
   BOOKING_CANCELLED: "BPA Vaccination: Your booking ({{bookingRef}}) has been cancelled. Rebook at {{siteUrl}}",
   NO_SHOW: "BPA Vaccination: You missed your appointment ({{bookingRef}}). Please rebook at {{siteUrl}}",
   ANNOUNCEMENT: "{{message}}",
@@ -201,7 +254,7 @@ async function sendSmsDirect(
 // ============================================================================
 
 /**
- * Send booking confirmation SMS
+ * Send booking confirmation SMS (payment success / confirmed booking)
  */
 export async function sendBookingConfirmation(bookingId: number): Promise<void> {
   const booking = await prisma.campaignBooking.findUnique({
@@ -220,34 +273,89 @@ export async function sendBookingConfirmation(bookingId: number): Promise<void> 
     return sendZoneInterestConfirmation(bookingId);
   }
 
-  if (!booking.location || !booking.slot) return;
+  const ticketBase = process.env.CAMPAIGN_BASE_URL || "https://vaccine.bpa.org.bd";
+  const ticketUrls = formatTicketUrlsForSms(
+    booking.pets
+      .filter((p) => p.ticketToken)
+      .map((p) => ({
+        petName: p.name,
+        ticketUrl: `${ticketBase}/ticket/${p.ticketToken}`,
+      }))
+  );
 
-  const petNames = booking.pets.map((p) => p.name).join(", ");
-  const address = booking.ownerAddressJson as {
-    district?: string;
-    upazila?: string;
-    fullAddress?: string;
-  } | null;
-  const areaName = [address?.upazila, address?.district].filter(Boolean).join(", ") || booking.location.name;
-  const siteUrl = process.env.CAMPAIGN_LANDING_URL || process.env.CAMPAIGN_BASE_URL || "https://vaccine.bpa.org.bd";
-  const verificationCode = generateVerificationCode(booking.qrToken);
+  if (!booking.location || !booking.slot) {
+    await sendCampaignSms({
+      phone: booking.ownerPhone,
+      templateCode: "PAYMENT_SUCCESS",
+      campaignId: booking.campaignId,
+      bookingId: booking.id,
+      variables: {
+        bookingRef: booking.bookingRef,
+        ownerName: booking.ownerName,
+        date: booking.bookingDate ? formatDate(booking.bookingDate) : "TBD",
+        location: booking.bookingArea || "To be assigned",
+        ticketUrls,
+      },
+    });
+    return;
+  }
 
   await sendCampaignSms({
     phone: booking.ownerPhone,
-    templateCode: "BOOKING_CONFIRMED",
+    templateCode: "PAYMENT_SUCCESS",
     campaignId: booking.campaignId,
     bookingId: booking.id,
     variables: {
       bookingRef: booking.bookingRef,
-      verificationCode,
-      catCount: String(booking.petCount),
-      areaName,
-      petName: petNames,
+      ownerName: booking.ownerName,
       date: formatDate(booking.bookingDate),
       location: booking.location.name,
       time: booking.slot.startTime,
+      ticketUrls,
+    },
+  });
+}
+
+/**
+ * Send booking request SMS immediately after booking creation (pre-payment).
+ */
+export async function sendBookingRequestSms(bookingId: number): Promise<void> {
+  const booking = await prisma.campaignBooking.findUnique({
+    where: { id: bookingId },
+    include: { campaign: true },
+  });
+  if (!booking) return;
+
+  await sendCampaignSms({
+    phone: booking.ownerPhone,
+    templateCode: "BOOKING_REQUEST",
+    campaignId: booking.campaignId,
+    bookingId: booking.id,
+    variables: {
+      bookingRef: booking.bookingRef,
       ownerName: booking.ownerName,
-      claimUrl: `${siteUrl}/booking`,
+    },
+  });
+}
+
+/**
+ * Send payment failure SMS
+ */
+export async function sendPaymentFailureSms(bookingId: number): Promise<void> {
+  const booking = await prisma.campaignBooking.findUnique({
+    where: { id: bookingId },
+    include: { campaign: true },
+  });
+  if (!booking) return;
+
+  await sendCampaignSms({
+    phone: booking.ownerPhone,
+    templateCode: "PAYMENT_FAILED",
+    campaignId: booking.campaignId,
+    bookingId: booking.id,
+    variables: {
+      bookingRef: booking.bookingRef,
+      ownerName: booking.ownerName,
     },
   });
 }
@@ -263,6 +371,14 @@ export async function sendZoneInterestConfirmation(bookingId: number): Promise<v
   const verificationCode = generateVerificationCode(booking.qrToken);
   const zoneName = booking.coverageZoneName ?? "Your zone";
   const bookingArea = booking.bookingArea ?? zoneName;
+  const ticketUrls = formatTicketUrlsForSms(
+    booking.pets
+      .filter((p) => p.ticketToken)
+      .map((p) => ({
+        petName: p.name,
+        ticketUrl: `${siteUrl}/ticket/${p.ticketToken}`,
+      }))
+  );
 
   await sendCampaignSms({
     phone: booking.ownerPhone,
@@ -276,6 +392,7 @@ export async function sendZoneInterestConfirmation(bookingId: number): Promise<v
       zoneName,
       bookingArea,
       claimUrl: `${siteUrl}/booking`,
+      ticketUrls,
       ownerName: booking.ownerName,
     },
   });
@@ -288,25 +405,16 @@ export async function sendVenueAssignmentSms(bookingId: number): Promise<void> {
   });
   if (!booking?.location || !booking.slot) return;
 
-  const siteUrl = process.env.CAMPAIGN_LANDING_URL || process.env.CAMPAIGN_BASE_URL || "https://vaccine.bpa.org.bd";
-  const verificationCode = generateVerificationCode(booking.qrToken);
-  const bookingArea =
-    booking.bookingArea ?? booking.coverageZoneName ?? booking.location.name;
-
   await sendCampaignSms({
     phone: booking.ownerPhone,
-    templateCode: "VENUE_ASSIGNED",
+    templateCode: "SLOT_CONFIRMED",
     campaignId: booking.campaignId,
     bookingId: booking.id,
     variables: {
       bookingRef: booking.bookingRef,
-      verificationCode,
-      catCount: String(booking.petCount),
-      bookingArea,
       date: formatDate(booking.bookingDate),
       location: booking.location.name,
       time: booking.slot.startTime,
-      claimUrl: `${siteUrl}/booking`,
       ownerName: booking.ownerName,
     },
   });
@@ -335,12 +443,13 @@ export async function sendVaccinationComplete(
 
   await sendCampaignSms({
     phone: booking.ownerPhone,
-    templateCode: "VACCINATION_COMPLETE",
+    templateCode: "CERTIFICATE_READY",
     campaignId: booking.campaignId,
     bookingId: booking.id,
     variables: {
       petName: petNames,
       certUrl: certificateUrl,
+      certificateId: booking.bookingRef,
       ownerName: booking.ownerName,
     },
   });
@@ -605,6 +714,8 @@ export async function handleDeliveryCallback(
 export default {
   sendCampaignSms,
   sendBookingConfirmation,
+  sendBookingRequestSms,
+  sendPaymentFailureSms,
   sendVaccinationComplete,
   sendBookingCancelled,
   sendNoShowNotification,

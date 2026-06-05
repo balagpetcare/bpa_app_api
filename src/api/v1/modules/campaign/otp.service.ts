@@ -167,18 +167,15 @@ export async function requestOtp(
  * Send OTP SMS (integrates with existing SMS service)
  */
 async function sendOtpSms(phone: string, otp: string): Promise<void> {
-  const message = `Your BPA vaccination code: ${otp}. Valid for 5 minutes. Do not share this code.`;
-
   try {
-    const { enqueueCampaignSmsMessage } = require("./campaign.smsQueue") as {
-      enqueueCampaignSmsMessage: (p: string, m: string, meta?: object) => Promise<boolean>;
+    const { sendOtpSMS } = require("../../../../shared/services/sms/sms.service") as {
+      sendOtpSMS: (input: { phone: string; otp: string; purpose?: string }) => Promise<{ success: boolean; error?: string }>;
     };
-    const queued = await enqueueCampaignSmsMessage(phone, message, { template: "CAMPAIGN_OTP" });
-    if (queued) return;
-
-    console.warn("[OTP] SMS queue unavailable, using direct send");
-    const { sendSms } = require("../../services/sms.service");
-    const result = await sendSms(phone, message, { template: "CAMPAIGN_OTP" });
+    const result = await sendOtpSMS({
+      phone,
+      otp,
+      purpose: "CAMPAIGN_BOOKING",
+    });
     if (!result.success) throw new Error(result.error || "SMS send failed");
   } catch (smsError) {
     console.error("Failed to send OTP SMS:", smsError);

@@ -4399,6 +4399,25 @@ model PaymentTransactionLog {
   @@map("payment_transaction_logs")
 }
 
+/// Campaign booking payment records (gateway-level transaction log per booking).
+model PaymentTransaction {
+  id            Int                          @id @default(autoincrement())
+  bookingId     Int?
+  transactionId String                       @db.VarChar(128)
+  gateway       String                       @db.VarChar(32)
+  amount        Decimal                      @db.Decimal(10, 2)
+  status        PaymentTransactionStatus     @default(PENDING)
+  rawResponse   Json?
+  createdAt     DateTime                     @default(now())
+  updatedAt     DateTime                     @updatedAt
+  booking       CampaignBooking?             @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+
+  @@unique([gateway, transactionId])
+  @@index([bookingId])
+  @@index([status, createdAt])
+  @@map("payment_transactions")
+}
+
 model OrderItem {
   id                              Int                            @id @default(autoincrement())
   orderId                         Int
@@ -13875,6 +13894,13 @@ enum CampaignPaymentStatus {
   REFUNDED
 }
 
+enum PaymentTransactionStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  CANCELLED
+}
+
 enum CampaignRefundStatus {
   PENDING
   PROCESSING
@@ -14229,9 +14255,10 @@ model CampaignBooking {
   owner           User?                    @relation("CampaignBookingOwner", fields: [ownerUserId], references: [id])
   checkedInBy     User?                    @relation("CampaignBookingCheckedInBy", fields: [checkedInByUserId], references: [id])
   paymentOrder    Order?                   @relation("CampaignBookingPaymentOrder", fields: [paymentOrderId], references: [id])
-  pets            CampaignPet[]
-  smsLogs         CampaignSmsLog[]
-  vaccinations    Vaccination[]            @relation("CampaignVaccinations")
+  pets                CampaignPet[]
+  smsLogs             CampaignSmsLog[]
+  vaccinations        Vaccination[]            @relation("CampaignVaccinations")
+  paymentTransactions PaymentTransaction[]
 
   @@index([campaignId, bookingDate])
   @@index([rolloutRegionId])
@@ -14264,6 +14291,10 @@ model CampaignPet {
   // Vaccination Status
   vaccinationStatus CampaignPetVaccinationStatus @default(PENDING)
   vaccinationId     Int?                         @unique // Link to Vaccination record after done
+
+  // Per-cat vaccination ticket (QR scan on campaign day)
+  ticketToken    String?   @unique @db.VarChar(32)
+  ticketIssuedAt DateTime?
 
   // Certificate
   certificateToken       String?   @unique @db.VarChar(20)
@@ -14360,6 +14391,35 @@ model CampaignSmsLog {
   @@index([campaignId, status])
   @@index([phone])
   @@map("campaign_sms_logs")
+}
+
+enum SmsLogStatus {
+  QUEUED
+  SENDING
+  SENT
+  DELIVERED
+  FAILED
+}
+
+model SmsLog {
+  id           Int          @id @default(autoincrement())
+  phone        String       @db.VarChar(15)
+  message      String
+  provider     String       @db.VarChar(32)
+  status       SmsLogStatus @default(QUEUED)
+  response     String?
+  template     String?      @db.VarChar(64)
+  externalId   String?      @db.VarChar(64)
+  errorMessage String?
+  attemptCount Int          @default(0)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  sentAt       DateTime?
+
+  @@index([phone])
+  @@index([status])
+  @@index([createdAt])
+  @@map("sms_logs")
 }
 
 model CampaignAuditLog {

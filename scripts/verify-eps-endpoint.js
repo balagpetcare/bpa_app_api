@@ -94,7 +94,7 @@ async function main() {
   const argBase = process.argv.find((a) => a.startsWith("--base="))?.split("=")[1];
   const user = process.env.EPS_USERNAME || "";
   const pass = process.env.EPS_PASSWORD || "";
-  const hashKey = process.env.EPS_HASH || "";
+  const hashKey = process.env.EPS_HASH_KEY || process.env.EPS_HASH || "";
   const configured = (process.env.EPS_BASE_URL || "").trim();
   const sandboxDefault = "https://sandboxpgapi.eps.com.bd";
 

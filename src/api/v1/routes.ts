@@ -40,6 +40,7 @@ router.use("/admin/support/tickets", require("./modules/admin_support/admin_supp
 router.use("/admin/verification-metrics", require("./modules/admin_verification_metrics/admin_verification_metrics.routes"));
 // Admin dashboard widgets (counts, queues)
 router.use("/admin/dashboard", require("./modules/admin_dashboard/admin_dashboard.routes"));
+router.use("/admin/sms", require("./modules/admin_sms/admin_sms.routes"));
 // Admin producer system overview (KPIs, trends, top producers, alerts)
 router.use("/admin/producer-overview", require("./modules/admin_producer_overview/adminProducerOverview.routes"));
 const authenticateToken = require("../../middleware/auth.middleware");
@@ -105,6 +106,7 @@ router.use("/meta", require("./modules/meta/meta.routes"));
 mountWith503("/campaign", "./modules/campaign/campaign.routes");
 // Unified payment gateway (Strategy Pattern — PAYMENT_PROVIDER env)
 mountWith503("/payments", "./payments/payment.routes");
+mountWith503("/payment/eps", "./modules/payment/eps/eps.routes");
 // BPA app campaign linking (authenticated)
 router.use("/campaign-link", require("./modules/campaign/campaignLink.routes").default);
 

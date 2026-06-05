@@ -661,8 +661,60 @@ export async function getDiscoverySchedule(input: {
   };
 }
 
+export async function getPublicAreaBookingStats(campaignId: number) {
+  const rows = await prisma.campaignBooking.groupBy({
+    by: ["bdAreaId", "bookingArea"],
+    where: {
+      campaignId,
+      status: { notIn: ["CANCELLED"] },
+    },
+    _count: { id: true },
+    _sum: { petCount: true },
+  });
+
+  const vaccinatedByArea = await prisma.campaignPet.groupBy({
+    by: ["bookingId"],
+    where: {
+      vaccinationStatus: "COMPLETED",
+      booking: { campaignId },
+    },
+    _count: { id: true },
+  });
+
+  const bookingIds = vaccinatedByArea.map((r) => r.bookingId);
+  const bookings =
+    bookingIds.length > 0
+      ? await prisma.campaignBooking.findMany({
+          where: { id: { in: bookingIds } },
+          select: { id: true, bdAreaId: true, bookingArea: true },
+        })
+      : [];
+  const bookingMap = new Map(bookings.map((b) => [b.id, b]));
+
+  const vaccinatedMap = new Map<string, number>();
+  for (const row of vaccinatedByArea) {
+    const b = bookingMap.get(row.bookingId);
+    const key = `${b?.bdAreaId ?? 0}|${b?.bookingArea ?? "unknown"}`;
+    vaccinatedMap.set(key, (vaccinatedMap.get(key) ?? 0) + row._count.id);
+  }
+
+  return rows
+    .map((r) => {
+      const key = `${r.bdAreaId ?? 0}|${r.bookingArea ?? "unknown"}`;
+      return {
+        bdAreaId: r.bdAreaId,
+        bookingArea: r.bookingArea ?? "Unspecified",
+        totalBookings: r._count.id,
+        totalCats: r._sum.petCount ?? 0,
+        vaccinatedCats: vaccinatedMap.get(key) ?? 0,
+      };
+    })
+    .sort((a, b) => b.totalBookings - a.totalBookings);
+}
+
 export async function getPublicLiveStats(campaignId: number) {
-  const [preRegAgg, vaccinatedCount, locationCount, slotCapacity] = await Promise.all([
+  const [preRegAgg, vaccinatedCount, locationCount, slotCapacity, totalBookings, areaStats] =
+    await Promise.all([
     prisma.campaignPreRegistration.aggregate({
       where: { campaignId },
       _sum: { catCount: true },
@@ -685,6 +737,10 @@ export async function getPublicLiveStats(campaignId: number) {
       },
       _sum: { capacity: true, bookedCount: true },
     }),
+    prisma.campaignBooking.count({
+      where: { campaignId, status: { notIn: ["CANCELLED"] } },
+    }),
+    getPublicAreaBookingStats(campaignId),
   ]);
 
   const capacity = slotCapacity._sum.capacity ?? 0;
@@ -699,9 +755,11 @@ export async function getPublicLiveStats(campaignId: number) {
     preRegisteredOwners: preRegAgg._count,
     waitingListOwners: roadmap,
     vaccinatedCats: vaccinatedCount,
+    totalBookings,
     campaignLocations: locationCount,
     participatingClinics: locationCount,
     remainingSlotCapacity: Math.max(0, capacity - booked),
+    areaStats,
     updatedAt: new Date().toISOString(),
   };
 }

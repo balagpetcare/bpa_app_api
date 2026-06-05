@@ -16,12 +16,19 @@ function resolveProviderName(raw?: string | null): SmsProviderName {
   return "mock";
 }
 
-export function getSmsProvider(name?: string): SmsProvider {
-  return providers[resolveProviderName(name)];
+export function getSmsProvider(): SmsProviderName;
+export function getSmsProvider(name: string): SmsProvider;
+export function getSmsProvider(name?: string): SmsProviderName | SmsProvider {
+  if (name !== undefined) {
+    return providers[resolveProviderName(name)];
+  }
+  return resolveProviderName(
+    process.env.SMS_PROVIDER || process.env.SMS_PRIMARY_PROVIDER || "bulksmsbd"
+  );
 }
 
 export function getPrimarySmsProvider(): SmsProvider {
-  const primary = resolveProviderName(process.env.SMS_PRIMARY_PROVIDER || process.env.SMS_PROVIDER || "ssl_wireless");
+  const primary = resolveProviderName(process.env.SMS_PROVIDER || process.env.SMS_PRIMARY_PROVIDER || "bulksmsbd");
   const provider = providers[primary];
   if (provider.isConfigured()) return provider;
   if (process.env.NODE_ENV === "production" && process.env.SMS_ALLOW_MOCK !== "true") {
@@ -40,7 +47,7 @@ export function getFallbackSmsProvider(primary: SmsProvider): SmsProvider | null
 export function isSmsEnabled(): boolean {
   if (process.env.SMS_ENABLED === "false" || process.env.SMS_ENABLED === "0") return false;
   if (process.env.NODE_ENV === "test") return true;
-  const primaryName = resolveProviderName(process.env.SMS_PRIMARY_PROVIDER || "ssl_wireless");
+  const primaryName = resolveProviderName(process.env.SMS_PROVIDER || process.env.SMS_PRIMARY_PROVIDER || "bulksmsbd");
   const primary = providers[primaryName];
   if (primary.isConfigured()) return true;
   if (process.env.NODE_ENV === "production") {

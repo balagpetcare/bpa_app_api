@@ -658,29 +658,23 @@ exports.getOwnerKyc = async (req, res) => {
       process.env.API_BASE_URL ||
       `http://localhost:${process.env.PORT || 3000}`;
 
-    // ✅ Generate a short-lived signed token for file preview URLs.
-    // <img> tags cannot send Authorization headers, so we attach ?token=... for preview.
-    const jwt = require("jsonwebtoken");
-    const appConfig = require("../../../../config/appConfig");
+    const { buildPrivateFileAccessUrl } = require("../../../../shared/storage/fileAccessUrl");
 
     const out = kyc
       ? {
           ...kyc,
-          documents: (kyc.documents || []).map((d) => {
-            const key = d?.media?.key ? String(d.media.key) : null;
-            if (!key) return { ...d, url: null };
-
-            const token = jwt.sign(
-              { purpose: "FILE_VIEW", fileKey: key, userId: ownerUserId },
-              appConfig.jwt.secret,
-              { expiresIn: "20m" }
-            );
-
-            return {
-              ...d,
-              url: `${baseUrl}/api/v1/files/${encodeURIComponent(key)}?token=${encodeURIComponent(token)}`
-            };
-          })
+          documents: await Promise.all(
+            (kyc.documents || []).map(async (d) => {
+              const key = d?.media?.key ? String(d.media.key) : null;
+              if (!key) return { ...d, url: null };
+              const url = await buildPrivateFileAccessUrl({
+                key,
+                userId: ownerUserId,
+                baseUrl,
+              });
+              return { ...d, url };
+            })
+          ),
         }
       : null;
 

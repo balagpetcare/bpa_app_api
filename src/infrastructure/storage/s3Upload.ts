@@ -1,9 +1,7 @@
 // src/infrastructure/storage/s3Upload.js
 const crypto = require("crypto");
 const path = require("path");
-const { PutObjectCommand } = require("@aws-sdk/client-s3");
-const s3Client = require("./s3Client");
-const appConfig = require("../../config/appConfig");
+const { getStorageProvider } = require("./storage.factory");
 
 function safeName(originalName = "file") {
   const ext = (path.extname(originalName) || "").toLowerCase();
@@ -16,34 +14,21 @@ function safeName(originalName = "file") {
 }
 
 /**
- * Upload buffer to S3/MinIO
- * @param {Buffer} body
- * @param {Object} opts
- * @param {String} opts.originalname
- * @param {String} opts.mimetype
- * @param {String} opts.prefix e.g. "pets/123"
+ * Upload buffer to configured storage provider (MinIO or B2).
  */
 async function uploadBuffer(body, { originalname, mimetype, prefix = "uploads" }) {
-  const bucket = appConfig.storage.bucketName; // ✅ FIX (was bucket)
+  const provider = getStorageProvider();
   const objectKey = `${prefix}/${safeName(originalname)}`;
 
-  // ✅ quick debug (remove later if you want)
-  // console.log("Uploading to bucket:", bucket);
+  await provider.putObject({
+    key: objectKey,
+    body,
+    contentType: mimetype || "application/octet-stream",
+  });
 
-  await s3Client.send(
-    new PutObjectCommand({
-      Bucket: bucket,
-      Key: objectKey,
-      Body: body,
-      ContentType: mimetype || "application/octet-stream",
-    })
-  );
+  const url = provider.buildPublicUrl(objectKey);
 
-  // ✅ Public URL building (use config publicUrl)
-  const publicBaseUrl = appConfig.storage.publicUrl || appConfig.storage.endpoint; // ✅ FIX (was publicBaseUrl)
-  const url = `${publicBaseUrl}/${bucket}/${objectKey}`;
-
-  return { bucket, objectKey, url };
+  return { bucket: provider.config.bucketName, objectKey, url };
 }
 
 module.exports = { uploadBuffer };

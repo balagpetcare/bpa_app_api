@@ -1,7 +1,5 @@
 const prisma = require("../infrastructure/db/prismaClient");
-
-const s3Client = require("../infrastructure/storage/s3Client");
-const { GetObjectCommand } = require("@aws-sdk/client-s3");
+const { getStorageProvider } = require("../infrastructure/storage/storage.factory");
 
 // Allowed origins for CORS on file responses (Next.js panels on different ports).
 // CORP cross-origin is required so <img src="http://localhost:3000/api/v1/files/..."> from
@@ -28,15 +26,32 @@ function setFileResponseCorsHeaders(req, res, origin) {
   res.setHeader("Access-Control-Allow-Origin", echo);
 }
 
+function resolveFileViewer(req) {
+  if (req.user?.id) {
+    return { userId: Number(req.user.id), role: String(req.user.role || "").toUpperCase() };
+  }
+  if (req.fileViewAuth?.userId) {
+    return {
+      userId: Number(req.fileViewAuth.userId),
+      role: String(req.fileViewAuth.role || "").toUpperCase(),
+      fileKey: req.fileViewAuth.fileKey,
+    };
+  }
+  return null;
+}
+
 async function streamFileByKey(req, res, next) {
   try {
-    // IMPORTANT: wildcard key (supports slashes)
     const rawKey = req.params[0];
     const key = decodeURIComponent(rawKey);
 
-    const user = req.user;
-    if (!user?.id) {
+    const viewer = resolveFileViewer(req);
+    if (!viewer?.userId) {
       return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    if (viewer.fileKey && String(viewer.fileKey) !== String(key)) {
+      return res.status(403).json({ message: "Forbidden" });
     }
 
     const doc = await prisma.ownerKycDocument.findFirst({
@@ -46,7 +61,7 @@ async function streamFileByKey(req, res, next) {
       select: {
         id: true,
         ownerKyc: { select: { userId: true } },
-        media: { select: { key: true, type: true } },
+        media: { select: { key: true, type: true, mimeType: true } },
       },
     });
 
@@ -54,23 +69,17 @@ async function streamFileByKey(req, res, next) {
       return res.status(404).json({ message: "File not found" });
     }
 
-    const role = String(user.role || "").toUpperCase();
+    const role = viewer.role || "";
     const isAdmin = role.includes("ADMIN");
 
-    if (!isAdmin && String(doc.ownerKyc.userId) !== String(user.id)) {
+    if (!isAdmin && String(doc.ownerKyc.userId) !== String(viewer.userId)) {
       return res.status(403).json({ message: "Forbidden" });
     }
 
-    const bucket = process.env.AWS_BUCKET_NAME || process.env.S3_BUCKET_PRIVATE || process.env.S3_BUCKET || process.env.MINIO_BUCKET;
+    const storage = getStorageProvider();
+    const s3Response = await storage.getObject(key);
 
-    const command = new GetObjectCommand({
-      Bucket: bucket,
-      Key: key,
-    });
-
-    const s3Response = await s3Client.send(command);
-
-    const contentType = doc.media.type || "application/octet-stream";
+    const contentType = doc.media.mimeType || doc.media.type || s3Response.contentType || "application/octet-stream";
     res.setHeader("Content-Type", contentType);
 
     const download = String(req.query.download || "") === "1";
@@ -82,7 +91,7 @@ async function streamFileByKey(req, res, next) {
 
     setFileResponseCorsHeaders(req, res, req.headers.origin);
 
-    s3Response.Body.pipe(res);
+    s3Response.body.pipe(res);
   } catch (err) {
     next(err);
   }

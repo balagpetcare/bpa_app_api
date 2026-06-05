@@ -10,6 +10,7 @@ export type CreatePaymentInput = PaymentIntentRequest & {
 export type CreatePaymentResult = PaymentIntentResponse & {
   provider: PaymentProviderCode;
   logId?: number;
+  paymentTransactionId?: number;
 };
 
 export type VerifyPaymentInput = {

@@ -47,7 +47,7 @@ describe("paymentProvider.config callback URLs", () => {
     process.env.PAYMENT_PROVIDER = "eps";
     process.env.EPS_USERNAME = "<sandbox_username>";
     process.env.EPS_PASSWORD = "real_password";
-    process.env.EPS_HASH = "abc123";
+    process.env.EPS_HASH_KEY = "abc123";
     process.env.EPS_STORE_ID = "store-uuid";
     process.env.EPS_MERCHANT_ID = "merchant-uuid";
     expect(isEpsConfigured()).toBe(false);
@@ -60,9 +60,9 @@ describe("paymentProvider.config callback URLs", () => {
     process.env.API_PUBLIC_BASE_URL = "https://api.bpa.com.bd";
     const prefix = getUnifiedPaymentApiPrefix();
     const eps = getEpsConfig();
-    expect(eps.successUrl).toBe(`${prefix}/webhook/redirect/success`);
-    expect(eps.failUrl).toBe(`${prefix}/webhook/redirect/fail`);
-    expect(eps.cancelUrl).toBe(`${prefix}/webhook/redirect/cancel`);
+    expect(eps.successUrl).toBe(`${prefix}/payment/eps/callback/success`);
+    expect(eps.failUrl).toBe(`${prefix}/payment/eps/callback/fail`);
+    expect(eps.cancelUrl).toBe(`${prefix}/payment/eps/callback/cancel`);
   });
 
   it("validates EPS required env when active", () => {

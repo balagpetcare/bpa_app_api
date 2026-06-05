@@ -1,9 +1,12 @@
-const { PutObjectCommand, DeleteObjectCommand } = require("@aws-sdk/client-s3");
 const crypto = require("crypto");
 
 const prisma = require("../../../../infrastructure/db/prismaClient");
-const s3Client = require("../../../../infrastructure/storage/s3Client");
+const { getStorageProvider } = require("../../../../infrastructure/storage/storage.factory");
 const appConfig = require("../../../../config/appConfig");
+const {
+  buildPublicMediaUrl,
+  resolveClientMediaUrl,
+} = require("../../../../shared/storage/publicMediaUrl");
 
 function extFromName(name) {
   const n = String(name || "");
@@ -57,45 +60,34 @@ function buildKey({ ownerUserId, folder, mimeType, originalname, countryCode }) 
   return `${prefix}${folder}/${ownerUserId}/${Date.now()}_${rand}${ext}`;
 }
 
-function buildPublicUrl(key) {
-  // MINIO_PUBLIC_URL (e.g. http://10.0.2.2:9000) + /bucket/key
-  const base = String(appConfig.storage.publicUrl || appConfig.storage.endpoint || "").replace(/\/$/, "");
-  return `${base}/${appConfig.storage.bucketName}/${key}`;
+async function storageObjectExists(key) {
+  return getStorageProvider().objectExists(key);
+}
+
+function withResolvedUrl(media) {
+  if (!media) return media;
+  return {
+    ...media,
+    url: resolveClientMediaUrl({ url: media.url, key: media.key }),
+  };
 }
 
 async function uploadToStorage({ buffer, mimeType, key, originalname }) {
-  // Some clients send application/octet-stream; MinIO UI preview needs a real content-type.
+  // Some clients send application/octet-stream; storage UI preview needs a real content-type.
   let ct = mimeType;
   if (!ct || ct === "application/octet-stream") {
     ct = guessMimeFromExt(extFromName(originalname));
   }
-  const cmd = new PutObjectCommand({
-    Bucket: appConfig.storage.bucketName,
-    Key: key,
-    Body: buffer,
-    ContentType: ct,
+  await getStorageProvider().putObject({
+    key,
+    body: buffer,
+    contentType: ct,
   });
-  // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/b9a50c8d-67c2-4353-bdac-e3b81804031b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'4e348a'},body:JSON.stringify({sessionId:'4e348a',runId:'run1',hypothesisId:'H2',location:'media.service.ts:uploadToStorage:beforeSend',message:'about to send PutObject',data:{endpoint:String(appConfig?.storage?.endpoint||''),bucket:String(appConfig?.storage?.bucketName||''),forcePathStyle:!!appConfig?.storage?.forcePathStyle,keyPrefix:String(key||'').split('/').slice(0,2).join('/')},timestamp:Date.now()})}).catch(()=>{});
-  // #endregion
-  try {
-    await s3Client.send(cmd);
-  } catch (err) {
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/b9a50c8d-67c2-4353-bdac-e3b81804031b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'4e348a'},body:JSON.stringify({sessionId:'4e348a',runId:'run1',hypothesisId:'H1',location:'media.service.ts:uploadToStorage:sendError',message:'PutObject failed',data:{errorName:String((err as any)?.name||''),errorCode:String((err as any)?.code||''),errorMessage:String((err as any)?.message||''),hostname:String((err as any)?.hostname||'')},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
-    throw err;
-  }
-  return buildPublicUrl(key);
+  return buildPublicMediaUrl(key);
 }
 
 async function deleteFromStorage(key) {
-  if (!key) return;
-  const cmd = new DeleteObjectCommand({
-    Bucket: appConfig.storage.bucketName,
-    Key: key,
-  });
-  await s3Client.send(cmd);
+  await getStorageProvider().deleteObject(key);
 }
 
 /**
@@ -118,12 +110,44 @@ exports.uploadAndCreateMedia = async ({ ownerUserId, file, folder = "media", typ
   // Compute hash for possible reuse/deduplication
   const hash = crypto.createHash("sha256").update(buffer).digest("hex");
 
-  // If a media with the same hash already exists, just reuse it
+  const mediaType = type || mediaTypeFromMime(mimeType, originalname);
   const existing = await prisma.media.findFirst({
     where: { hash },
   });
+
   if (existing) {
-    return existing;
+    const existsInStorage = existing.key ? await storageObjectExists(existing.key) : false;
+    if (existsInStorage) {
+      const resolvedUrl = buildPublicMediaUrl(existing.key);
+      if (resolvedUrl !== existing.url) {
+        const updated = await prisma.media.update({
+          where: { id: existing.id },
+          data: { url: resolvedUrl },
+        });
+        return withResolvedUrl(updated);
+      }
+      return withResolvedUrl(existing);
+    }
+
+    const repairKey = buildKey({ ownerUserId, folder, mimeType, originalname, countryCode });
+    const repairUrl = await uploadToStorage({
+      buffer,
+      mimeType,
+      key: repairKey,
+      originalname,
+    });
+    const repaired = await prisma.media.update({
+      where: { id: existing.id },
+      data: {
+        url: repairUrl,
+        key: repairKey,
+        type: mediaType,
+        mimeType,
+        sizeBytes: buffer.length,
+        altText: originalname,
+      },
+    });
+    return withResolvedUrl(repaired);
   }
 
   const key = buildKey({ ownerUserId, folder, mimeType, originalname, countryCode });
@@ -138,7 +162,7 @@ exports.uploadAndCreateMedia = async ({ ownerUserId, file, folder = "media", typ
     data: {
       url,
       key,
-      type: type || mediaTypeFromMime(mimeType, originalname),
+      type: mediaType,
       ownerUserId: Number(ownerUserId),
       mimeType,
       sizeBytes: buffer.length,
@@ -147,14 +171,15 @@ exports.uploadAndCreateMedia = async ({ ownerUserId, file, folder = "media", typ
     },
   });
 
-  return media;
+  return withResolvedUrl(media);
 };
 
 exports.listMyMedia = async (ownerUserId) => {
-  return prisma.media.findMany({
+  const rows = await prisma.media.findMany({
     where: { ownerUserId: Number(ownerUserId), deletedAt: null },
     orderBy: { id: "desc" },
   });
+  return rows.map(withResolvedUrl);
 };
 
 exports.deleteMyMedia = async ({ ownerUserId, mediaId }) => {

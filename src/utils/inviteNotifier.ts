@@ -47,10 +47,17 @@ exports.sendInvite = async function sendInvite(args: SendInviteArgs) {
     }
   }
 
-  // SMS placeholder
-  // eslint-disable-next-line no-console
-  console.log(`[INVITE:SMS] to=${to} message=${msg}`);
-  return { success: true, fallback: "log" };
+  // SMS via central BPA SMS service
+  if (channel === "SMS") {
+    try {
+      const { sendSMS } = require("../shared/services/sms/sms.service");
+      return await sendSMS({ phone: to, message: msg, template: "STAFF_INVITE" });
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error("[INVITE:SMS] send failed", e);
+      return { success: false, error: String((e as Error)?.message || e) };
+    }
+  }
 };
 
 function escapeHtml(s: string) {

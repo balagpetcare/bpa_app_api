@@ -2097,33 +2097,38 @@ exports.listDoctorVerifications = async (req, res) => {
   }
 };
 
-function addSignedUrlForDoc(d, adminUserId) {
+async function addSignedUrlForDoc(d, adminUserId) {
   const baseUrl =
     process.env.PUBLIC_API_BASE_URL ||
     process.env.API_BASE_URL ||
     `http://localhost:${process.env.PORT || 3000}`;
-  const jwt = require("jsonwebtoken");
-  const appConfig = require("../../../../config/appConfig");
+  const { buildPrivateFileAccessUrl } = require("../../../../shared/storage/fileAccessUrl");
   const key = d.fileUrl || null;
   if (!key) return { ...d, url: null };
-  const token = jwt.sign(
-    { purpose: "FILE_VIEW", fileKey: key, userId: adminUserId },
-    appConfig.jwt.secret,
-    { expiresIn: "20m" }
-  );
-  return { ...d, url: `${baseUrl}/api/v1/files/${encodeURIComponent(key)}?token=${encodeURIComponent(token)}` };
+  const url = await buildPrivateFileAccessUrl({
+    key,
+    userId: adminUserId,
+    baseUrl,
+  });
+  return { ...d, url };
 }
 
-function addSignedUrlsForAdminDocs(row, adminUserId) {
+async function addSignedUrlsForAdminDocs(row, adminUserId) {
   let out = { ...row };
   if (row?.documents?.length) {
-    out.documents = row.documents.map((d) => addSignedUrlForDoc(d, adminUserId));
+    out.documents = await Promise.all(
+      row.documents.map((d) => addSignedUrlForDoc(d, adminUserId))
+    );
   }
   if (row?.licenses?.length) {
-    out.licenses = row.licenses.map((lic) => ({
-      ...lic,
-      documents: (lic.documents || []).map((d) => addSignedUrlForDoc(d, adminUserId)),
-    }));
+    out.licenses = await Promise.all(
+      row.licenses.map(async (lic) => ({
+        ...lic,
+        documents: await Promise.all(
+          (lic.documents || []).map((d) => addSignedUrlForDoc(d, adminUserId))
+        ),
+      }))
+    );
   }
   return out;
 }
@@ -2136,7 +2141,7 @@ exports.getDoctorVerification = async (req, res) => {
     const row = await doctorVerificationService.getByIdForAdmin(id);
     if (!row) return res.status(404).json({ success: false, message: "Not found" });
     const adminUserId = Number(req.user?.id || req.admin?.id || 0) || 0;
-    const out = addSignedUrlsForAdminDocs(row, adminUserId);
+    const out = await addSignedUrlsForAdminDocs(row, adminUserId);
     return res.json({ success: true, data: out });
   } catch (e) {
     console.error("getDoctorVerification error", e);

@@ -38,44 +38,47 @@ jest.mock("../../../../infrastructure/db/prismaClient", () => ({
   __esModule: true,
   default: {
     userAuth: { findFirst: jest.fn().mockResolvedValue(null) },
+    smsLog: {
+      create: jest.fn().mockResolvedValue({ id: 1 }),
+      update: jest.fn().mockResolvedValue({}),
+    },
   },
 }));
 
-jest.mock("./campaign.smsQueue", () => ({
-  enqueueCampaignSmsMessage: jest.fn().mockResolvedValue(true),
-}));
+const sendOtpSMS = jest.fn().mockResolvedValue({ success: true, logId: 1, queued: true });
 
-jest.mock("../../services/sms.service", () => ({
-  sendSms: jest.fn(),
+jest.mock("../../../../shared/services/sms/sms.service", () => ({
+  sendOtpSMS: (...args: unknown[]) => sendOtpSMS(...args),
 }));
 
 const { requestOtp, verifyOtp, checkOtpRedisHealth } = require("./otp.service");
-const { enqueueCampaignSmsMessage } = require("./campaign.smsQueue");
 
 describe("otp.service SMS delivery", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     redisStore.clear();
     process.env.CAMPAIGN_JWT_SECRET = "test-secret";
+    sendOtpSMS.mockResolvedValue({ success: true, logId: 1, queued: true });
   });
 
-  it("queues OTP SMS via campaign SMS queue", async () => {
+  it("sends OTP SMS via central SMS service", async () => {
     const result = await requestOtp("01712345678", "BOOKING");
     expect(result.success).toBe(true);
-    expect(enqueueCampaignSmsMessage).toHaveBeenCalledWith(
-      "01712345678",
-      expect.stringMatching(/vaccination code/i),
-      expect.objectContaining({ template: "CAMPAIGN_OTP" })
+    expect(sendOtpSMS).toHaveBeenCalledWith(
+      expect.objectContaining({
+        phone: "01712345678",
+        otp: expect.any(String),
+        purpose: "CAMPAIGN_BOOKING",
+      })
     );
   });
 
-  it("falls back to direct SMS when queue returns false", async () => {
-    enqueueCampaignSmsMessage.mockResolvedValueOnce(false);
-    const { sendSms } = require("../../services/sms.service");
-    sendSms.mockResolvedValueOnce({ success: true, provider: "ssl_wireless", messageId: "m1" });
+  it("throws when central SMS send fails", async () => {
+    sendOtpSMS.mockResolvedValueOnce({ success: false, error: "gateway down" });
 
-    await requestOtp("01712345678", "BOOKING");
-    expect(sendSms).toHaveBeenCalled();
+    await expect(requestOtp("01712345678", "BOOKING")).rejects.toMatchObject({
+      code: "OTP_SEND_FAILED",
+    });
   });
 
   it("verifyOtp succeeds after valid code", async () => {

@@ -2,6 +2,7 @@
  * Campaign slot scheduling: validation, session labels, locale time display, repeat patterns.
  */
 
+import type { CampaignSlotStatus } from "@prisma/client";
 import { parseTimeToMinutes } from "./campaign.utils";
 
 export type SlotRepeatPattern = "DAILY" | "WEEKDAYS" | "WEEKENDS" | "CUSTOM";
@@ -31,8 +32,22 @@ export type CampaignSlotDto = {
   walkInCount: number;
   availableCount: number;
   remainingCapacity: number;
-  status: string;
+  status: CampaignSlotStatus;
 };
+
+const CAMPAIGN_SLOT_STATUSES: readonly CampaignSlotStatus[] = [
+  "OPEN",
+  "FULL",
+  "CLOSED",
+  "CANCELLED",
+];
+
+function toCampaignSlotStatus(status: string): CampaignSlotStatus {
+  if ((CAMPAIGN_SLOT_STATUSES as readonly string[]).includes(status)) {
+    return status as CampaignSlotStatus;
+  }
+  return "OPEN";
+}
 
 const DEFAULT_LOCALE = "en-US";
 
@@ -155,7 +170,7 @@ export function mapCampaignSlotToDto(
     walkInCount: slot.walkInCount,
     availableCount,
     remainingCapacity: availableCount,
-    status: slot.status,
+    status: toCampaignSlotStatus(slot.status),
   };
 }
 

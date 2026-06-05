@@ -451,6 +451,53 @@ publicRouter.get("/coverage-zones/:zoneId/bd-areas", async (req, res, next) => {
 publicRouter.post("/checkout/init", checkoutInitHandler);
 publicRouter.post("/checkout/confirm-free", checkoutConfirmFreeHandler);
 publicRouter.get("/checkout/:checkoutId/status", checkoutStatusHandler);
+
+publicRouter.get("/bookings/:ref/tickets", async (req, res, next) => {
+  try {
+    const { getTicketsByBookingRef } = await import("./ticket.service");
+    const ref = String(req.params.ref || "").trim();
+    const includeQr = req.query.qr === "1" || req.query.qr === "true";
+    const data = await getTicketsByBookingRef(ref, { includeQr });
+    res.json({ success: true, data });
+  } catch (error) {
+    next(error);
+  }
+});
+
+publicRouter.get("/tickets/:token", async (req, res, next) => {
+  try {
+    const { getTicketByToken } = await import("./ticket.service");
+    const token = String(req.params.token || "").trim();
+    const data = await getTicketByToken(token);
+    if (!data) {
+      return res.status(404).json({
+        success: false,
+        error: { code: "TICKET_NOT_FOUND", message: "Ticket not found" },
+      });
+    }
+    res.json({ success: true, data });
+  } catch (error) {
+    next(error);
+  }
+});
+
+publicRouter.get("/tickets/:token/qr", async (req, res, next) => {
+  try {
+    const { getTicketByToken } = await import("./ticket.service");
+    const token = String(req.params.token || "").trim();
+    const data = await getTicketByToken(token, { includeQr: true });
+    if (!data) {
+      return res.status(404).json({
+        success: false,
+        error: { code: "TICKET_NOT_FOUND", message: "Ticket not found" },
+      });
+    }
+    res.json({ success: true, data });
+  } catch (error) {
+    next(error);
+  }
+});
+
 publicRouter.post("/booking/claim", claimBookingHandler);
 
 // Coupon validation (public — same rules as payment charge)

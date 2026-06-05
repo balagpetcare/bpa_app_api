@@ -40,7 +40,7 @@ export function getProviderConfigIssues(code: PaymentProviderCode): string[] {
   const issues: string[] = [];
 
   if (code === "eps") {
-    for (const key of ["EPS_USERNAME", "EPS_PASSWORD", "EPS_HASH", "EPS_STORE_ID"]) {
+    for (const key of ["EPS_USERNAME", "EPS_PASSWORD", "EPS_STORE_ID"]) {
       if (!isRealEnvValue(process.env[key])) {
         issues.push(
           !process.env[key]?.trim()
@@ -48,6 +48,15 @@ export function getProviderConfigIssues(code: PaymentProviderCode): string[] {
             : `${key} is a placeholder (${process.env[key]?.trim()})`
         );
       }
+    }
+    const epsHash =
+      process.env.EPS_HASH_KEY?.trim() || process.env.EPS_HASH?.trim();
+    if (!isRealEnvValue(epsHash)) {
+      issues.push(
+        !epsHash
+          ? "EPS_HASH_KEY (or EPS_HASH) is missing"
+          : "EPS_HASH_KEY (or EPS_HASH) is a placeholder"
+      );
     }
     const merchant =
       process.env.EPS_MERCHANT_ID?.trim() || process.env.EPS_MERCHANTID?.trim();
@@ -270,13 +279,19 @@ export function getEpsConfig() {
     sandbox,
     username: process.env.EPS_USERNAME || "",
     password: process.env.EPS_PASSWORD || "",
-    hashKey: process.env.EPS_HASH || "",
+    hashKey: process.env.EPS_HASH_KEY?.trim() || process.env.EPS_HASH?.trim() || "",
     merchantId:
       process.env.EPS_MERCHANT_ID?.trim() || process.env.EPS_MERCHANTID?.trim() || "",
     storeId: process.env.EPS_STORE_ID || "",
-    successUrl: process.env.EPS_SUCCESS_URL || `${prefix}/webhook/redirect/success`,
-    failUrl: process.env.EPS_FAIL_URL || `${prefix}/webhook/redirect/fail`,
-    cancelUrl: process.env.EPS_CANCEL_URL || `${prefix}/webhook/redirect/cancel`,
+    successUrl:
+      process.env.EPS_SUCCESS_URL ||
+      `${prefix}/payment/eps/callback/success`,
+    failUrl:
+      process.env.EPS_FAIL_URL ||
+      `${prefix}/payment/eps/callback/fail`,
+    cancelUrl:
+      process.env.EPS_CANCEL_URL ||
+      `${prefix}/payment/eps/callback/cancel`,
     timeoutMs: Number(process.env.EPS_TIMEOUT_MS || 30_000),
   };
 }
@@ -305,7 +320,7 @@ export function getRequiredEnvKeys(code: PaymentProviderCode): string[] {
       return [
         "EPS_USERNAME",
         "EPS_PASSWORD",
-        "EPS_HASH",
+        "EPS_HASH_KEY",
         "EPS_STORE_ID",
         "EPS_MERCHANT_ID",
       ];

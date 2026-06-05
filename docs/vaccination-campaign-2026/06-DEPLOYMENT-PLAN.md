@@ -35,11 +35,13 @@
 
 ## 2. Environments
 
-| Env | API | Landing | Web | Purpose |
-|-----|-----|---------|-----|---------|
-| **Local** | `:3000` | `:3001` | `:3100` | Dev |
-| **Staging** | `api-staging.bpa…` | `campaign-staging.bpa…` | `admin-staging.bpa…` | UAT, payment/SMS sandbox |
-| **Production** | `api.bpa…` | Public campaign domain | `admin.bpa…` / staff URL | Live |
+| Env | API | Campaign site | Marketing landing | Web admin/staff | Purpose |
+|-----|-----|---------------|-------------------|-----------------|---------|
+| **Local** | `:3000` | `:3110` (`vaccination_2026`) | `:3101` (`bpa-landing`) | `:3100`–`:3107` (`bpa_web`) | Dev |
+| **Staging** | `api-staging.bpa…` | `vaccination-staging.bpa…` | `staging.bpa…` | `admin-staging.bpa…` | UAT, payment/SMS sandbox |
+| **Production** | `api.bpa…` | `vaccination.bpa…` | `bangladeshpetassociation.com` | `admin.bpa…` / staff URL | Live |
+
+Port and domain reference: [../infrastructure/PORT_AND_DOMAIN_MAP.md](../infrastructure/PORT_AND_DOMAIN_MAP.md)
 
 All non-prod must use **separate** DB, Redis, SMS sender IDs (where provider allows), and payment sandbox keys.
 

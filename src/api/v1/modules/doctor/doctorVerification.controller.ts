@@ -45,21 +45,15 @@ async function addSignedDocumentUrls(data: any, userId: number) {
     process.env.PUBLIC_API_BASE_URL ||
     process.env.API_BASE_URL ||
     `http://localhost:${process.env.PORT || 3000}`;
-  const jwt = require("jsonwebtoken");
-  const appConfig = require("../../../../config/appConfig");
-  const documents = data.documents.map((d: any) => {
-    const key = d.fileUrl || null;
-    if (!key) return { ...d, url: null };
-    const token = jwt.sign(
-      { purpose: "FILE_VIEW", fileKey: key, userId },
-      appConfig.jwt.secret,
-      { expiresIn: "20m" }
-    );
-    return {
-      ...d,
-      url: `${baseUrl}/api/v1/files/${encodeURIComponent(key)}?token=${encodeURIComponent(token)}`,
-    };
-  });
+  const { buildPrivateFileAccessUrl } = require("../../../../shared/storage/fileAccessUrl");
+  const documents = await Promise.all(
+    data.documents.map(async (d: any) => {
+      const key = d.fileUrl || null;
+      if (!key) return { ...d, url: null };
+      const url = await buildPrivateFileAccessUrl({ key, userId, baseUrl });
+      return { ...d, url };
+    })
+  );
   return { ...data, documents };
 }
 

@@ -90,6 +90,39 @@ export async function generateBookingQr(
 }
 
 /**
+ * Generate QR code for a per-cat vaccination ticket
+ */
+export async function generatePetTicketQr(
+  ticketToken: string,
+  petName: string,
+  bookingRef: string,
+  options?: { size?: number }
+): Promise<{ qrData: string; qrImage: string; ticketUrl: string }> {
+  const qrUrl = `${BASE_URL}/ticket/${ticketToken}`;
+  const qrData = {
+    type: "ticket",
+    version: QR_VERSION,
+    token: ticketToken,
+    petName,
+    ref: bookingRef,
+    checksum: generateChecksum(ticketToken),
+  };
+
+  const size = options?.size ?? 280;
+  const qrImage = await QRCode.toDataURL(qrUrl, {
+    errorCorrectionLevel: "M",
+    width: size,
+    margin: 2,
+  });
+
+  return {
+    qrData: JSON.stringify(qrData),
+    qrImage,
+    ticketUrl: qrUrl,
+  };
+}
+
+/**
  * Generate QR code for a vaccination certificate
  */
 export async function generateCertificateQr(

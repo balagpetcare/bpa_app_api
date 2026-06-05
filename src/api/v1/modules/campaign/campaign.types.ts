@@ -242,6 +242,8 @@ export interface BookingDetails {
     name: string;
     vaccinationStatus: CampaignPetVaccinationStatus;
     certificateToken?: string;
+    ticketToken?: string;
+    ticketUrl?: string;
   }>;
   paymentStatus: CampaignPaymentStatus;
   queueNumber?: string;
@@ -324,12 +326,17 @@ export interface StaffPermissions {
 
 export type SmsTemplateCode =
   | "OTP"
+  | "BOOKING_REQUEST"
+  | "PAYMENT_SUCCESS"
+  | "PAYMENT_FAILED"
   | "BOOKING_CONFIRMED"
   | "BOOKING_ZONE_INTEREST"
   | "VENUE_ASSIGNED"
+  | "SLOT_CONFIRMED"
   | "REMINDER_24H"
   | "REMINDER_2H"
   | "VACCINATION_COMPLETE"
+  | "CERTIFICATE_READY"
   | "BOOKING_CANCELLED"
   | "NO_SHOW"
   | "ANNOUNCEMENT";

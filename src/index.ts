@@ -64,6 +64,20 @@ try {
   }
 }
 try {
+  const { bootstrapStorage } = require("./infrastructure/storage/storage.bootstrap");
+  bootstrapStorage().catch((err: Error) => {
+    console.error("[STORAGE_INIT] bootstrap failed", err);
+    if (process.env.NODE_ENV === "production") {
+      process.exit(1);
+    }
+  });
+} catch (e) {
+  console.error("[STORAGE_INIT] bootstrap failed", e);
+  if (process.env.NODE_ENV === "production") {
+    process.exit(1);
+  }
+}
+try {
   const { runPaymentRecoveryJob } = require("./api/v1/payments/paymentRecovery.service");
   const recoveryIntervalMs = Number(process.env.PAYMENT_RECOVERY_INTERVAL_MS || 10 * 60 * 1000);
   function runRecovery() {

@@ -1,0 +1,13 @@
+# Merge into /etc/nginx/nginx.conf inside the http { } block:
+#
+#   include /etc/nginx/conf.d/*.conf;
+#   include /etc/nginx/sites-enabled/*;
+#
+# Ensure these lines appear BEFORE server blocks. Default Debian/Ubuntu nginx.conf
+# already includes conf.d/*.conf — verify order:
+#   00-map-upgrade.conf
+#   00-upstreams.conf
+#   01-rate-limit.conf
+#   02-security-headers.conf
+#   03-compression.conf
+#   04-brotli.conf          (optional)
