@@ -2,7 +2,7 @@
 CREATE TYPE "CampaignCheckoutStatus" AS ENUM ('PENDING', 'PAID', 'FULFILLED', 'EXPIRED', 'FAILED');
 
 -- AlterTable
-ALTER TABLE "campaign_rollout_regions" ADD COLUMN "bookedCount" INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE "campaign_rollout_regions" ADD COLUMN IF NOT EXISTS "bookedCount" INTEGER NOT NULL DEFAULT 0;
 
 -- AlterTable
 ALTER TABLE "campaign_bookings" ADD COLUMN "rolloutRegionId" INTEGER,
