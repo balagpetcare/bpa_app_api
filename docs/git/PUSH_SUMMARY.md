@@ -10,7 +10,7 @@
 
 | Repository | GitHub URL | Branch | Commit Hash | Push Status | Notes |
 |---|---|---|---|---|---|
-| backend-api | https://github.com/balagpetcare/bpa_app_api.git | `main` | `6129e83` | **SUCCESS** | Fast-forward merged `release/V-A1.0.7` (33 commits) + audit docs |
+| backend-api | https://github.com/balagpetcare/bpa_app_api.git | `main` | `5a623a6` | **SUCCESS** | Fast-forward merged `release/V-A1.0.7` (33 commits) + audit docs |
 | bpa_app | https://github.com/balagpetcare/bpa_app.git | `main` | `9255aa8` | **SUCCESS** | Committed 231 files, fast-forward merged `v.10.0.0.1` (4 commits) |
 | bpa_web | https://github.com/balagpetcare/next_v1.git | `main` | `740835a` | **SUCCESS** | Fast-forward merged `release/V-A1.0.8` (62 commits) |
 | vaccination_2026 | https://github.com/balagpetcare/vaccination_2026.git | `main` | `a3a22fe` | **SUCCESS** | Committed 38 landing page changes |
@@ -76,7 +76,7 @@ All four repositories confirmed in sync with `origin/main` (0 ahead / 0 behind):
 
 | Repository | Local `main` | `origin/main` | Match |
 |---|---|---|---|
-| backend-api | `6129e83` | `6129e83` | Yes |
+| backend-api | `5a623a6` | `5a623a6` | Yes |
 | bpa_app | `9255aa8` | `9255aa8` | Yes |
 | bpa_web | `740835a` | `740835a` | Yes |
 | vaccination_2026 | `a3a22fe` | `a3a22fe` | Yes |
