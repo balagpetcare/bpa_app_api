@@ -42,7 +42,7 @@
     "verify:coverage-zones": "cross-env TS_NODE_TRANSPILE_ONLY=1 node -r ts-node/register scripts/verify-coverage-zones.ts",
     "migrate:location-references": "cross-env TS_NODE_TRANSPILE_ONLY=1 node -r ts-node/register scripts/migrate-location-references.ts",
     "cleanup:categories": "npx ts-node scripts/cleanup-incorrect-categories.ts",
-    "build": "rimraf dist && tsc -p tsconfig.json && node -e \"require('fs').copyFileSync('src/api/v1/services/ownerDelegation.service.js','dist/api/v1/services/ownerDelegation.service.js')\"",
+    "build": "rimraf dist && tsc -p tsconfig.json && node scripts/copy-runtime-assets.cjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prisma:check": "node scripts/run-local-prisma.cjs validate && node scripts/run-local-prisma.cjs generate && node scripts/run-local-prisma.cjs format",
     "migrate:check-files": "node scripts/check-migration-files.js",
