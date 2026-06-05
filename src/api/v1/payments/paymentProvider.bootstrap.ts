@@ -16,7 +16,8 @@ export type PaymentBootstrapResult = {
 
 /**
  * Validates env and logs active provider — call once on API startup.
- * In production, missing config throws to fail fast.
+ * Missing credentials warn and mark provider unavailable; they do not block boot.
+ * Payment routes reject create/verify when the active provider is not configured.
  */
 export function bootstrapPaymentProvider(): PaymentBootstrapResult {
   const validation = validateActivePaymentProviderConfig();
@@ -47,11 +48,8 @@ export function bootstrapPaymentProvider(): PaymentBootstrapResult {
     console.log(`[Payment] Webhook base: ${callbackUrl} | configured: yes`);
   } else {
     const msg = `[Payment] Active provider: ${provider} | NOT ready: ${validation.errors.join("; ")}`;
-    if (process.env.NODE_ENV === "production") {
-      console.error(msg);
-      throw new Error(msg);
-    }
-    console.warn(msg);
+    console.warn(`${msg} — API will start; payment create/verify will fail until configured.`);
+    warnings.push(msg);
   }
 
   const missingOptional = strategy.validateConfig();

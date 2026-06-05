@@ -56,12 +56,14 @@ try {
 
 try {
   const { bootstrapPaymentProvider } = require("./api/v1/payments/paymentProvider.bootstrap");
-  bootstrapPaymentProvider();
+  const paymentBoot = bootstrapPaymentProvider();
+  if (!paymentBoot.ready) {
+    console.warn(
+      `[PAYMENT_INIT] Provider "${paymentBoot.provider}" unavailable at startup — payment APIs disabled until credentials are set`
+    );
+  }
 } catch (e) {
   console.error("[PAYMENT_INIT] bootstrap failed", e);
-  if (process.env.NODE_ENV === "production") {
-    process.exit(1);
-  }
 }
 try {
   const { bootstrapStorage } = require("./infrastructure/storage/storage.bootstrap");
