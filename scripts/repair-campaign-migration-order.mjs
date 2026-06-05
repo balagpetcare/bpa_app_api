@@ -27,6 +27,7 @@ const OLD_MIGRATION = "20260603120000_campaign_checkout_session";
 const NEW_MIGRATION = "20260604130000_campaign_checkout_session";
 
 const RESOLVE_FAILED = process.argv.includes("--resolve-failed");
+const RESOLVE_FAILED_NEW = process.argv.includes("--resolve-failed-new");
 const RENAME_APPLIED = process.argv.includes("--rename-applied");
 
 dotenv.config({ path: path.join(ROOT, ".env") });
@@ -91,6 +92,25 @@ async function main() {
 
     if (newRow?.finished_at) {
       console.log("\nNew checkout migration already applied. Nothing to repair.");
+      return;
+    }
+
+    const newFailed = newRow && !newRow.finished_at && !newRow.rolled_back_at;
+
+    if (newFailed) {
+      console.log("\nDetected: failed NEW checkout migration (partial apply / enum exists).");
+      console.log("After pulling idempotent migration SQL:");
+      console.log(`  node scripts/repair-campaign-migration-order.mjs --resolve-failed-new`);
+      console.log("  node scripts/inspect-campaign-checkout-objects.mjs");
+      console.log("  npx prisma migrate deploy");
+
+      if (RESOLVE_FAILED_NEW) {
+        console.log("\nRunning migrate resolve --rolled-back on new migration ...");
+        runPrisma(["migrate", "resolve", "--rolled-back", NEW_MIGRATION]);
+        console.log("\nResolve complete. Next: npx prisma migrate deploy");
+      } else {
+        process.exitCode = 1;
+      }
       return;
     }
 

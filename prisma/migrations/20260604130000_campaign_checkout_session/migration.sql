@@ -1,16 +1,19 @@
--- CreateEnum
-CREATE TYPE "CampaignCheckoutStatus" AS ENUM ('PENDING', 'PAID', 'FULFILLED', 'EXPIRED', 'FAILED');
+-- Campaign checkout sessions (idempotent — safe after partial apply / enum pre-exists from failed run)
 
--- AlterTable
+DO $$
+BEGIN
+  CREATE TYPE "CampaignCheckoutStatus" AS ENUM ('PENDING', 'PAID', 'FULFILLED', 'EXPIRED', 'FAILED');
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;
+
 ALTER TABLE "campaign_rollout_regions" ADD COLUMN IF NOT EXISTS "bookedCount" INTEGER NOT NULL DEFAULT 0;
 
--- AlterTable
-ALTER TABLE "campaign_bookings" ADD COLUMN "rolloutRegionId" INTEGER,
-ADD COLUMN "checkoutSessionId" VARCHAR(32),
-ADD COLUMN "ownerAlternatePhone" VARCHAR(15);
+ALTER TABLE "campaign_bookings" ADD COLUMN IF NOT EXISTS "rolloutRegionId" INTEGER;
+ALTER TABLE "campaign_bookings" ADD COLUMN IF NOT EXISTS "checkoutSessionId" VARCHAR(32);
+ALTER TABLE "campaign_bookings" ADD COLUMN IF NOT EXISTS "ownerAlternatePhone" VARCHAR(15);
 
--- CreateTable
-CREATE TABLE "campaign_checkout_sessions" (
+CREATE TABLE IF NOT EXISTS "campaign_checkout_sessions" (
     "id" TEXT NOT NULL,
     "campaignId" INTEGER NOT NULL,
     "rolloutRegionId" INTEGER,
@@ -31,32 +34,53 @@ CREATE TABLE "campaign_checkout_sessions" (
     CONSTRAINT "campaign_checkout_sessions_pkey" PRIMARY KEY ("id")
 );
 
--- CreateIndex
-CREATE INDEX "campaign_bookings_rolloutRegionId_idx" ON "campaign_bookings"("rolloutRegionId");
+CREATE INDEX IF NOT EXISTS "campaign_bookings_rolloutRegionId_idx" ON "campaign_bookings"("rolloutRegionId");
+CREATE UNIQUE INDEX IF NOT EXISTS "campaign_bookings_checkoutSessionId_key" ON "campaign_bookings"("checkoutSessionId");
+CREATE INDEX IF NOT EXISTS "campaign_checkout_sessions_ownerPhone_idx" ON "campaign_checkout_sessions"("ownerPhone");
+CREATE INDEX IF NOT EXISTS "campaign_checkout_sessions_status_expiresAt_idx" ON "campaign_checkout_sessions"("status", "expiresAt");
+CREATE INDEX IF NOT EXISTS "campaign_checkout_sessions_campaignId_idx" ON "campaign_checkout_sessions"("campaignId");
 
--- CreateIndex
-CREATE UNIQUE INDEX "campaign_bookings_checkoutSessionId_key" ON "campaign_bookings"("checkoutSessionId");
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'campaign_bookings_rolloutRegionId_fkey') THEN
+    ALTER TABLE "campaign_bookings"
+      ADD CONSTRAINT "campaign_bookings_rolloutRegionId_fkey"
+      FOREIGN KEY ("rolloutRegionId") REFERENCES "campaign_rollout_regions"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
+END $$;
 
--- CreateIndex
-CREATE INDEX "campaign_checkout_sessions_ownerPhone_idx" ON "campaign_checkout_sessions"("ownerPhone");
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'campaign_bookings_checkoutSessionId_fkey') THEN
+    ALTER TABLE "campaign_bookings"
+      ADD CONSTRAINT "campaign_bookings_checkoutSessionId_fkey"
+      FOREIGN KEY ("checkoutSessionId") REFERENCES "campaign_checkout_sessions"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
+END $$;
 
--- CreateIndex
-CREATE INDEX "campaign_checkout_sessions_status_expiresAt_idx" ON "campaign_checkout_sessions"("status", "expiresAt");
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'campaign_checkout_sessions_campaignId_fkey') THEN
+    ALTER TABLE "campaign_checkout_sessions"
+      ADD CONSTRAINT "campaign_checkout_sessions_campaignId_fkey"
+      FOREIGN KEY ("campaignId") REFERENCES "campaigns"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
+END $$;
 
--- CreateIndex
-CREATE INDEX "campaign_checkout_sessions_campaignId_idx" ON "campaign_checkout_sessions"("campaignId");
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'campaign_checkout_sessions_rolloutRegionId_fkey') THEN
+    ALTER TABLE "campaign_checkout_sessions"
+      ADD CONSTRAINT "campaign_checkout_sessions_rolloutRegionId_fkey"
+      FOREIGN KEY ("rolloutRegionId") REFERENCES "campaign_rollout_regions"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
+END $$;
 
--- AddForeignKey
-ALTER TABLE "campaign_bookings" ADD CONSTRAINT "campaign_bookings_rolloutRegionId_fkey" FOREIGN KEY ("rolloutRegionId") REFERENCES "campaign_rollout_regions"("id") ON DELETE SET NULL ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "campaign_bookings" ADD CONSTRAINT "campaign_bookings_checkoutSessionId_fkey" FOREIGN KEY ("checkoutSessionId") REFERENCES "campaign_checkout_sessions"("id") ON DELETE SET NULL ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "campaign_checkout_sessions" ADD CONSTRAINT "campaign_checkout_sessions_campaignId_fkey" FOREIGN KEY ("campaignId") REFERENCES "campaigns"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "campaign_checkout_sessions" ADD CONSTRAINT "campaign_checkout_sessions_rolloutRegionId_fkey" FOREIGN KEY ("rolloutRegionId") REFERENCES "campaign_rollout_regions"("id") ON DELETE SET NULL ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "campaign_checkout_sessions" ADD CONSTRAINT "campaign_checkout_sessions_orderId_fkey" FOREIGN KEY ("orderId") REFERENCES "orders"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'campaign_checkout_sessions_orderId_fkey') THEN
+    ALTER TABLE "campaign_checkout_sessions"
+      ADD CONSTRAINT "campaign_checkout_sessions_orderId_fkey"
+      FOREIGN KEY ("orderId") REFERENCES "orders"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
+END $$;
