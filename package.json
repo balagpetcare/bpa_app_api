@@ -37,6 +37,7 @@
     "seed:dhaka-metro": "cross-env TS_NODE_TRANSPILE_ONLY=1 node -r ts-node/register scripts/seed-dhaka-metro.ts",
     "seed:coverage-zones": "cross-env TS_NODE_TRANSPILE_ONLY=1 node -r ts-node/register scripts/seed-coverage-zones.ts",
     "seed:campaign-checkout-anchor": "cross-env TS_NODE_TRANSPILE_ONLY=1 node -r ts-node/register scripts/seed-campaign-checkout-anchor.ts",
+    "bootstrap:campaign-branch": "cross-env TS_NODE_TRANSPILE_ONLY=1 node -r ts-node/register scripts/bootstrap-campaign-branch.ts",
     "verify:campaign-checkout-anchor": "cross-env TS_NODE_TRANSPILE_ONLY=1 node -r ts-node/register scripts/verify-campaign-checkout-anchor.ts",
     "verify:location-master": "cross-env TS_NODE_TRANSPILE_ONLY=1 node -r ts-node/register scripts/verify-location-master.ts",
     "verify:coverage-zones": "cross-env TS_NODE_TRANSPILE_ONLY=1 node -r ts-node/register scripts/verify-coverage-zones.ts",
