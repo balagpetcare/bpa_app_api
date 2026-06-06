@@ -272,7 +272,7 @@ export function getEpsBaseUrlResolution(): {
 
 export function getEpsConfig() {
   const { baseUrl, sandbox } = getEpsBaseUrlResolution();
-  const prefix = getUnifiedPaymentApiPrefix();
+  const epsPrefix = `${getApiPublicBaseUrl()}/api/v1/payments/eps`;
 
   return {
     baseUrl,
@@ -285,13 +285,16 @@ export function getEpsConfig() {
     storeId: process.env.EPS_STORE_ID || "",
     successUrl:
       process.env.EPS_SUCCESS_URL ||
-      `${prefix}/payment/eps/callback/success`,
+      `${epsPrefix}/success`,
     failUrl:
       process.env.EPS_FAIL_URL ||
-      `${prefix}/payment/eps/callback/fail`,
+      `${epsPrefix}/fail`,
     cancelUrl:
       process.env.EPS_CANCEL_URL ||
-      `${prefix}/payment/eps/callback/cancel`,
+      `${epsPrefix}/cancel`,
+    callbackUrl:
+      process.env.EPS_CALLBACK_URL ||
+      `${epsPrefix}/webhook`,
     timeoutMs: Number(process.env.EPS_TIMEOUT_MS || 30_000),
   };
 }

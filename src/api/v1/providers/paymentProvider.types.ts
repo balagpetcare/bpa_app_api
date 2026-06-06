@@ -12,6 +12,7 @@ export type PaymentIntentResponse = {
   redirectUrl?: string;
   providerPaymentId?: string;
   message?: string;
+  metadata?: Record<string, string>;
 };
 
 export type PaymentRefundRequest = {
@@ -33,4 +34,5 @@ export type VerifiedPaymentEvent = {
   status: "SUCCESS" | "FAILED" | "CANCELLED";
   amount: number;
   eventId: string;
+  rawResponse?: Record<string, unknown>;
 };

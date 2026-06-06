@@ -29,6 +29,7 @@ export async function createIntent(req: PaymentIntentRequest): Promise<PaymentIn
 export async function checkTransactionStatus(input: {
   merchantTransactionId?: string;
   epsTransactionId?: string;
+  customerOrderId?: string;
 }): Promise<VerifiedPaymentEvent | null> {
   if (!isEpsModuleConfigured()) return null;
   return verifyEpsTransaction(input);

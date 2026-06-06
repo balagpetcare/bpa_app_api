@@ -2,7 +2,6 @@ import {
   formatProviderNotConfiguredMessage,
   getApiPublicBaseUrl,
   getEpsBaseUrlResolution,
-  getUnifiedPaymentApiPrefix,
   isPlaceholderEnvValue,
   isRealEnvValue,
 } from "../../../providers/paymentProvider.config";
@@ -18,6 +17,7 @@ export type EpsConfig = {
   successUrl: string;
   failUrl: string;
   cancelUrl: string;
+  callbackUrl: string;
   timeoutMs: number;
 };
 
@@ -32,7 +32,7 @@ export function getEpsHashKey(): string {
 
 export function getEpsModuleConfig(): EpsConfig {
   const { baseUrl, sandbox } = getEpsBaseUrlResolution();
-  const prefix = getUnifiedPaymentApiPrefix();
+  const epsPrefix = `${getApiPublicBaseUrl()}/api/v1/payments/eps`;
 
   return {
     baseUrl,
@@ -47,13 +47,16 @@ export function getEpsModuleConfig(): EpsConfig {
     storeId: process.env.EPS_STORE_ID?.trim() || "",
     successUrl:
       process.env.EPS_SUCCESS_URL?.trim() ||
-      `${prefix}/payment/eps/callback/success`,
+      `${epsPrefix}/success`,
     failUrl:
       process.env.EPS_FAIL_URL?.trim() ||
-      `${prefix}/payment/eps/callback/fail`,
+      `${epsPrefix}/fail`,
     cancelUrl:
       process.env.EPS_CANCEL_URL?.trim() ||
-      `${prefix}/payment/eps/callback/cancel`,
+      `${epsPrefix}/cancel`,
+    callbackUrl:
+      process.env.EPS_CALLBACK_URL?.trim() ||
+      `${epsPrefix}/webhook`,
     timeoutMs: Number(process.env.EPS_TIMEOUT_MS || 30_000),
   };
 }

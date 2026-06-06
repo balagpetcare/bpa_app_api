@@ -7,6 +7,7 @@ import {
   getSslCommerzConfig,
   getEpsConfig,
   getUnifiedPaymentApiPrefix,
+  getApiPublicBaseUrl,
 } from "../providers/paymentProvider.config";
 import {
   createUnifiedPayment,
@@ -171,12 +172,14 @@ export function callbackUrlsHandler(_req: Request, res: Response) {
         success: getEpsConfig().successUrl,
         fail: getEpsConfig().failUrl,
         cancel: getEpsConfig().cancelUrl,
+        callback: getEpsConfig().callbackUrl,
         baseUrl: getEpsConfig().baseUrl,
         module: {
-          initiate: `${prefix}/payment/eps/initiate`,
-          validate: `${prefix}/payment/eps/validate`,
-          webhook: `${prefix}/payment/eps/webhook`,
-          callbackUrls: `${prefix}/payment/eps/callback-urls`,
+          initiate: `${getApiPublicBaseUrl()}/api/v1/payments/eps/initiate`,
+          validate: `${getApiPublicBaseUrl()}/api/v1/payments/eps/validate`,
+          verify: `${getApiPublicBaseUrl()}/api/v1/payments/eps/verify/:transactionId`,
+          webhook: getEpsConfig().callbackUrl,
+          callbackUrls: `${getApiPublicBaseUrl()}/api/v1/payments/eps/callback-urls`,
         },
       },
     },

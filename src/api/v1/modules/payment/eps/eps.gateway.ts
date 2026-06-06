@@ -140,15 +140,21 @@ export async function initializeEpsPayment(
     success: true,
     redirectUrl: data.RedirectURL,
     providerPaymentId: data.TransactionId || merchantTransactionId,
+    metadata: {
+      merchantTransactionId,
+      customerOrderId: req.referenceId,
+    },
   };
 }
 
 export async function verifyEpsTransaction(input: {
   merchantTransactionId?: string;
   epsTransactionId?: string;
+  customerOrderId?: string;
 }): Promise<EpsVerifiedEvent | null> {
   const merchantTransactionId = input.merchantTransactionId?.trim();
   const epsTransactionId = input.epsTransactionId?.trim();
+  const customerOrderId = input.customerOrderId?.trim();
   if (!merchantTransactionId && !epsTransactionId) return null;
 
   const cfg = assertEpsConfigured();
@@ -180,19 +186,24 @@ export async function verifyEpsTransaction(input: {
   const providerTxId = String(data.EPSTransactionId || data.EpsTransactionId || txnId);
   const amount = parseFloat(String(data.TotalAmount || "0")) || 0;
   const mapped = mapEpsStatus(data.Status);
+  const orderReference = customerOrderId || undefined;
 
   return {
     provider: "eps",
-    transactionId: txnId,
+    transactionId: orderReference || txnId,
     providerTxId,
     status: mapped,
     amount,
     eventId: `eps:verify:${providerTxId}:${mapped}`,
-    rawResponse: data as unknown as Record<string, unknown>,
+    rawResponse: {
+      ...(data as unknown as Record<string, unknown>),
+      ...(orderReference ? { CustomerOrderId: orderReference } : {}),
+    },
   };
 }
 
 export function parseEpsCallbackQuery(query: Record<string, string>): EpsVerifiedEvent | null {
+  const customerOrderId = String(query.CustomerOrderId || query.customerOrderId || "").trim();
   const merchantTransactionId = String(
     query.merchantTransactionId || query.MerchantTransactionId || ""
   ).trim();
@@ -201,18 +212,19 @@ export function parseEpsCallbackQuery(query: Record<string, string>): EpsVerifie
   ).trim();
   const statusRaw = String(query.status || query.Status || "").trim();
 
-  if (!merchantTransactionId && !epsTransactionId) return null;
+  if (!customerOrderId && !merchantTransactionId && !epsTransactionId) return null;
 
-  const transactionId = merchantTransactionId || epsTransactionId;
+  /** Campaign orders are keyed by orderNumber (CAMP-* / CKO-*), not EPS merchant txn id. */
+  const transactionId = customerOrderId || merchantTransactionId || epsTransactionId;
   const mapped = mapEpsStatus(statusRaw);
 
   return {
     provider: "eps",
     transactionId,
-    providerTxId: epsTransactionId || transactionId,
+    providerTxId: epsTransactionId || merchantTransactionId || transactionId,
     status: mapped,
     amount: 0,
-    eventId: `eps:callback:${transactionId}:${mapped}:${statusRaw}`,
+    eventId: `eps:callback:${merchantTransactionId || epsTransactionId || customerOrderId}:${mapped}:${statusRaw}`,
     rawResponse: query,
   };
 }

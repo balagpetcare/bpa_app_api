@@ -50,7 +50,13 @@ async function dispatchVerifiedEvent(event: VerifiedPaymentEvent): Promise<Webho
     transactionId: event.transactionId,
     status: event.status,
     amount: event.amount,
-    metadata: { providerTxId: event.providerTxId, eventId: event.eventId },
+    metadata: {
+      providerTxId: event.providerTxId,
+      eventId: event.eventId,
+      ...(typeof event.rawResponse?.CustomerOrderId === "string"
+        ? { customerOrderId: event.rawResponse.CustomerOrderId }
+        : {}),
+    },
   };
 
   const { processPaymentWebhook } = require("../modules/campaign/payment.service") as {
@@ -111,6 +117,8 @@ export async function createUnifiedPayment(input: CreatePaymentInput): Promise<C
         responseJson: {
           redirectUrl: result.redirectUrl,
           providerPaymentId: result.providerPaymentId,
+          merchantTransactionId: result.metadata?.merchantTransactionId,
+          customerOrderId: result.metadata?.customerOrderId ?? input.referenceId,
         },
       });
       if (provider === "eps" && result.providerPaymentId) {

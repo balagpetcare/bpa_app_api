@@ -24,11 +24,15 @@ export const epsStrategy: PaymentProviderStrategy = {
         ""
     ).trim();
     const epsTransactionId = String(providerTxId || query?.EPSTransactionId || "").trim();
+    const customerOrderId = String(
+      query?.CustomerOrderId || query?.customerOrderId || ""
+    ).trim();
     if (!merchantTransactionId && !epsTransactionId) return null;
 
     return eps.checkTransactionStatus({
       merchantTransactionId: merchantTransactionId || undefined,
       epsTransactionId: epsTransactionId || undefined,
+      customerOrderId: customerOrderId || undefined,
     });
   },
 
@@ -45,12 +49,14 @@ export const epsStrategy: PaymentProviderStrategy = {
       record.merchantTransactionId || record.MerchantTransactionId || "";
     const epsTransactionId =
       record.epsTransactionId || record.EPSTransactionId || record.EpsTransactionId;
+    const customerOrderId = record.CustomerOrderId || record.customerOrderId || "";
 
-    if (!merchantTransactionId && !epsTransactionId) return null;
+    if (!merchantTransactionId && !epsTransactionId && !customerOrderId) return null;
 
     const verified = await eps.checkTransactionStatus({
       merchantTransactionId: merchantTransactionId || undefined,
       epsTransactionId: epsTransactionId || undefined,
+      customerOrderId: customerOrderId || undefined,
     });
     if (verified) return verified;
 

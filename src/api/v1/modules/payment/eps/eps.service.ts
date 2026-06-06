@@ -30,6 +30,7 @@ function toVerifiedPaymentEvent(event: {
   status: "SUCCESS" | "FAILED" | "CANCELLED";
   amount: number;
   eventId: string;
+  rawResponse?: Record<string, unknown>;
 }): VerifiedPaymentEvent {
   return {
     provider: event.provider,
@@ -38,6 +39,7 @@ function toVerifiedPaymentEvent(event: {
     status: event.status,
     amount: event.amount,
     eventId: event.eventId,
+    rawResponse: event.rawResponse,
   };
 }
 
@@ -181,7 +183,13 @@ async function dispatchPaymentWebhook(event: VerifiedPaymentEvent) {
     transactionId: event.transactionId,
     status: event.status,
     amount: event.amount,
-    metadata: { providerTxId: event.providerTxId, eventId: event.eventId },
+    metadata: {
+      providerTxId: event.providerTxId,
+      eventId: event.eventId,
+      ...(typeof event.rawResponse?.CustomerOrderId === "string"
+        ? { customerOrderId: event.rawResponse.CustomerOrderId }
+        : {}),
+    },
   };
 
   const { processPaymentWebhook } = require("../../campaign/payment.service") as {
@@ -224,6 +232,7 @@ export async function handleEpsWebhook(input: {
     record.merchantTransactionId || record.MerchantTransactionId || "";
   const epsTransactionId =
     record.epsTransactionId || record.EPSTransactionId || record.EpsTransactionId;
+  const customerOrderId = record.CustomerOrderId || record.customerOrderId || "";
 
   if (!merchantTransactionId && !epsTransactionId) {
     return { success: false, error: "Missing transaction identifiers" };
@@ -232,6 +241,7 @@ export async function handleEpsWebhook(input: {
   const verified = await verifyEpsTransaction({
     merchantTransactionId: merchantTransactionId || undefined,
     epsTransactionId: epsTransactionId || undefined,
+    customerOrderId: customerOrderId || undefined,
   });
 
   const event = verified || parseEpsCallbackQuery(record);
@@ -296,7 +306,8 @@ export function getEpsCallbackUrls() {
     success: cfg.successUrl,
     fail: cfg.failUrl,
     cancel: cfg.cancelUrl,
+    callback: cfg.callbackUrl,
     baseUrl: cfg.baseUrl,
-    webhook: `${cfg.successUrl.replace(/\/callback\/success$/, "")}/webhook`,
+    webhook: cfg.callbackUrl,
   };
 }

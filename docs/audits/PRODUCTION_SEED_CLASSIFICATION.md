@@ -3,7 +3,7 @@
 **Date:** 2026-06-06  
 **Repository:** `backend-api`  
 **Scope:** Analysis only — no code changes  
-**Related:** [SEED_SYSTEM_AUDIT.md](./SEED_SYSTEM_AUDIT.md), [SEED_RECOVERY_PLAN.md](../plans/SEED_RECOVERY_PLAN.md)
+**Related:** [SEED_SYSTEM_AUDIT.md](./SEED_SYSTEM_AUDIT.md), [PRODUCTION_SEED_EXECUTION_PLAN.md](../plans/PRODUCTION_SEED_EXECUTION_PLAN.md), [PRODUCTION_DEPLOY_AND_SEED_MASTER_REPORT.md](./PRODUCTION_DEPLOY_AND_SEED_MASTER_REPORT.md)
 
 ---
 
@@ -11,364 +11,242 @@
 
 | Verdict | Detail |
 |---------|--------|
-| **Do not run** `npm run db:seed` or `npm run db:deploy` (seed half) on a **populated production database** | Main chain step **18** (`prisma/seeds/seed-master-catalog.ts`) runs `deleteMany` on all `MasterClinicalCatalogItem` and `MasterClinicalCatalogCategory` rows before CSV reload |
-| **Safe production approach** | Run **migrations only**, then **targeted standalone scripts** for missing master/reference data |
-| **Coverage zones** | Not in main `prisma/seed.ts` chain — use `npm run seed:coverage-zones` |
-| **Super Admin user** | Not in Prisma seed — use `npm run admin:bootstrap` with env credentials |
-| **Preserves** | Users, orders, org clinic records, inventory ledgers — **when only SAFE/WARNING master seeds below are used** and step 18 is skipped |
+| **Do not run** `npm run db:seed` / `db:deploy` (seed half) on a **populated production DB** | Step 18 (`prisma/seeds/seed-master-catalog.ts`) runs `deleteMany` on all master clinical catalog rows |
+| **Safe production approach** | `npm run bootstrap:deploy` then targeted standalone seeds (see execution plan) |
+| **Coverage zones** | Not in main `prisma/seed.ts` — use `npm run seed:coverage-zones` after migrations |
+| **Super Admin user** | Not in Prisma seed — `npm run admin:bootstrap` is **mandatory** for admin login |
+| **Runtime stack** | Node.js **22.22.0**, Prisma **7.8.0**, TypeScript **5.9.3**, ts-node **10.9.2** — verified compatible |
 
 ### Classification legend
 
-| Class | Meaning |
-|-------|---------|
-| **SAFE** | Idempotent insert-if-missing, or upsert whose `update` branch is empty / no-op for existing rows. No `deleteMany`, truncate, or reset. Does not touch transactional business tables (orders, stock ledger, patients). |
-| **WARNING** | May **update** existing master/reference rows, **create** org-level or campaign data, **assign roles**, or **reset passwords**. Re-runnable but review impact on live data. |
-| **DANGEROUS** | `deleteMany`, `migrate reset`, or full seed chain that includes destructive steps. Can break FK links or wipe catalog data in use. |
+| Class | Characteristics |
+|-------|-----------------|
+| **SAFE** | Upsert with empty/no-op update, or create-if-missing only. No `deleteMany`, truncate, drop, reset, or destructive SQL. |
+| **WARNING** | Updates existing rows, rebuilds/syncs reference tables, creates org-level data, assigns roles, resets passwords. |
+| **DANGEROUS** | `deleteMany`, truncate, drop, `migrate reset`, destructive catalog replacement, raw SQL deletion. |
 
 ---
 
-## 2. `package.json` seed commands
+## 2. Seed entry points
 
-| Script | Command | Class | Notes |
-|--------|---------|-------|-------|
-| `seed` | `node scripts/run-local-prisma.cjs db seed` | **DANGEROUS** (on populated DB) | Runs full `prisma/seed.ts` including step 18 CSV wipe |
-| `db:seed` | same as `seed` | **DANGEROUS** (on populated DB) | Alias |
-| `db:deploy` | `migrate deploy && db seed` | **DANGEROUS** (on populated DB) | Migrate half is fine; **seed half unsafe** until step 18 is fixed |
-| `db:reset` | `migrate reset --force` | **DANGEROUS** | Drops all data, reapplies migrations, runs seed |
-| `bootstrap:deploy` | `setup:prisma && migrate deploy` | **SAFE** | Migrations only — **preferred deploy path for existing prod DB** |
-| `admin:bootstrap` | `scripts/bootstrap-super-admin.ts` | **WARNING** | Creates or **updates** Super Admin user (password reset), whitelist, `SUPER_ADMIN` role |
-| `create:super-admin` / `bootstrap:admin` | alias → `admin:bootstrap` | **WARNING** | Same |
-| `seed:location-master` | `scripts/seed-location-master.ts` | **WARNING** | BD divisions→areas via upsert (updates `nameEn`/`nameBn` on existing codes) |
-| `seed:dhaka-city` | `scripts/seed-dhaka-city.ts` | **WARNING** | DNCC/DSCC `BdArea` tree upserts |
-| `seed:dhaka-metro` | `scripts/seed-dhaka-metro.ts` | **WARNING** | Dhaka BdArea + metro `CoverageZone` upserts |
-| `seed:coverage-zones` | `scripts/seed-coverage-zones.ts` | **WARNING** | Full coverage pipeline; upserts zones/metadata/mappings |
-| `seed:clinic-vaccine-items` | `scripts/seed-clinic-vaccine-items.ts` | **WARNING** | Creates org-level `clinicalItem` rows (`ORG_ID` required); skips alias matches |
-| `seed:campaign-checkout-anchor` | `scripts/seed-campaign-checkout-anchor.ts` | **WARNING** | May create BPA org/branch; updates org/branch status if exists |
+| Entry | Path / command | Wired to npm? | Class (populated prod) |
+|-------|----------------|---------------|------------------------|
+| Canonical Prisma seed | `prisma/seed.ts` via `prisma.config.ts` + `package.json` `"prisma"."seed"` | `seed`, `db:seed` | **DANGEROUS** |
+| Super Admin bootstrap | `scripts/bootstrap-super-admin.ts` | `admin:bootstrap` | **WARNING** |
+| Location master | `scripts/seed-location-master.ts` | `seed:location-master` | **WARNING** |
+| Dhaka city areas | `scripts/seed-dhaka-city.ts` | `seed:dhaka-city` | **WARNING** |
+| Dhaka metro coverage | `scripts/seed-dhaka-metro.ts` | `seed:dhaka-metro` | **WARNING** |
+| Full coverage pipeline | `scripts/seed-coverage-zones.ts` | `seed:coverage-zones` | **WARNING** |
+| Combined locations | `scripts/seed-locations-only.ts` | No | **WARNING** |
+| BD locations once | `scripts/seed-bd-locations-once.ts` | No | **WARNING** |
+| Clinic vaccine items | `scripts/seed-clinic-vaccine-items.ts` | `seed:clinic-vaccine-items` | **WARNING** |
+| Campaign checkout anchor | `scripts/seed-campaign-checkout-anchor.ts` | `seed:campaign-checkout-anchor` | **WARNING** |
+| Demo product catalog | `scripts/seed-demo-catalog.ts` | No | **WARNING** |
+| Campaign included vaccines | `scripts/seed-campaign-included-vaccines.js` | No | **WARNING** |
+| Test stock injection | `scripts/seed-test-stock.js` | No | **WARNING** (dev only) |
+| Legacy seed | `prisma/seed.js` | No | **WARNING** (wrong model) |
+| Legacy all-seed | `prisma/seed_all.js` | No | **BROKEN** (missing `seed_social.js`) |
+| Legacy location | `prisma/seed_location.js` | No | **WARNING** |
 
-**Prisma config seed** (invoked by `db seed`):
+**Prisma 7 seed config** (both locations must agree):
 
-```json
-"seed": "node -r ts-node/register prisma/seed.ts"
-```
-
----
-
-## 3. Standalone `scripts/seed-*` (no npm alias)
-
-| File | Class | Notes |
-|------|-------|-------|
-| `scripts/seed-locations-only.ts` | **WARNING** | BD base + Dhaka city + global location tables (upsert/sync) |
-| `scripts/seed-bd-locations-once.ts` | **WARNING** | BD base only (`seedBaseBdLocations`) |
-| `scripts/seed-demo-catalog.ts` | **WARNING** | ~200 demo `masterProductCatalog` rows (skip if slug exists) — **omit on prod** |
-| `scripts/seed-campaign-included-vaccines.js` | **WARNING** | May update campaign pricing; creates included vaccines if none |
-| `scripts/seed-test-stock.js` | **WARNING** | Adds stock balances/lots at hardcoded location — **dev/QA only** |
+- `prisma.config.ts` → `migrations.seed: "node -r ts-node/register prisma/seed.ts"`
+- `package.json` → `"prisma"."seed": "node -r ts-node/register prisma/seed.ts"`
 
 ---
 
-## 4. Main chain: `prisma/seed.ts` (27 steps)
+## 3. `package.json` command classification
 
-| Step | Seeder | File | Class | Production note |
-|------|--------|------|-------|-----------------|
-| 1 | Bangladesh base locations | `seeders/seedBaseBdLocations.ts` | **WARNING** | Upsert syncs location labels from JSON |
-| 2 | Dhaka city BdArea hierarchy | `seeders/dhaka/runDhakaCitySeed.ts` (+ child seeders) | **WARNING** | Upsert-based |
-| 3 | Fundraising payout catalog | `seeders/seedFundraisingPayoutCatalog.ts` | **SAFE** | Upsert by code |
-| 4 | Branch types | `seeders/seedBranchTypes.ts` | **SAFE** | Upsert by code |
-| 4.1 | Animal taxonomy | `seeders/seedAnimalTaxonomy.ts` | **SAFE** | Upsert hierarchy |
-| 5 | Organization types | `seeders/seedOrganizationTypes.ts` | **SAFE** | Upsert by code |
-| 6 | Roles & permissions (ORG/BRANCH) | `seeders/seedRolesPermissions.ts` | **WARNING** | Upsert updates permission/role labels; adds missing `rolePermission` links (does not delete extras) |
-| 7 | Super Admin whitelist | `seeders/seedSuperAdminWhitelist.ts` | **SAFE** | No-op unless `SUPER_ADMIN_WHITELIST_*` env set; then upsert |
-| 8 | Membership backfill | `seeders/seedMembershipBackfill.ts` | **WARNING** | Upsert sets owner `orgMember`/`branchMember` roles on **all** orgs |
-| 9 | Products master data | `seeders/seedProductsMasterData.ts` | **SAFE** | Create-if-missing categories, units, flavors |
-| 10 | Pet categories | `seeders/seedPetCategories.ts` | **SAFE** | Create-if-missing |
-| 11 | Product subcategories | `seeders/seedProductSubcategories.ts` | **SAFE** | Create-if-missing |
-| 12 | Pet brands | `seeders/seedPetBrands.ts` | **SAFE** | Create-if-missing |
-| 13 | Master product catalog | `seeders/seedMasterProductCatalog.ts` | **SAFE** | Skip if slug exists |
-| 13.1 | Demo master product catalog | `seeders/seedDemoMasterProductCatalog.ts` | **WARNING** | Creates up to ~200 demo products — **skip on prod** |
-| 14 | Countries | `seeders/seedCountries.ts` | **SAFE** | Upsert by code |
-| 14.0 | Global location tables | `seeders/location/index.ts` | **WARNING** | Upsert countries/states/cities/sub-districts |
-| 14.x | Country policies | `seeders/seedCountryPolicies.ts` | **WARNING** | Upsert features; **updates** `policyDonationRule` amounts for BD |
-| 14.1 | Organization countries | `seeders/seedOrganizationCountries.ts` | **WARNING** | `updateMany` sets `countryId=BD` where null only |
-| 15 | Global + country roles | `seeders/seedGlobalCountryRoles.ts` | **WARNING** | Upsert roles/permissions; may assign `PLATFORM_ADMIN` to env/whitelist users |
-| 16 | Vet regulatory bodies | `seeders/seedVetRegulatoryBodies.ts` | **SAFE** | Create-if-missing |
-| 17 | Clinical item categories (per org) | `seeders/seedClinicalItemCategories.ts` | **WARNING** | **Creates** default categories only for orgs with **zero** categories |
-| **18** | **Master catalog (CSV)** | **`prisma/seeds/seed-master-catalog.ts`** | **DANGEROUS** | **`deleteMany` all master clinical catalog items + categories**, then `create` from CSV |
-| 19 | Master clinical catalog (templates) | `seeders/seedMasterClinicalCatalog.ts` | **SAFE** | Skip-if-exists by slug; adds missing categories/items/templates only |
-| 20 | Vaccine types | `seeders/seedVaccineTypes.ts` | **SAFE** | Upsert by code |
-| opt | Inbound receive QA | `seeders/seedInboundReceiveQaFixtures.ts` | **SAFE** | Read-only logs unless `SEED_INBOUND_RECEIVE_QA=true` |
-| opt | Warehouse phase 1 | `seeders/seedWarehousePhase1Minimal.ts` | **WARNING** | Only if `SEED_WAREHOUSE_PHASE1=true`; creates demo warehouse on first org |
-
-**Not in main chain** (coverage — run via `seed:coverage-zones` / `seed:dhaka-metro`):
-
-| Seeder | File | Class |
-|--------|------|-------|
-| Metro coverage zones | `seeders/coverage/seedCoverageZones.ts` | **WARNING** |
-| DNCC coverage mapping | `seeders/coverage/seedDhakaNorthCity.ts` | **WARNING** |
-| DSCC coverage mapping | `seeders/coverage/seedDhakaSouthCity.ts` | **WARNING** |
-| Business coverage readiness | `seeders/coverage/seedBusinessCoverageReadiness.ts` | **WARNING** |
-| Shared helper | `seeders/coverage/lib/upsertCoverageZone.ts` | **WARNING** (upsert updates zone fields + metadata) |
+| Script | Class | Production safe? |
+|--------|-------|------------------|
+| `bootstrap:deploy` | **SAFE** | Yes — migrate only |
+| `prisma:migrate` / `prisma:migrate:deploy` | **SAFE** | Yes |
+| `seed` / `db:seed` | **DANGEROUS** | No on populated DB |
+| `db:deploy` | **DANGEROUS** | No on populated DB (includes full seed) |
+| `db:reset` | **DANGEROUS** | Never on production |
+| `admin:bootstrap` | **WARNING** | Yes with care (password reset) |
+| `admin:verify` | **SAFE** | Yes — read-only |
+| `seed:location-master` | **WARNING** | Yes — master sync |
+| `seed:dhaka-city` | **WARNING** | Yes |
+| `seed:dhaka-metro` | **WARNING** | Yes |
+| `seed:coverage-zones` | **WARNING** | Yes — after location migration |
+| `seed:clinic-vaccine-items` | **WARNING** | Opt-in per org |
+| `seed:campaign-checkout-anchor` | **WARNING** | Campaign infra only |
+| `verify:location-master` | **SAFE** | Yes |
+| `verify:coverage-zones` | **SAFE** | Yes |
 
 ---
 
-## 5. Legacy / orphan seeders (do not use in production)
+## 4. Main chain (`prisma/seed.ts`) — 27 steps
 
-| File | Class | Notes |
-|------|-------|-------|
-| `prisma/seed.js` | **WARNING** | Legacy CityCorporation model; not wired to `npm run seed` |
-| `prisma/seed_location.js` | **WARNING** | Duplicate BD logic |
-| `prisma/seed_all.js` | **WARNING** | Wrapper → `prisma/seed.js` |
-| `prisma/seeders/seedLocationsDhaka.js` | **WARNING** | Broken self-require if run directly |
-| `prisma/seeders/seedCityCorporationsAndAreas.js` | **WARNING** | Legacy model |
-| `prisma/seeders/seedAnimalTypesAndBreeds.ts` | **SAFE** | Superseded by `seedAnimalTaxonomy.ts`; not in main chain |
+| Step | File | Class | Idempotent | Prod safe |
+|------|------|-------|------------|-----------|
+| 1 | `seeders/seedBaseBdLocations.ts` | WARNING | Yes | Yes* |
+| 2 | `seeders/dhaka/runDhakaCitySeed.ts` (+ children) | WARNING | Yes | Yes* |
+| 3 | `seeders/seedFundraisingPayoutCatalog.ts` | SAFE | Yes | Yes |
+| 4 | `seeders/seedBranchTypes.ts` | SAFE | Yes | Yes |
+| 4.1 | `seeders/seedAnimalTaxonomy.ts` | SAFE | Yes | Yes |
+| 5 | `seeders/seedOrganizationTypes.ts` | SAFE | Yes | Yes |
+| 6 | `seeders/seedRolesPermissions.ts` | WARNING | Yes | Yes* |
+| 7 | `seeders/seedSuperAdminWhitelist.ts` | SAFE/WARNING | Yes | Yes* (env-gated) |
+| 8 | `seeders/seedMembershipBackfill.ts` | WARNING | Yes | Caution |
+| 9 | `seeders/seedProductsMasterData.ts` | SAFE | Yes | Yes |
+| 10 | `seeders/seedPetCategories.ts` | SAFE | Yes | Yes |
+| 11 | `seeders/seedProductSubcategories.ts` | SAFE | Yes | Yes |
+| 12 | `seeders/seedPetBrands.ts` | SAFE | Yes | Yes |
+| 13 | `seeders/seedMasterProductCatalog.ts` | SAFE | Yes | Yes |
+| 13.1 | `seeders/seedDemoMasterProductCatalog.ts` | WARNING | Yes | **No** (demo data) |
+| 14 | `seeders/seedCountries.ts` | SAFE | Yes | Yes |
+| 14.0 | `seeders/location/index.ts` | WARNING | Yes | Yes* |
+| 14.x | `seeders/seedCountryPolicies.ts` | WARNING | Yes | Caution |
+| 14.1 | `seeders/seedOrganizationCountries.ts` | WARNING | Yes | Yes (null only) |
+| 15 | `seeders/seedGlobalCountryRoles.ts` | WARNING | Yes | Yes* |
+| 16 | `seeders/seedVetRegulatoryBodies.ts` | SAFE | Yes | Yes |
+| 17 | `seeders/seedClinicalItemCategories.ts` | WARNING | Yes | Yes* |
+| **18** | **`prisma/seeds/seed-master-catalog.ts`** | **DANGEROUS** | No | **No** |
+| 19 | `seeders/seedMasterClinicalCatalog.ts` | SAFE | Yes | Yes |
+| 20 | `seeders/seedVaccineTypes.ts` | SAFE | Yes | Yes |
+| opt | `seeders/seedInboundReceiveQaFixtures.ts` | SAFE | Yes | Yes (no writes) |
+| opt | `seeders/seedWarehousePhase1Minimal.ts` | WARNING | Yes | **No** (if env set) |
 
----
+\*Safe for master/reference sync; does not delete business transactional data.
 
-## 6. Data preservation matrix
+**Not in main chain** — coverage (`prisma/seeders/coverage/`):
 
-When following the **production-safe order** in §7 (skipping step 18 and demo seeds):
-
-| Domain | Preserved? | Caveats |
-|--------|------------|---------|
-| **Users** | Yes | `admin:bootstrap` resets password for configured Super Admin identity |
-| **Orders** | Yes | No seed step writes to order tables |
-| **Clinic data** (patients, visits, org items) | Yes | `seedClinicalItemCategories` only touches orgs with no categories; `seed:clinic-vaccine-items` adds items if run |
-| **Inventory / stock ledger** | Yes | Unless `seed-test-stock.js` or `SEED_WAREHOUSE_PHASE1=true` |
-| **Master clinical catalog** | Yes | **Only if step 18 is NOT run** |
-| **Master product catalog** | Yes | Existing slugs skipped; demo catalog omitted |
-| **Organizations / branches** | Yes | Except `seed:campaign-checkout-anchor` (creates/updates BPA anchor org) |
-
----
-
-## 7. Production-safe execution order
-
-**Prerequisites:** `DATABASE_URL` points at production DB. Take a backup before any seed run.
-
-### Phase 0 — Schema only (always first)
-
-```powershell
-cd D:\BPA_Data\backend-api
-npm run bootstrap:deploy
-```
-
-Do **not** use `npm run db:deploy` on an existing populated database (it runs full seed).
-
-### Phase 1 — Location master data
-
-Order matters: base BD → Dhaka courier areas → global tables.
-
-```powershell
-npm run seed:location-master
-npm run seed:dhaka-city
-cross-env TS_NODE_TRANSPILE_ONLY=1 node -r ts-node/register scripts/seed-locations-only.ts
-```
-
-> **Note:** `seed-locations-only.ts` re-runs steps 1–2 plus global location seed. After `seed:location-master` and `seed:dhaka-city`, it is redundant for BD/Dhaka but is the **only packaged script** that includes `runGlobalLocationSeed`. Alternatively run only the global half via the one-off in §8.1.
-
-**Preserves:** All business data. May sync location label fields on existing codes.
-
-### Phase 2 — Coverage zones
-
-Requires `BdArea` rows (Phase 1). Auto-seeds Dhaka city if `CC-DNCC` missing.
-
-```powershell
-npm run seed:coverage-zones
-```
-
-Partial metro-only alternative:
-
-```powershell
-npm run seed:dhaka-metro
-```
-
-**Preserves:** Orders, users, clinic, inventory. Upserts `coverageZone`, `coverageZoneArea`, `coverageZoneMetadata`.
-
-### Phase 3 — Roles & permissions
-
-No dedicated `package.json` script. Run seeders **without** full `db:seed`:
-
-```powershell
-cross-env TS_NODE_TRANSPILE_ONLY=1 node -r ts-node/register -e "require('dotenv/config'); const p=require('./src/infrastructure/db/prismaClient').default; const r=require('./prisma/seeders/seedRolesPermissions').default; const g=require('./prisma/seeders/seedGlobalCountryRoles').default; (async()=>{ await r(p); await g(p); await p.$disconnect(); })().catch(e=>{console.error(e);process.exit(1);});"
-```
-
-Optional whitelist-only (no user creation):
-
-```powershell
-cross-env TS_NODE_TRANSPILE_ONLY=1 node -r ts-node/register -e "require('dotenv/config'); const p=require('./src/infrastructure/db/prismaClient').default; const w=require('./prisma/seeders/seedSuperAdminWhitelist').default; (async()=>{ await w(p); await p.$disconnect(); })().catch(e=>{console.error(e);process.exit(1);});"
-```
-
-Set env before Phase 3 if `PLATFORM_ADMIN` auto-assign is desired: `SUPER_ADMIN_EMAIL`, `SUPER_ADMIN_PHONE`, whitelist vars (see `seedGlobalCountryRoles.ts`).
-
-**Preserves:** Users and memberships (except new `userGlobalRole` rows for configured admins). Updates permission/role **labels** to match codebase.
-
-**Skip on prod unless needed:** `seedMembershipBackfill` (step 8) — forces owner membership roles.
-
-### Phase 4 — Clinical catalogs (safe subset)
-
-**Do not run** `prisma/seeds/seed-master-catalog.ts` (step 18).
-
-```powershell
-cross-env TS_NODE_TRANSPILE_ONLY=1 node -r ts-node/register -e "require('dotenv/config'); const p=require('./src/infrastructure/db/prismaClient').default; const m=require('./prisma/seeders/seedMasterClinicalCatalog').default; const v=require('./prisma/seeders/seedVaccineTypes').default; (async()=>{ await m(p); await v(p); await p.$disconnect(); })().catch(e=>{console.error(e);process.exit(1);});"
-```
-
-Optional org-level default categories (only orgs with **no** categories):
-
-```powershell
-cross-env TS_NODE_TRANSPILE_ONLY=1 node -r ts-node/register -e "require('dotenv/config'); const p=require('./src/infrastructure/db/prismaClient').default; const c=require('./prisma/seeders/seedClinicalItemCategories').default; (async()=>{ await c(p); await p.$disconnect(); })().catch(e=>{console.error(e);process.exit(1);});"
-```
-
-Per-org vaccine clinical items (explicit opt-in):
-
-```powershell
-cross-env ORG_ID=123 TS_NODE_TRANSPILE_ONLY=1 node -r ts-node/register scripts/seed-clinic-vaccine-items.ts
-```
-
-**Preserves:** Existing master catalog rows and org clinical items (unless org vaccine seed is run).
-
-### Phase 5 — Product catalogs
-
-```powershell
-cross-env TS_NODE_TRANSPILE_ONLY=1 node -r ts-node/register -e "require('dotenv/config'); const p=require('./src/infrastructure/db/prismaClient').default; const s=[require('./prisma/seeders/seedProductsMasterData').default, require('./prisma/seeders/seedPetCategories').default, require('./prisma/seeders/seedProductSubcategories').default, require('./prisma/seeders/seedPetBrands').default, require('./prisma/seeders/seedMasterProductCatalog').default]; (async()=>{ for(const fn of s) await fn(p); await p.$disconnect(); })().catch(e=>{console.error(e);process.exit(1);});"
-```
-
-**Do not run** `seedDemoMasterProductCatalog` or `scripts/seed-demo-catalog.ts` on production.
-
-**Preserves:** Existing product catalog slugs; adds only missing master reference rows.
-
-### Phase 6 — Supporting master data (optional)
-
-Run when features need them; all SAFE or low-impact WARNING:
-
-```powershell
-# Branch/org types, countries, animal taxonomy, payout methods, vet bodies
-cross-env TS_NODE_TRANSPILE_ONLY=1 node -r ts-node/register -e "require('dotenv/config'); const p=require('./src/infrastructure/db/prismaClient').default; const fns=[require('./prisma/seeders/seedBranchTypes').default, require('./prisma/seeders/seedOrganizationTypes').default, require('./prisma/seeders/seedAnimalTaxonomy').default, require('./prisma/seeders/seedFundraisingPayoutCatalog').default, require('./prisma/seeders/seedCountries').default, require('./prisma/seeders/seedVetRegulatoryBodies').default]; (async()=>{ for(const fn of fns) await fn(p); await p.$disconnect(); })().catch(e=>{console.error(e);process.exit(1);});"
-```
-
-Org country backfill (only null `countryId`):
-
-```powershell
-cross-env TS_NODE_TRANSPILE_ONLY=1 node -r ts-node/register -e "require('dotenv/config'); const p=require('./src/infrastructure/db/prismaClient').default; const o=require('./prisma/seeders/seedOrganizationCountries').default; (async()=>{ await o(p); await p.$disconnect(); })().catch(e=>{console.error(e);process.exit(1);});"
-```
-
-### Phase 7 — Super Admin bootstrap
-
-Run **once** per environment (or when rotating credentials). **Not** part of `prisma/seed.ts`.
-
-```powershell
-cross-env SUPER_ADMIN_EMAIL=admin@example.com SUPER_ADMIN_PASSWORD="<strong-password>" SUPER_ADMIN_NAME="BPA Super Admin" TS_NODE_TRANSPILE_ONLY=1 node -r ts-node/register scripts/bootstrap-super-admin.ts
-```
-
-Or:
-
-```powershell
-cross-env SUPER_ADMIN_PHONE=01XXXXXXXXX SUPER_ADMIN_PASSWORD="<strong-password>" npm run admin:bootstrap
-```
-
-Verify:
-
-```powershell
-npm run admin:verify
-```
-
-**WARNING:** If the email/phone already exists, **password is overwritten**.
+| File | Class | Idempotent | Prod safe |
+|------|-------|------------|-----------|
+| `coverage/seedCoverageZones.ts` | WARNING | Yes | Yes |
+| `coverage/seedDhakaNorthCity.ts` | WARNING | Yes | Yes |
+| `coverage/seedDhakaSouthCity.ts` | WARNING | Yes | Yes |
+| `coverage/seedBusinessCoverageReadiness.ts` | WARNING | Yes | Yes |
+| `coverage/lib/upsertCoverageZone.ts` | WARNING | Yes | Yes |
 
 ---
 
-## 8. Exact commands quick reference
+## 5. Per-file production safety review
 
-### 8.1 Location data
+### 5.1 Active seeders (`prisma/seeders/`)
 
-```powershell
-cd D:\BPA_Data\backend-api
-npm run seed:location-master
-npm run seed:dhaka-city
-# Global countries/states/cities (if not already present):
-cross-env TS_NODE_TRANSPILE_ONLY=1 node -r ts-node/register -e "require('dotenv/config'); const p=require('./src/infrastructure/db/prismaClient').default; const {runGlobalLocationSeed}=require('./prisma/seeders/location'); (async()=>{ await runGlobalLocationSeed(p); await p.$disconnect(); })().catch(e=>{console.error(e);process.exit(1);});"
-```
+| File | Purpose | Dependencies | Idempotent | Prod safe | Risk |
+|------|---------|--------------|------------|-----------|------|
+| `seedBaseBdLocations.ts` | BD divisions→areas from `prisma/seed-data/bd.*.json` | JSON files, `bd_*` tables | Yes | Yes | Low — label sync |
+| `dhaka/runDhakaCitySeed.ts` | Orchestrates DNCC/DSCC BdArea tree | Dhaka seeders, `bdArea` | Yes | Yes | Low |
+| `dhaka/seedDhakaNorthCityBdAreas.ts` | DNCC area rows | `bdArea` | Yes | Yes | Low |
+| `dhaka/seedDhakaSouthCityBdAreas.ts` | DSCC area rows | `bdArea` | Yes | Yes | Low |
+| `dhaka/seedDhakaCityCorporations.ts` | City corp BdArea nodes | `bdArea` | Yes | Yes | Low |
+| `dhaka/seedDhakaCityZones.ts` | Zone buckets | `bdArea` | Yes | Yes | Low |
+| `dhaka/seedDhakaCityAreas.ts` | Neighbourhood areas | `bdArea` | Yes | Yes | Low |
+| `seedFundraisingPayoutCatalog.ts` | bKash/Nagad/Rocket/Bank payout methods | `payoutMethod` | Yes | Yes | Low |
+| `seedBranchTypes.ts` | Clinic/shop/hub/warehouse types | `branchType` | Yes | Yes | Low |
+| `seedAnimalTaxonomy.ts` | Pet taxonomy hierarchy | taxonomy tables | Yes | Yes | Low |
+| `seedOrganizationTypes.ts` | Org type dropdown values | `organizationType` | Yes | Yes | Low |
+| `seedRolesPermissions.ts` | ORG/BRANCH RBAC matrix | `permission`, `role`, `rolePermission` | Yes | Yes* | Medium — label updates |
+| `seedSuperAdminWhitelist.ts` | Whitelist rows from env | `superAdminWhitelist`, env | Yes | Yes* | Low — env only |
+| `seedMembershipBackfill.ts` | Owner org/branch memberships | `orgMember`, `branchMember` | Yes | Caution | Medium — role overwrite |
+| `seedProductsMasterData.ts` | Categories, units, flavors | `category`, `unit`, `flavor` | Yes | Yes | Low |
+| `seedPetCategories.ts` | Pet product categories | `category` | Yes | Yes | Low |
+| `seedProductSubcategories.ts` | Extended subcategories | `category` | Yes | Yes | Low |
+| `seedPetBrands.ts` | Brand master list | `brand` | Yes | Yes | Low |
+| `seedMasterProductCatalog.ts` | Global shop catalog entries | `masterProductCatalog`, brands/categories | Yes | Yes | Low |
+| `seedDemoMasterProductCatalog.ts` | ~200 demo products | `masterProductCatalog` | Yes | **No** | Medium — demo pollution |
+| `seedCountries.ts` | BD, IN, US countries | `country` | Yes | Yes | Low |
+| `location/seedGlobalCountries.ts` | Global country rows | `locationCountry` | Yes | Yes | Low |
+| `location/seedGlobalStates.ts` | States/provinces | `locationState` | Yes | Yes | Low |
+| `location/seedGlobalCities.ts` | Cities | `locationCity` | Yes | Yes | Low |
+| `location/seedGlobalSubDistricts.ts` | Sub-districts/upazilas | `locationSubDistrict`, seed-data | Yes | Yes | Low |
+| `location/index.ts` | Runs global location chain | above | Yes | Yes | Low |
+| `seedCountryPolicies.ts` | BD donation/product policy | `policyFeature`, `policyDonationRule` | Yes | Caution | Medium — amount updates |
+| `seedOrganizationCountries.ts` | Backfill `countryId=BD` where null | `organization` | Yes | Yes | Low |
+| `seedGlobalCountryRoles.ts` | Global/country roles + PLATFORM_ADMIN assign | `role`, env admins | Yes | Yes* | Medium — role assign |
+| `seedVetRegulatoryBodies.ts` | Vet verification reference | regulatory tables | Yes | Yes | Low |
+| `seedClinicalItemCategories.ts` | Default categories per org (empty only) | `clinicalItemCategory` | Yes | Yes* | Low — new orgs only |
+| `seedMasterClinicalCatalog.ts` | Templates + catalog extensions | `masterClinicalCatalog*` | Yes | Yes | Low |
+| `seedVaccineTypes.ts` | Vaccine type master | `vaccineType` | Yes | Yes | Low |
+| `seedClinicalVaccineItems.ts` | Org-level vaccine clinical items | `clinicalItem`, `ORG_ID` | Partial | Opt-in | Medium — creates items |
+| `seedInboundReceiveQaFixtures.ts` | QA diagnostics log | none (read) | Yes | Yes | None |
+| `seedWarehousePhase1Minimal.ts` | Demo warehouse structure | `warehouse*`, first org | Yes | **No** | Medium — demo infra |
+| `coverage/*` | BPA coverage zones | `coverageZone*`, `bdArea` | Yes | Yes | Low |
 
-### 8.2 Coverage zones
+### 5.2 Seeds module (`prisma/seeds/`)
 
-```powershell
-npm run seed:coverage-zones
-```
+| File | Purpose | Dependencies | Idempotent | Prod safe | Risk |
+|------|---------|--------------|------------|-----------|------|
+| `seed-master-catalog.ts` | CSV reload of master clinical catalog | `prisma/seed-data/complete_veterinary_master_catalog.csv` | **No** | **No** | **Critical** — `deleteMany` all categories/items |
 
-### 8.3 Roles & permissions
+### 5.3 Standalone scripts (`scripts/seed-*`)
 
-```powershell
-cross-env TS_NODE_TRANSPILE_ONLY=1 node -r ts-node/register -e "require('dotenv/config'); const p=require('./src/infrastructure/db/prismaClient').default; const r=require('./prisma/seeders/seedRolesPermissions').default; const g=require('./prisma/seeders/seedGlobalCountryRoles').default; (async()=>{ await r(p); await g(p); await p.$disconnect(); })().catch(e=>{console.error(e);process.exit(1);});"
-```
+| File | Purpose | Dependencies | Idempotent | Prod safe | Risk |
+|------|---------|--------------|------------|-----------|------|
+| `seed-location-master.ts` | BD base only | `seedBaseBdLocations` | Yes | Yes | Low |
+| `seed-dhaka-city.ts` | Dhaka BdArea tree | `runDhakaCitySeed` | Yes | Yes | Low |
+| `seed-locations-only.ts` | BD + Dhaka + global | steps 1–2 + global | Yes | Yes | Low |
+| `seed-bd-locations-once.ts` | BD base (alt prisma client) | `seedBaseBdLocations` | Yes | Yes | Low |
+| `seed-coverage-zones.ts` | Full coverage + auto-dhaka | coverage seeders | Yes | Yes | Low |
+| `seed-dhaka-metro.ts` | Metro zones subset | coverage partial | Yes | Yes | Low |
+| `seed-clinic-vaccine-items.ts` | Org vaccine items | `ORG_ID` env | Partial | Opt-in | Medium |
+| `seed-campaign-checkout-anchor.ts` | BPA campaign org/branch | `organization`, `branch` | Yes | Caution | Medium |
+| `seed-demo-catalog.ts` | Demo products only | demo seeder | Yes | **No** | Medium |
+| `seed-campaign-included-vaccines.js` | Campaign vaccine package rows | campaign slug | Partial | Caution | Medium |
+| `seed-test-stock.js` | Stock at location #2 | raw SQL/pg, hardcoded IDs | Yes | **No** | High — inventory |
 
-### 8.4 Clinical catalogs (production-safe)
+### 5.4 Legacy / dead paths
 
-```powershell
-# Master clinical catalog + vaccine types — SKIPS destructive CSV seed
-cross-env TS_NODE_TRANSPILE_ONLY=1 node -r ts-node/register -e "require('dotenv/config'); const p=require('./src/infrastructure/db/prismaClient').default; const m=require('./prisma/seeders/seedMasterClinicalCatalog').default; const v=require('./prisma/seeders/seedVaccineTypes').default; (async()=>{ await m(p); await v(p); await p.$disconnect(); })().catch(e=>{console.error(e);process.exit(1);});"
-```
-
-### 8.5 Product catalogs
-
-```powershell
-cross-env TS_NODE_TRANSPILE_ONLY=1 node -r ts-node/register -e "require('dotenv/config'); const p=require('./src/infrastructure/db/prismaClient').default; const s=[require('./prisma/seeders/seedProductsMasterData').default, require('./prisma/seeders/seedPetCategories').default, require('./prisma/seeders/seedProductSubcategories').default, require('./prisma/seeders/seedPetBrands').default, require('./prisma/seeders/seedMasterProductCatalog').default]; (async()=>{ for(const fn of s) await fn(p); await p.$disconnect(); })().catch(e=>{console.error(e);process.exit(1);});"
-```
-
-### 8.6 Super Admin bootstrap
-
-```powershell
-cross-env SUPER_ADMIN_EMAIL=admin@example.com SUPER_ADMIN_PASSWORD="<strong-password>" SUPER_ADMIN_NAME="BPA Super Admin" npm run admin:bootstrap
-```
+| File | Purpose | Status | Risk |
+|------|---------|--------|------|
+| `prisma/seed.js` | Legacy CityCorporation Dhaka seed | Dead path (not npm) | Wrong schema model |
+| `prisma/seed_all.js` | Chains seed.js + social + location | **Broken** — `seed_social.js` missing | Will throw on require |
+| `prisma/seed_location.js` | Duplicate BD JSON seed | Dead path | Low |
+| `seeders/seedLocationsDhaka.js` | `cityCorporation` model | Legacy | Schema drift risk |
+| `seeders/seedCityCorporationsAndAreas.js` | Legacy corporations | Dead | Schema drift |
+| `seeders/seedAnimalTypesAndBreeds.ts` | Old taxonomy | Superseded | Unused |
 
 ---
 
-## 9. Commands to avoid on production
+## 6. Runtime compatibility (Node 22 / Prisma / ts-node / TS)
 
-| Command / step | Reason |
+| Component | Version (verified) | Seed compatibility |
+|-----------|-------------------|-------------------|
+| Node.js | v22.22.0 | OK — all seed scripts use `node -r ts-node/register` |
+| Prisma CLI | 7.8.0 (package.json `^7.7.0`) | OK — `prisma.config.ts` required for Prisma 7 |
+| @prisma/client | 7.8.0 | OK |
+| TypeScript | 5.9.3 | OK |
+| ts-node | 10.9.2 | OK with `TS_NODE_TRANSPILE_ONLY=1` (used in npm scripts) |
+
+**Notes:**
+
+- Seeds import `src/infrastructure/db/prismaClient` (Prisma 7 adapter pattern) — requires `prisma generate` before run (`postinstall` / `setup:prisma`).
+- Use `node scripts/run-local-prisma.cjs` for CLI — avoids `npx prisma` version mismatch.
+- `require('./prisma/seed.ts')` executes `main()` immediately — there is no dry-load guard.
+
+---
+
+## 7. Data preservation summary
+
+When following the production execution plan (skip step 18, skip demo seeds):
+
+| Domain | Preserved |
+|--------|-----------|
+| Users, wallets, transactions | Yes |
+| Organizations, branches | Yes (except campaign anchor opt-in) |
+| Clinics, patients, pets | Yes |
+| Orders, inventory, stock ledger | Yes |
+| Org clinical items (existing) | Yes |
+| Master clinical catalog (existing) | Yes **only if step 18 skipped** |
+
+---
+
+## 8. Commands to avoid on production
+
+| Command / file | Reason |
 |----------------|--------|
 | `npm run db:reset` | Drops entire database |
-| `npm run db:seed` / `npm run seed` | Includes step 18 CSV `deleteMany` |
-| `npm run db:deploy` (on populated DB) | Runs full seed after migrate |
-| `prisma/seeds/seed-master-catalog.ts` (step 18) | Wipes master clinical catalog |
-| `scripts/seed-demo-catalog.ts` | Inserts demo products |
-| Step 13.1 `seedDemoMasterProductCatalog` | Same |
+| `npm run db:seed` / `seed` | Includes step 18 CSV wipe |
+| `npm run db:deploy` on populated DB | Runs full seed after migrate |
+| `prisma/seeds/seed-master-catalog.ts` | `deleteMany` destructive replacement |
+| `scripts/seed-demo-catalog.ts` | Demo products |
 | `scripts/seed-test-stock.js` | Injects test inventory |
-| `SEED_WAREHOUSE_PHASE1=true` + full seed | Creates demo warehouse structure |
-| Legacy `prisma/seed.js` | Wrong location model |
-
----
-
-## 10. Fresh database vs existing production
-
-| Scenario | Recommended path |
-|----------|------------------|
-| **Brand-new empty DB** (first deploy) | `npm run bootstrap:deploy` then either full `npm run db:seed` **or** phased §7 + `admin:bootstrap`. Full seed acceptable only when no catalog FKs exist yet. |
-| **Existing production DB** (users, orders, clinic live) | `npm run bootstrap:deploy` only, then §7 phases 1–7 selectively. **Never** step 18 until [SEED_RECOVERY_PLAN.md](../plans/SEED_RECOVERY_PLAN.md) CSV upsert fix ships. |
-| **Post-migration master gap** | Run only the relevant §8 subsection (e.g. new coverage zones after migration `20260603190000_coverage_zones`). |
-
----
-
-## 11. Environment variables reference
-
-| Variable | Used by | Production guidance |
-|----------|---------|---------------------|
-| `DATABASE_URL` | All seeds | Required |
-| `SUPER_ADMIN_EMAIL` / `SUPER_ADMIN_PHONE` | `admin:bootstrap`, whitelist, `PLATFORM_ADMIN` assign | Set explicitly; never commit |
-| `SUPER_ADMIN_PASSWORD` | `admin:bootstrap` | Required for bootstrap |
-| `SUPER_ADMIN_WHITELIST_EMAILS` / `PHONES` | Whitelist seeders | Optional gate for admin panel |
-| `ORG_ID` | `seed:clinic-vaccine-items` | Required when seeding org vaccines |
-| `SEED_WAREHOUSE_PHASE1` | step opt warehouse | Leave **unset** on prod |
-| `SEED_INBOUND_RECEIVE_QA` | QA fixtures | Leave **unset** on prod |
-| `SEED_DEMO_PRODUCTS` | Not yet wired | N/A — omit demo catalog manually |
-
----
-
-## 12. Summary checklist
-
-- [ ] Backup database
-- [ ] `npm run bootstrap:deploy` (migrate only)
-- [ ] Location: `seed:location-master` → `seed:dhaka-city` → global location
-- [ ] Coverage: `seed:coverage-zones`
-- [ ] RBAC: targeted roles seeders (§8.3)
-- [ ] Clinical: `seedMasterClinicalCatalog` + `seedVaccineTypes` only — **not** CSV step 18
-- [ ] Products: master catalog chain — **not** demo catalog
-- [ ] Super Admin: `admin:bootstrap` with env credentials
-- [ ] Confirm: no `db:seed`, `db:reset`, or `seed-test-stock` on production
+| `prisma/seed_all.js` | Broken + legacy |
+| `SEED_WAREHOUSE_PHASE1=true` | Demo warehouse rows |
 
 ---
 

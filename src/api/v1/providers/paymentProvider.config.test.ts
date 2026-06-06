@@ -56,13 +56,13 @@ describe("paymentProvider.config callback URLs", () => {
     expect(result.errors.some((e) => e.includes("placeholder"))).toBe(true);
   });
 
-  it("builds EPS callback URLs under unified prefix", () => {
+  it("builds EPS callback URLs under /api/v1/payments/eps", () => {
     process.env.API_PUBLIC_BASE_URL = "https://api.bpa.com.bd";
-    const prefix = getUnifiedPaymentApiPrefix();
     const eps = getEpsConfig();
-    expect(eps.successUrl).toBe(`${prefix}/payment/eps/callback/success`);
-    expect(eps.failUrl).toBe(`${prefix}/payment/eps/callback/fail`);
-    expect(eps.cancelUrl).toBe(`${prefix}/payment/eps/callback/cancel`);
+    expect(eps.successUrl).toBe("https://api.bpa.com.bd/api/v1/payments/eps/success");
+    expect(eps.failUrl).toBe("https://api.bpa.com.bd/api/v1/payments/eps/fail");
+    expect(eps.cancelUrl).toBe("https://api.bpa.com.bd/api/v1/payments/eps/cancel");
+    expect(eps.callbackUrl).toBe("https://api.bpa.com.bd/api/v1/payments/eps/webhook");
   });
 
   it("validates EPS required env when active", () => {

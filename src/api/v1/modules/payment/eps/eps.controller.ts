@@ -62,6 +62,30 @@ export async function epsValidateHandler(req: Request, res: Response, next: Next
   }
 }
 
+/** GET /payments/eps/verify/:transactionId — verify by merchant or EPS transaction id. */
+export async function epsVerifyByTransactionIdHandler(
+  req: Request,
+  res: Response,
+  next: NextFunction
+) {
+  try {
+    const transactionId = String(req.params.transactionId || "").trim();
+    if (!transactionId) {
+      return res.status(400).json({
+        success: false,
+        error: { code: "INVALID_INPUT", message: "transactionId is required" },
+      });
+    }
+    const result = await validateEpsPayment({
+      merchantTransactionId: transactionId,
+      epsTransactionId: transactionId,
+    });
+    res.json({ success: result.success, data: result });
+  } catch (error) {
+    next(error);
+  }
+}
+
 export async function epsWebhookHandler(req: Request, res: Response, next: NextFunction) {
   try {
     if (!assertWebhookSecret(req)) {
