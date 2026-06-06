@@ -107,6 +107,7 @@ mountWith503("/campaign", "./modules/campaign/campaign.routes");
 // Unified payment gateway (Strategy Pattern — PAYMENT_PROVIDER env)
 mountWith503("/payments", "./payments/payment.routes");
 mountWith503("/payment/eps", "./modules/payment/eps/eps.routes");
+mountWith503("/payments/eps", "./modules/payment/eps/eps.routes");
 // BPA app campaign linking (authenticated)
 router.use("/campaign-link", require("./modules/campaign/campaignLink.routes").default);
 
