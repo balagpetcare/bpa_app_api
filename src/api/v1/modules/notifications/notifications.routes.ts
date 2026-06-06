@@ -13,6 +13,7 @@ notificationsRouter.get("/settings", auth, ctrl.getSettings);
 notificationsRouter.put("/settings", auth, ctrl.putSettings);
 notificationsRouter.post("/test", auth, ctrl.testCreate);
 notificationsRouter.post("/:id/read", auth, ctrl.markRead);
+notificationsRouter.use("/sms", require("./sms.routes"));
 
 module.exports = notificationsRouter;
 export {};

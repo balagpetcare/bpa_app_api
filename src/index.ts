@@ -66,6 +66,17 @@ try {
   console.error("[PAYMENT_INIT] bootstrap failed", e);
 }
 try {
+  const { bootstrapSmsProvider } = require("./integrations/sms/smsProvider.bootstrap");
+  const smsBoot = bootstrapSmsProvider();
+  if (smsBoot.enabled && !smsBoot.ready) {
+    console.warn(
+      `[SMS_INIT] Provider "${smsBoot.provider}" unavailable at startup — SMS send APIs return 503 until credentials are set`
+    );
+  }
+} catch (e) {
+  console.error("[SMS_INIT] bootstrap failed", e);
+}
+try {
   const { bootstrapStorage } = require("./infrastructure/storage/storage.bootstrap");
   bootstrapStorage().catch((err: Error) => {
     console.error("[STORAGE_INIT] bootstrap failed", err);

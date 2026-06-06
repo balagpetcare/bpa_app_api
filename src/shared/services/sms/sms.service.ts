@@ -11,6 +11,9 @@ import { formatBdMsisdn } from "../../../integrations/sms/phone";
 import {
   getSmsApiKey,
   getSmsBaseUrl,
+  getSmsApiUrl,
+  getSmsBalanceApiUrl,
+  getSmsDefaultMessageType,
   getSmsProviderName,
   getSmsQueueAttempts,
   getSmsQueueBackoffMs,
@@ -143,14 +146,13 @@ export async function sendSmsDirectLegacy(phone: string, message: string): Promi
 }> {
   const apiKey = getSmsApiKey();
   const senderId = process.env.SMS_SENDER_ID || process.env.BULKSMSBD_SENDER_ID;
-  const baseUrl = getSmsBaseUrl();
 
   if (!apiKey || !senderId) {
     return { success: false, error: "SMS API key or sender ID not configured" };
   }
 
   try {
-    const url = `${baseUrl}${SMS_LEGACY_API_PATH}`;
+    const url = getSmsApiUrl();
     const response = await axios.get(url, {
       timeout: Number(process.env.SMS_HTTP_TIMEOUT_MS || SMS_DEFAULT_TIMEOUT_MS),
       params: {
@@ -158,7 +160,7 @@ export async function sendSmsDirectLegacy(phone: string, message: string): Promi
         senderid: senderId,
         number: normalizePhone(phone),
         message,
-        type: "text",
+        type: getSmsDefaultMessageType(),
       },
       validateStatus: () => true,
     });
@@ -338,13 +340,20 @@ export async function sendCampaignSMS(input: SendCampaignSmsInput): Promise<SmsS
 }
 
 export async function getSmsBalance(): Promise<SmsBalanceResult> {
+  const { getPrimarySmsProvider } = require("../../../integrations/sms/smsGateway.service") as {
+    getPrimarySmsProvider: () => { getBalance?: () => Promise<SmsBalanceResult> };
+  };
+  const provider = getPrimarySmsProvider();
+  if (typeof provider.getBalance === "function") {
+    return provider.getBalance();
+  }
+
   const apiKey = getSmsApiKey();
   if (!apiKey) {
     return { success: false, error: "SMS API key not configured" };
   }
 
-  const baseUrl = getSmsBaseUrl();
-  const url = `${baseUrl}${SMS_BALANCE_API_PATH}`;
+  const url = `${getSmsBaseUrl()}${SMS_BALANCE_API_PATH}`;
 
   try {
     const response = await axios.get(url, {

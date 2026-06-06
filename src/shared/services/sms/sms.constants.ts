@@ -12,6 +12,72 @@ export const SMS_BULK_MAX_RECIPIENTS = 500;
 export const SMS_LEGACY_API_PATH = "/smsapi";
 export const SMS_BALANCE_API_PATH = "/getBalanceApi";
 
+export function getSmsApiMethod(): "GET" | "POST" {
+  const method = String(process.env.SMS_API_METHOD || "GET").toUpperCase();
+  return method === "POST" ? "POST" : "GET";
+}
+
+/** Full URL for legacy send API (GET smsapi). */
+export function getSmsApiUrl(): string {
+  const explicit = process.env.SMS_API_URL?.trim();
+  if (explicit) return explicit;
+  const legacy = process.env.BULKSMSBD_LEGACY_URL?.trim();
+  if (legacy) return legacy;
+  return `${getSmsBaseUrl()}${SMS_LEGACY_API_PATH}`;
+}
+
+/** Full URL for balance API. */
+export function getSmsBalanceApiUrl(): string {
+  const explicit = process.env.SMS_BALANCE_API_URL?.trim();
+  if (explicit) return explicit;
+  return `${getSmsBaseUrl()}${SMS_BALANCE_API_PATH}`;
+}
+
+export function getSmsDefaultMessageType(): string {
+  return process.env.SMS_DEFAULT_TYPE?.trim() || "text";
+}
+
+export function getSmsSenderType(): string {
+  return process.env.SMS_SENDER_TYPE?.trim() || "NonMask";
+}
+
+export function isSmsIpWhitelistEnabled(): boolean {
+  return process.env.SMS_IP_WHITELIST_ENABLED === "true" || process.env.SMS_IP_WHITELIST_ENABLED === "1";
+}
+
+export function getSmsConfigIssues(): string[] {
+  const issues: string[] = [];
+  if (process.env.SMS_ENABLED === "false" || process.env.SMS_ENABLED === "0") {
+    return issues;
+  }
+
+  if (!getSmsApiKey()) {
+    issues.push("SMS_API_KEY (or BULKSMSBD_API_KEY / BULKSMSBD_API_TOKEN) is missing");
+  }
+  if (!getSmsSenderId()) {
+    issues.push("SMS_SENDER_ID (or BULKSMSBD_SENDER_ID / CAMPAIGN_SMS_SENDER_ID) is missing");
+  }
+  return issues;
+}
+
+export function validateSmsProviderConfig(): { ok: boolean; provider: string; errors: string[] } {
+  const provider = getSmsProviderName();
+  const errors: string[] = [];
+
+  if (process.env.SMS_ENABLED === "false" || process.env.SMS_ENABLED === "0") {
+    return { ok: true, provider, errors: [] };
+  }
+
+  errors.push(...getSmsConfigIssues());
+  return { ok: errors.length === 0, provider, errors };
+}
+
+export function formatSmsProviderNotConfiguredMessage(): string {
+  const issues = getSmsConfigIssues();
+  if (issues.length === 0) return "SMS provider is not configured";
+  return `SMS provider is not configured (${issues.join("; ")})`;
+}
+
 export function getSmsProviderName(): string {
   return String(process.env.SMS_PROVIDER || process.env.SMS_PRIMARY_PROVIDER || "bulksmsbd").toLowerCase();
 }

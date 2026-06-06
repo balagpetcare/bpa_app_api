@@ -14,10 +14,19 @@ export type SmsSendContext = {
   campaignSmsLogId?: number;
 };
 
+export type SmsBalanceResult = {
+  success: boolean;
+  balance?: number | string;
+  raw?: unknown;
+  error?: string;
+};
+
 export interface SmsProvider {
   readonly name: string;
   isConfigured(): boolean;
   send(phone: string, message: string, context?: SmsSendContext): Promise<SmsSendResult>;
+  getBalance?(): Promise<SmsBalanceResult>;
+  sendOtp?(phone: string, otp: string, context?: SmsSendContext): Promise<SmsSendResult>;
 }
 
 export type SmsProviderName = "ssl_wireless" | "bulksmsbd" | "mock";

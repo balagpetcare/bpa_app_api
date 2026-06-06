@@ -36,4 +36,32 @@ describe("BulkSmsBdProvider", () => {
     expect(result.success).toBe(true);
     expect(result.messageId).toBe("legacy-1");
   });
+
+  it("checks balance via legacy API", async () => {
+    process.env.SMS_API_KEY = "balance-key";
+    process.env.SMS_BALANCE_API_URL = "http://bulksmsbd.net/api/getBalanceApi";
+    mockedAxios.get.mockResolvedValueOnce({ status: 200, data: { balance: 42.5 } });
+
+    const result = await provider.getBalance!();
+    expect(result.success).toBe(true);
+    expect(result.balance).toBe(42.5);
+  });
+
+  it("sendOtp uses OTP template message", async () => {
+    process.env.SMS_PROVIDER = "bulksmsbd";
+    process.env.SMS_API_KEY = "otp-key";
+    process.env.SMS_SENDER_ID = "BPA";
+    mockedAxios.get.mockResolvedValue({ status: 200, data: { response_code: 202, message_id: "otp-1" } });
+
+    const result = await provider.sendOtp!("01712345678", "123456");
+    expect(result.success).toBe(true);
+    expect(mockedAxios.get).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        params: expect.objectContaining({
+          message: expect.stringContaining("123456"),
+        }),
+      })
+    );
+  });
 });
