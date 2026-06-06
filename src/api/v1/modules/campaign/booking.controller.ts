@@ -12,6 +12,7 @@ import {
   availableSlotsQuerySchema,
 } from "./campaign.validation";
 import {
+import {
   createBooking,
   registerWalkIn,
   getBookingByRef,
@@ -21,7 +22,14 @@ import {
   cancelBooking,
   completeBooking,
   markNoShow,
+  mapBookingRecordToListRow,
 } from "./booking.service";
+import {
+  queryCampaignBookings,
+  parseBookingListFilters,
+  getBookingFilterOptions,
+} from "./bookingListFilters.service";
+import { listCampaignBookingsQuerySchema } from "./campaign.validation";
 import { getAvailableSlots, getCampaignSlots, pickTimeLocale } from "./slot.service";
 import { getLocationsWithAvailability } from "./location.service";
 import { verifySession } from "./otp.service";
@@ -387,42 +395,45 @@ export async function listCampaignBookingsHandler(
   next: NextFunction
 ) {
   try {
-    const campaignId = routeParam(req.params.campaignId);
-    const { page = 1, pageSize = 20, status, date, locationId } = req.query;
+    const campaignId = parseInt(routeParam(req.params.campaignId), 10);
+    if (!Number.isFinite(campaignId)) {
+      return res.status(400).json({ success: false, message: "Invalid campaign id" });
+    }
 
-    const prisma = require("../../../../infrastructure/db/prismaClient").default;
-
-    const where: any = {
-      campaignId: parseInt(campaignId, 10),
-    };
-
-    if (status) where.status = status;
-    if (date) where.bookingDate = new Date(date as string);
-    if (locationId) where.locationId = parseInt(locationId as string, 10);
-
-    const [items, total] = await Promise.all([
-      prisma.campaignBooking.findMany({
-        where,
-        include: {
-          location: { select: { id: true, name: true } },
-          slot: { select: { startTime: true, endTime: true } },
-          pets: true,
-        },
-        orderBy: [{ bookingDate: "desc" }, { createdAt: "desc" }],
-        skip: (parseInt(page as string, 10) - 1) * parseInt(pageSize as string, 10),
-        take: parseInt(pageSize as string, 10),
-      }),
-      prisma.campaignBooking.count({ where }),
-    ]);
+    listCampaignBookingsQuerySchema.parse(req.query);
+    const filters = parseBookingListFilters(req.query as Record<string, unknown>, campaignId);
+    const result = await queryCampaignBookings(filters);
 
     res.json({
       success: true,
-      items,
-      total,
-      page: parseInt(page as string, 10),
-      pageSize: parseInt(pageSize as string, 10),
-      totalPages: Math.ceil(total / parseInt(pageSize as string, 10)),
+      items: result.items.map(mapBookingRecordToListRow),
+      total: result.total,
+      page: result.page,
+      pageSize: result.pageSize,
+      totalPages: result.totalPages,
+      summary: result.summary,
     });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * GET /admin/campaigns/:campaignId/bookings/filter-options
+ * Distinct filter values from actual booking data.
+ */
+export async function getCampaignBookingFilterOptionsHandler(
+  req: Request,
+  res: Response,
+  next: NextFunction
+) {
+  try {
+    const campaignId = parseInt(routeParam(req.params.campaignId), 10);
+    if (!Number.isFinite(campaignId)) {
+      return res.status(400).json({ success: false, message: "Invalid campaign id" });
+    }
+    const data = await getBookingFilterOptions(campaignId);
+    res.json({ success: true, data });
   } catch (error) {
     next(error);
   }
@@ -442,4 +453,5 @@ export default {
   completeBookingHandler,
   cancelBookingStaffHandler,
   listCampaignBookingsHandler,
+  getCampaignBookingFilterOptionsHandler,
 };

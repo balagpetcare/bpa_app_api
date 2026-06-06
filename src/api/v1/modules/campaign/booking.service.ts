@@ -18,6 +18,12 @@ import {
   ValidationErrors,
 } from "./campaign.errors";
 import {
+  formatBookingLocationLabel,
+  formatBookingLocationShortLabel,
+  resolveBookingLocationDisplay,
+  resolveBookingLocationFields,
+} from "./bookingLocationDisplay.util";
+import {
   generateBookingRef,
   generateQrToken,
   generateQueueNumber,
@@ -38,7 +44,7 @@ import {
   isPastBookingCutoff,
   resolveSessionName,
 } from "./slot.schedule";
-import { generateVerificationCode } from "./qr.service";
+import { assertMinimumPetCount } from "./petCount.util";
 import { getCampaignConfigOrNull, validateBookingAgainstConfig } from "./config.service";
 
 // ============================================================================
@@ -62,6 +68,8 @@ export async function createBooking(
   if (sessionPhone && normalizePhone(sessionPhone) !== ownerPhone) {
     throw ValidationErrors.INVALID_INPUT("Phone number does not match session");
   }
+
+  assertMinimumPetCount(input.pets?.length ?? 0);
 
   // Validate campaign
   const campaign = await validateCampaignForBooking(input.campaignId);
@@ -264,6 +272,8 @@ export async function registerWalkIn(
     throw ValidationErrors.INVALID_PHONE();
   }
   const ownerPhone = normalizePhone(input.owner.phone);
+
+  assertMinimumPetCount(input.pets?.length ?? 0);
 
   // Validate campaign
   const campaign = await validateCampaignForBooking(input.campaignId);
@@ -855,13 +865,33 @@ export function mapBookingRecordToDetails(booking: {
           endTimeLabel: formatCampaignTimeLabel(booking.slot.endTime),
         }
       : null,
-    location: booking.location
-      ? {
-          id: booking.location.id,
-          name: booking.location.name,
-          address: booking.location.address ?? undefined,
-        }
-      : null,
+    location: (() => {
+      const fields = resolveBookingLocationFields(booking);
+      const display = resolveBookingLocationDisplay(booking);
+      if (!fields && !display) return null;
+      const label = fields?.locationLabel ?? formatBookingLocationShortLabel(display);
+      return {
+        ...(display?.id != null ? { id: display.id } : {}),
+        ...(label ? { name: label } : display?.name ? { name: display.name } : {}),
+        ...(display?.address ? { address: display.address } : {}),
+        ...(fields?.cityCorporation ? { cityCorporation: fields.cityCorporation } : {}),
+        ...(fields?.area ? { area: fields.area } : {}),
+        ...(label ? { locationLabel: label } : {}),
+      };
+    })(),
+    ...((): {
+      cityCorporation?: string;
+      area?: string;
+      locationLabel?: string;
+    } => {
+      const fields = resolveBookingLocationFields(booking);
+      if (!fields) return {};
+      return {
+        cityCorporation: fields.cityCorporation,
+        area: fields.area,
+        locationLabel: fields.locationLabel,
+      };
+    })(),
     owner: {
       phone: booking.ownerPhone,
       name: booking.ownerName,
@@ -879,6 +909,67 @@ export function mapBookingRecordToDetails(booking: {
     checkedInAt: booking.checkedInAt ?? undefined,
     completedAt: booking.completedAt ?? undefined,
     petCount: booking.petCount,
+  };
+}
+
+/** Admin list row — enriches raw Prisma booking with display location. */
+export function mapBookingRecordToListRow(booking: {
+  id: number;
+  bookingRef: string;
+  qrToken: string;
+  status: string;
+  bookingDate: Date;
+  bookingMode?: string | null;
+  ownerPhone: string;
+  ownerName: string;
+  petCount?: number;
+  paymentStatus?: string;
+  queueNumber?: string | null;
+  checkedInAt?: Date | null;
+  completedAt?: Date | null;
+  bookingArea?: string | null;
+  coverageZoneName?: string | null;
+  ownerAddressJson?: unknown;
+  location?: { id: number; name: string; address?: string | null } | null;
+  slot?: { startTime: string; endTime: string } | null;
+  pets?: Array<{ id: number; name: string; vaccinationStatus: string }>;
+}) {
+  const fields = resolveBookingLocationFields(booking);
+  const display = resolveBookingLocationDisplay(booking);
+  const label = fields?.locationLabel ?? formatBookingLocationShortLabel(display);
+  const location = display
+    ? {
+        ...(display.id != null ? { id: display.id } : {}),
+        ...(label ? { name: label } : display.name ? { name: display.name } : {}),
+        ...(display.address ? { address: display.address } : {}),
+        ...(fields?.cityCorporation ? { cityCorporation: fields.cityCorporation } : {}),
+        ...(fields?.area ? { area: fields.area } : {}),
+        ...(label ? { locationLabel: label } : {}),
+      }
+    : null;
+
+  return {
+    id: booking.id,
+    bookingRef: booking.bookingRef,
+    qrToken: booking.qrToken,
+    status: booking.status,
+    bookingDate: booking.bookingDate,
+    bookingMode: booking.bookingMode,
+    ownerPhone: booking.ownerPhone,
+    ownerName: booking.ownerName,
+    petCount: booking.petCount,
+    paymentStatus: booking.paymentStatus,
+    queueNumber: booking.queueNumber,
+    checkedInAt: booking.checkedInAt,
+    completedAt: booking.completedAt,
+    bookingArea: booking.bookingArea,
+    coverageZoneName: booking.coverageZoneName,
+    cityCorporation: fields?.cityCorporation ?? null,
+    area: fields?.area ?? null,
+    locationLabel: fields?.locationLabel ?? null,
+    location,
+    slot: booking.slot,
+    pets: booking.pets,
   };
 }
 

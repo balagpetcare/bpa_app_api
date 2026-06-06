@@ -27,6 +27,7 @@ import { parseCheckoutSessionIdFromOrderNotes } from "./campaign.paymentGuards";
 import { createCheckoutPaymentIntent } from "./payment.service";
 import { sendBookingConfirmation } from "./sms.service";
 import { generateVerificationCode } from "./qr.service";
+import { assertMinimumPetCount } from "./petCount.util";
 import type { BookingDetails } from "./campaign.types";
 import { mapBookingRecordToDetails } from "./booking.service";
 import { resolveCoverageForCampaignLocationId } from "./coverageLocation.service";
@@ -51,6 +52,7 @@ function defaultCheckoutPaymentMethod(): CheckoutInitInput["paymentMethod"] {
   const provider = getActivePaymentProvider();
   if (provider === "bkash") return "BKASH";
   if (provider === "nagad") return "NAGAD";
+  if (provider === "eps") return "SSLCOMMERZ";
   return "SSLCOMMERZ";
 }
 
@@ -120,6 +122,8 @@ async function createPendingBookingForCheckout(
     zoneInterest?: ZoneInterestCoverage | null;
   }
 ): Promise<number> {
+  assertMinimumPetCount(input.catCount);
+
   let bookingRef = generateBookingRef();
   for (let i = 0; i < 10; i++) {
     const exists = await prisma.campaignBooking.findUnique({ where: { bookingRef } });
@@ -185,6 +189,7 @@ function buildAddressJson(
     (location ? `${location.name}` : "");
 
   if (coverage?.bookingMode === "ZONE_INTEREST") {
+    const corpCode = input.cityCorporationCode?.trim().toUpperCase();
     return {
       bookingMode: "ZONE_INTEREST",
       alternatePhone: input.alternatePhone ? normalizePhone(input.alternatePhone) : undefined,
@@ -192,7 +197,8 @@ function buildAddressJson(
       coverageZoneName: coverage.coverageZoneName ?? undefined,
       bdAreaId: coverage.bdAreaId ?? input.bdAreaId ?? undefined,
       bookingArea: (coverage.bookingArea ?? input.bookingArea)?.slice(0, 200) || undefined,
-      cityCorporationCode: input.cityCorporationCode?.trim().toUpperCase() || undefined,
+      cityCorporationCode: corpCode || undefined,
+      cityCorporationName: corpCode ? resolveCityCorporationName(corpCode) : undefined,
       paymentMethod: input.paymentMethod ?? defaultCheckoutPaymentMethod(),
     };
   }
@@ -256,7 +262,8 @@ export async function initCheckout(input: CheckoutInitInput): Promise<CheckoutIn
   }
 
   const maxCats = configRow?.maxCatsPerBooking ?? campaign.maxPetsPerBooking;
-  if (input.catCount < 1 || input.catCount > maxCats) {
+  assertMinimumPetCount(input.catCount);
+  if (input.catCount > maxCats) {
     throw ValidationErrors.INVALID_INPUT(
       `Cat count must be between 1 and ${maxCats}`
     );
@@ -583,6 +590,8 @@ export async function fulfillCheckoutSession(checkoutSessionId: string): Promise
     if (session.expiresAt < new Date() && session.status === "PENDING") {
       throw CheckoutErrors.EXPIRED();
     }
+
+    assertMinimumPetCount(session.catCount);
 
     const address = session.addressJson as Record<string, unknown> & {
       locationId?: number;

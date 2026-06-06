@@ -15,20 +15,33 @@ import {
   getBookingsByCoverageZone,
   getPaymentAnalytics,
 } from "./analytics.service";
+import {
+  resolveBookingLocationFields,
+} from "./bookingLocationDisplay.util";
+import {
+  buildBookingListWhere,
+  parseBookingListFilters,
+  type BookingListFilters,
+} from "./bookingListFilters.util";
+import { BOOKING_LIST_INCLUDE } from "./bookingListFilters.service";
 
 const BOOKING_EXPORT_MAX = 25_000;
 
 export const BOOKING_EXPORT_HEADERS = [
-  "booking_ref",
-  "status",
-  "owner_name",
-  "owner_phone",
-  "pet_count",
+  "reference",
   "booking_date",
-  "location_name",
+  "owner_name",
+  "phone",
+  "pet_count",
+  "city_corporation",
+  "area",
+  "location_label",
+  "status",
+  "payment_status",
+  "assigned_staff",
+  "notes",
   "slot_start",
   "slot_end",
-  "payment_status",
   "paid_amount_bdt",
   "is_walk_in",
   "checked_in_at",
@@ -36,54 +49,68 @@ export const BOOKING_EXPORT_HEADERS = [
   "created_at",
 ] as const;
 
-export type BookingExportFilters = {
-  status?: string;
-  date?: string;
-  locationId?: number;
-};
+export type BookingExportFilters = Omit<
+  BookingListFilters,
+  "page" | "pageSize"
+>;
+
+function staffDisplayName(
+  user: { profile?: { displayName?: string | null } | null } | null | undefined
+): string {
+  return user?.profile?.displayName?.trim() ?? "";
+}
+
+function bookingNotes(row: {
+  cancelReason?: string | null;
+  metadataJson?: unknown;
+}): string {
+  if (row.cancelReason?.trim()) return row.cancelReason.trim();
+  const meta = row.metadataJson as Record<string, unknown> | null;
+  if (typeof meta?.notes === "string" && meta.notes.trim()) return meta.notes.trim();
+  return "";
+}
 
 export async function fetchBookingsForExport(
   campaignId: number,
   filters: BookingExportFilters
 ) {
-  const where: Record<string, unknown> = { campaignId };
-  if (filters.status) where.status = filters.status;
-  if (filters.date) where.bookingDate = new Date(filters.date);
-  if (filters.locationId) where.locationId = filters.locationId;
+  const where = buildBookingListWhere({ ...filters, campaignId });
 
-  const items = await prisma.campaignBooking.findMany({
+  return prisma.campaignBooking.findMany({
     where,
-    include: {
-      location: { select: { name: true } },
-      slot: { select: { startTime: true, endTime: true } },
-    },
+    include: BOOKING_LIST_INCLUDE,
     orderBy: [{ bookingDate: "desc" }, { createdAt: "desc" }],
     take: BOOKING_EXPORT_MAX,
   });
-
-  return items;
 }
 
 export function bookingsToExportRows(
   items: Awaited<ReturnType<typeof fetchBookingsForExport>>
 ): Record<string, unknown>[] {
-  return items.map((b) => ({
-    booking_ref: b.bookingRef,
-    status: b.status,
-    owner_name: b.ownerName,
-    owner_phone: b.ownerPhone,
-    pet_count: b.petCount,
-    booking_date: formatDate(b.bookingDate),
-    location_name: b.location?.name ?? "",
-    slot_start: b.slot?.startTime ?? "",
-    slot_end: b.slot?.endTime ?? "",
-    payment_status: b.paymentStatus,
-    paid_amount_bdt: b.paidAmount != null ? Number(b.paidAmount) : "",
-    is_walk_in: b.isWalkIn ? "true" : "false",
-    checked_in_at: formatIso(b.checkedInAt),
-    completed_at: formatIso(b.completedAt),
-    created_at: formatIso(b.createdAt),
-  }));
+  return items.map((b) => {
+    const loc = resolveBookingLocationFields(b);
+    return {
+      reference: b.bookingRef,
+      booking_date: formatDate(b.bookingDate),
+      owner_name: b.ownerName,
+      phone: b.ownerPhone,
+      pet_count: b.petCount,
+      city_corporation: loc?.cityCorporation ?? "",
+      area: loc?.area ?? b.bookingArea ?? "",
+      location_label: loc?.locationLabel ?? b.location?.name ?? "",
+      status: b.status,
+      payment_status: b.paymentStatus,
+      assigned_staff: staffDisplayName(b.checkedInBy),
+      notes: bookingNotes(b),
+      slot_start: b.slot?.startTime ?? "",
+      slot_end: b.slot?.endTime ?? "",
+      paid_amount_bdt: b.paidAmount != null ? Number(b.paidAmount) : "",
+      is_walk_in: b.isWalkIn ? "true" : "false",
+      checked_in_at: formatIso(b.checkedInAt),
+      completed_at: formatIso(b.completedAt),
+      created_at: formatIso(b.createdAt),
+    };
+  });
 }
 
 export async function buildBookingsExport(
@@ -168,15 +195,14 @@ export async function buildAnalyticsExport(
   };
 }
 
-export function parseBookingExportQuery(query: Record<string, unknown>) {
+export function parseBookingExportQuery(
+  query: Record<string, unknown>,
+  campaignId: number
+): { format: ExportFormat; filters: BookingExportFilters } {
+  const parsed = parseBookingListFilters(query, campaignId);
+  const { page: _p, pageSize: _s, ...filters } = parsed;
   return {
     format: parseExportFormat(query.format),
-    filters: {
-      status: query.status ? String(query.status) : undefined,
-      date: query.date ? String(query.date) : undefined,
-      locationId: query.locationId
-        ? parseInt(String(query.locationId), 10)
-        : undefined,
-    } as BookingExportFilters,
+    filters,
   };
 }

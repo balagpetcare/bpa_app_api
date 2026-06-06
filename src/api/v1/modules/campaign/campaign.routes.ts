@@ -42,6 +42,7 @@ import {
   completeBookingHandler,
   cancelBookingStaffHandler,
   listCampaignBookingsHandler,
+  getCampaignBookingFilterOptionsHandler,
 } from "./booking.controller";
 
 import {
@@ -108,10 +109,12 @@ import {
   getCampaignPaymentApiPrefix,
   getUnifiedPaymentApiPrefix,
   getActivePaymentProvider,
+  getApiPublicBaseUrl,
   getBkashConfig,
   getNagadConfig,
   getSslCommerzConfig,
   getAmarPayConfig,
+  getEpsConfig,
 } from "../../providers/paymentProvider.config";
 import { validateBookingQr } from "./qr.service";
 import { getBookingByRef } from "./booking.service";
@@ -535,6 +538,20 @@ publicRouter.get("/payments/callback-urls", (_req, res) => {
         ipn: getSslCommerzConfig().ipnUrl,
       },
       amarpay: { ipn: getAmarPayConfig().ipnUrl },
+      eps: {
+        success: getEpsConfig().successUrl,
+        fail: getEpsConfig().failUrl,
+        cancel: getEpsConfig().cancelUrl,
+        callback: getEpsConfig().callbackUrl,
+        baseUrl: getEpsConfig().baseUrl,
+        module: {
+          initiate: `${getApiPublicBaseUrl()}/api/v1/payments/eps/initiate`,
+          validate: `${getApiPublicBaseUrl()}/api/v1/payments/eps/validate`,
+          verify: `${getApiPublicBaseUrl()}/api/v1/payments/eps/verify/:transactionId`,
+          webhook: getEpsConfig().callbackUrl,
+          callbackUrls: `${getApiPublicBaseUrl()}/api/v1/payments/eps/callback-urls`,
+        },
+      },
       genericWebhook: `${unified}/webhook`,
     },
   });
@@ -830,6 +847,10 @@ adminRouter.get("/campaigns/:id/vaccination-stats", async (req, res, next) => {
 
 // Bookings
 adminRouter.get("/campaigns/:campaignId/bookings", listCampaignBookingsHandler);
+adminRouter.get(
+  "/campaigns/:campaignId/bookings/filter-options",
+  getCampaignBookingFilterOptionsHandler
+);
 adminRouter.get("/campaigns/:campaignId/bookings/export", exportCampaignBookingsHandler);
 
 // SMS ops: cost summary, queue recovery, recent failures

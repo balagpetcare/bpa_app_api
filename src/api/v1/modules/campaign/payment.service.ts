@@ -66,6 +66,43 @@ export interface ProcessRefundInput {
 }
 
 // ============================================================================
+// Campaign payment branch (Order.branchId anchor)
+// ============================================================================
+
+/**
+ * Resolves the branch used as `orders.branchId` for campaign checkout.
+ * Not an EPS concern — missing branch triggers "Campaign payment setup not configured".
+ */
+export async function resolveCampaignPaymentBranch(campaign: { organizerId: number | null }) {
+  const overrideRaw = process.env.CAMPAIGN_PAYMENT_BRANCH_ID?.trim();
+  if (overrideRaw) {
+    const overrideId = Number(overrideRaw);
+    if (Number.isFinite(overrideId) && overrideId > 0) {
+      const branch = await prisma.branch.findFirst({
+        where: { id: overrideId, status: "ACTIVE" },
+      });
+      if (branch) return branch;
+    }
+  }
+
+  if (campaign.organizerId) {
+    const orgBranch = await prisma.branch.findFirst({
+      where: { orgId: campaign.organizerId, status: "ACTIVE" },
+      orderBy: { id: "asc" },
+    });
+    if (orgBranch) return orgBranch;
+  }
+
+  return prisma.branch.findFirst({
+    where: { status: "ACTIVE" },
+    orderBy: { id: "asc" },
+  });
+}
+
+const CAMPAIGN_PAYMENT_BRANCH_ERROR =
+  "Campaign payment setup not configured: no ACTIVE branch found for campaign orders (seed a branch or set CAMPAIGN_PAYMENT_BRANCH_ID)";
+
+// ============================================================================
 // Payment Intent Creation
 // ============================================================================
 
@@ -209,15 +246,10 @@ export async function createPaymentIntent(
     };
   }
 
-  const defaultBranch = await prisma.branch.findFirst({
-    where: {
-      orgId: campaign.organizerId ?? undefined,
-      status: "ACTIVE",
-    },
-  });
+  const defaultBranch = await resolveCampaignPaymentBranch(campaign);
 
   if (!defaultBranch) {
-    return { success: false, error: "Campaign payment setup not configured" };
+    return { success: false, error: CAMPAIGN_PAYMENT_BRANCH_ERROR };
   }
 
   const order = await prisma.$transaction(async (tx) => {
@@ -364,15 +396,10 @@ export async function createCheckoutPaymentIntent(
     };
   }
 
-  const defaultBranch = await prisma.branch.findFirst({
-    where: {
-      orgId: campaign.organizerId ?? undefined,
-      status: "ACTIVE",
-    },
-  });
+  const defaultBranch = await resolveCampaignPaymentBranch(campaign);
 
   if (!defaultBranch) {
-    return { success: false, error: "Campaign payment setup not configured" };
+    return { success: false, error: CAMPAIGN_PAYMENT_BRANCH_ERROR };
   }
 
   let order = existingOrder;
@@ -488,17 +515,49 @@ async function initiateProviderPayment(
  * Process payment webhook from provider
  * Idempotent: Safe to call multiple times with same data
  */
-export async function processPaymentWebhook(
-  payload: WebhookPayload
-): Promise<{ success: boolean; bookingId?: number; duplicate?: boolean }> {
+async function findOrderForPaymentWebhook(payload: WebhookPayload) {
+  const customerOrderId =
+    typeof payload.metadata?.customerOrderId === "string"
+      ? payload.metadata.customerOrderId
+      : undefined;
+
   const order = await prisma.order.findFirst({
     where: {
       OR: [
         { orderNumber: payload.transactionId },
         { notes: { contains: payload.transactionId } },
+        ...(customerOrderId ? [{ orderNumber: customerOrderId }] : []),
       ],
     },
   });
+
+  if (order || payload.provider !== "eps") {
+    return order;
+  }
+
+  const log = await prisma.paymentTransactionLog.findFirst({
+    where: {
+      provider: "eps",
+      OR: [
+        { referenceId: payload.transactionId },
+        { providerTxId: payload.transactionId },
+        ...(typeof payload.metadata?.providerTxId === "string"
+          ? [{ providerTxId: payload.metadata.providerTxId }]
+          : []),
+      ],
+      orderId: { not: null },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
+  if (!log?.orderId) return null;
+  return prisma.order.findUnique({ where: { id: log.orderId } });
+}
+
+export async function processPaymentWebhook(
+  payload: WebhookPayload
+): Promise<{ success: boolean; bookingId?: number; duplicate?: boolean }> {
+  const order = await findOrderForPaymentWebhook(payload);
 
   if (!order) {
     console.warn("Webhook: Order not found for transaction", payload.transactionId);

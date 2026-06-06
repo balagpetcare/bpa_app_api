@@ -25,7 +25,10 @@ export async function exportCampaignBookingsHandler(
     if (!Number.isFinite(campaignId)) {
       return res.status(400).json({ success: false, error: "Invalid campaign id" });
     }
-    const { format, filters } = parseBookingExportQuery(req.query as Record<string, unknown>);
+    const { format, filters } = parseBookingExportQuery(
+      req.query as Record<string, unknown>,
+      campaignId
+    );
     const { buffer, filename, rowCount } = await buildBookingsExport(
       campaignId,
       format,

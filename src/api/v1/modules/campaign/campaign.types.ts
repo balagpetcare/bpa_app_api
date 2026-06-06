@@ -221,6 +221,9 @@ export interface BookingDetails {
   bdAreaId?: number | null;
   bookingArea?: string | null;
   pendingAssignment?: boolean;
+  cityCorporation?: string | null;
+  area?: string | null;
+  locationLabel?: string | null;
   slot?: {
     startTime: string;
     endTime: string;
@@ -229,9 +232,12 @@ export interface BookingDetails {
     endTimeLabel?: string;
   } | null;
   location?: {
-    id: number;
-    name: string;
+    id?: number;
+    name?: string;
     address?: string;
+    cityCorporation?: string;
+    area?: string;
+    locationLabel?: string;
   } | null;
   owner: {
     phone: string;

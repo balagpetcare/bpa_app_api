@@ -260,6 +260,31 @@ export const bookingSearchQuerySchema = z.object({
   status: z.enum(["DRAFT", "CONFIRMED", "CHECKED_IN", "IN_PROGRESS", "COMPLETED", "NO_SHOW", "CANCELLED"]).optional(),
 }).merge(paginationSchema);
 
+export const listCampaignBookingsQuerySchema = paginationSchema.extend({
+  status: z.string().max(32).optional(),
+  cityCorporation: z.string().max(10).optional(),
+  city: z.string().max(10).optional(),
+  area: z.string().max(200).optional(),
+  coverageZone: z.string().max(200).optional(),
+  bookingMode: z.enum(["VENUE", "ZONE_INTEREST"]).optional(),
+  dateFrom: z.string().max(32).optional(),
+  dateTo: z.string().max(32).optional(),
+  date: z.string().max(32).optional(),
+  ownerName: z.string().max(100).optional(),
+  phone: z.string().max(20).optional(),
+  reference: z.string().max(20).optional(),
+  paymentStatus: z.string().max(32).optional(),
+  petCountMin: z.coerce.number().int().min(0).optional(),
+  petCountMax: z.coerce.number().int().min(0).optional(),
+  locationId: z.coerce.number().int().optional(),
+});
+
+export const petCountSchema = z.coerce
+  .number()
+  .int()
+  .min(1, "At least one pet must be selected.")
+  .max(10);
+
 export const paymentWebhookSchema = z.object({
   provider: z.string().max(64).optional(),
   transactionId: z.string().min(1).max(128),
@@ -296,7 +321,7 @@ export const checkoutInitSchema = z
       })
       .optional(),
     fullAddress: z.string().trim().max(500).optional(),
-    catCount: z.number().int().min(1).max(10),
+    catCount: petCountSchema,
     couponCode: z.string().max(32).optional(),
     paymentMethod: z.enum(["BKASH", "NAGAD", "CARD", "SSLCOMMERZ"]).optional(),
     returnUrl: z.string().min(1).optional(),
