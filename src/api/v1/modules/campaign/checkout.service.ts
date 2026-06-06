@@ -27,6 +27,7 @@ import { parseCheckoutSessionIdFromOrderNotes } from "./campaign.paymentGuards";
 import { createCheckoutPaymentIntent } from "./payment.service";
 import { sendBookingConfirmation } from "./sms.service";
 import { generateVerificationCode } from "./qr.service";
+import { resolveCityCorporationName } from "./bookingLocationDisplay.util";
 import { assertMinimumPetCount } from "./petCount.util";
 import type { BookingDetails } from "./campaign.types";
 import { mapBookingRecordToDetails } from "./booking.service";

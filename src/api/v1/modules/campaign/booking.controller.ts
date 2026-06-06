@@ -10,8 +10,8 @@ import {
   checkInSchema,
   cancelBookingSchema,
   availableSlotsQuerySchema,
+  listCampaignBookingsQuerySchema,
 } from "./campaign.validation";
-import {
 import {
   createBooking,
   registerWalkIn,
@@ -29,7 +29,6 @@ import {
   parseBookingListFilters,
   getBookingFilterOptions,
 } from "./bookingListFilters.service";
-import { listCampaignBookingsQuerySchema } from "./campaign.validation";
 import { getAvailableSlots, getCampaignSlots, pickTimeLocale } from "./slot.service";
 import { getLocationsWithAvailability } from "./location.service";
 import { verifySession } from "./otp.service";

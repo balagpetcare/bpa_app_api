@@ -46,6 +46,7 @@ import {
 } from "./slot.schedule";
 import { assertMinimumPetCount } from "./petCount.util";
 import { getCampaignConfigOrNull, validateBookingAgainstConfig } from "./config.service";
+import { generateVerificationCode } from "./qr.service";
 
 // ============================================================================
 // Booking Creation
