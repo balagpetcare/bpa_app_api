@@ -6,10 +6,14 @@ import * as path from "path";
 
 describe("workerEnv.bootstrap", () => {
   it("loads dotenv and initRedisSubsystem like API index.ts", () => {
-    const src = fs.readFileSync(path.join(__dirname, "workerEnv.bootstrap.ts"), "utf8");
-    expect(src).toContain('loadDotenv');
-    expect(src).toContain("initRedisSubsystem");
-    expect(src).toContain('require("../../config/env")');
+    const bootstrapSrc = fs.readFileSync(path.join(__dirname, "workerEnv.bootstrap.ts"), "utf8");
+    const indexSrc = fs.readFileSync(path.join(__dirname, "../../index.ts"), "utf8");
+    expect(bootstrapSrc).toContain("loadDotenv");
+    expect(bootstrapSrc).toContain("initRedisSubsystem");
+    expect(bootstrapSrc).toContain('require("../../config/env")');
+    expect(bootstrapSrc).not.toContain("waitForRedisReady");
+    expect(indexSrc).toContain("initRedisSubsystem");
+    expect(indexSrc).not.toContain("waitForRedisReady");
   });
 
   it("notification worker imports bootstrap first and probes Redis", () => {

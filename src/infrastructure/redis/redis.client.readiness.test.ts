@@ -76,4 +76,24 @@ describe("redis.client readiness", () => {
     expect(ok).toBe(true);
     expect(pingMock).toHaveBeenCalled();
   });
+
+  it("initRedisSubsystem does not start readiness timeout before worker module load", async () => {
+    connectMock.mockImplementation(async () => {
+      mockInstance.status = "connect";
+      setTimeout(() => {
+        mockInstance.status = "ready";
+        mockInstance.emit("ready");
+      }, 80);
+    });
+
+    const { initRedisSubsystem, waitForRedisReady } = require("./redis.client");
+    initRedisSubsystem();
+
+    // Simulate slow ts-node/prisma/bullmq imports after bootstrap (API-style gap).
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    const ready = await waitForRedisReady();
+    expect(ready).toBe(true);
+    expect(connectMock).toHaveBeenCalledTimes(1);
+  });
 });

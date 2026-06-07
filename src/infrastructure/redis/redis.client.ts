@@ -36,8 +36,18 @@ let initStarted = false;
 let loggedUnavailable = false;
 let readyWaitInFlight: Promise<boolean> | null = null;
 
+function ensureRedisConnectStarted(client: Redis): void {
+  if (client.status === "ready") return;
+  if (client.status === "wait" || client.status === "end") {
+    void client.connect().catch((err: Error) => {
+      lastError = err?.message || "connect failed";
+      logRedis("warn", "Redis connect failed", { reason: lastError });
+    });
+  }
+}
+
 function waitForClientReady(client: Redis, timeoutMs: number): Promise<void> {
-  if (client.status === "ready") {
+  if (client.status === "ready" || runtimeState === "ready") {
     return Promise.resolve();
   }
 
@@ -63,7 +73,7 @@ function waitForClientReady(client: Redis, timeoutMs: number): Promise<void> {
       client.off("error", onError);
     };
 
-    if (client.status === "ready") {
+    if (client.status === "ready" || runtimeState === "ready") {
       cleanup();
       resolve();
       return;
@@ -72,12 +82,7 @@ function waitForClientReady(client: Redis, timeoutMs: number): Promise<void> {
     client.once("ready", onReady);
     client.once("error", onError);
 
-    if (client.status === "wait") {
-      void client.connect().catch((err: Error) => {
-        cleanup();
-        reject(err);
-      });
-    }
+    ensureRedisConnectStarted(client);
   });
 }
 
@@ -208,9 +213,9 @@ export function initRedisSubsystem(): void {
   try {
     sharedClient = new Redis(buildIoRedisOptions());
     attachClientListeners(sharedClient);
-    void waitForRedisReady().catch(() => {
-      /* logged in waitForRedisReady */
-    });
+    // Match API bootstrap: start connect only — do not await readiness here.
+    // Worker entrypoints call waitForRedisReady() after module load (see notificationWorker.ts).
+    ensureRedisConnectStarted(sharedClient);
   } catch (err) {
     runtimeState = "unavailable";
     lastError = (err as Error)?.message || "init failed";
@@ -230,7 +235,7 @@ export async function waitForRedisReady(timeoutMs?: number): Promise<boolean> {
   const client = sharedClient;
   const timeout = timeoutMs ?? getRedisConnectTimeoutMs();
 
-  if (client.status === "ready") {
+  if (client.status === "ready" || runtimeState === "ready") {
     try {
       const pong = await client.ping();
       if (pong === "PONG") {

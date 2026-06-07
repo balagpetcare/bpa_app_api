@@ -26,6 +26,7 @@ try {
 
 try {
   const { initRedisSubsystem } = require("../../infrastructure/redis/redis.client");
+  // Same as src/index.ts — connect only; readiness wait happens in worker main().
   initRedisSubsystem();
 } catch (e) {
   console.warn("[WorkerEnv] Redis subsystem init skipped", (e as Error)?.message || e);
