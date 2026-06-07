@@ -350,20 +350,6 @@ export async function initCheckout(input: CheckoutInitInput): Promise<CheckoutIn
     }
   }
 
-  const existingToday = await prisma.campaignBooking.findFirst({
-    where: {
-      campaignId,
-      ownerPhone,
-      bookingDate: startOfDay(new Date()),
-      status: { notIn: ["CANCELLED"] },
-    },
-  });
-  if (existingToday) {
-    throw ValidationErrors.INVALID_INPUT(
-      "You already have a booking for today on this campaign"
-    );
-  }
-
   if (input.couponCode) {
     const couponCheck = validateCampaignCoupon(input.couponCode);
     if (couponCheck.ok === false) {

@@ -35,7 +35,6 @@ import {
   isToday,
   isInPast,
   diffInHours,
-  formatDate,
 } from "./campaign.utils";
 import { validateCampaignForBooking, logCampaignAudit } from "./campaign.service";
 import { sendBookingConfirmation, sendBookingRequestSms } from "./sms.service";
@@ -138,20 +137,6 @@ export async function createBooking(
 
     if (isPastBookingCutoff(slotDate, slot.startTime, slot.endTime, slot.bookingCutoffTime)) {
       throw SlotErrors.BOOKING_CUTOFF_PASSED();
-    }
-
-    // Check for existing booking on same date for this phone
-    const existingBooking = await tx.campaignBooking.findFirst({
-      where: {
-        campaignId: input.campaignId,
-        ownerPhone,
-        bookingDate: slotDate,
-        status: { notIn: ["CANCELLED"] },
-      },
-    });
-
-    if (existingBooking) {
-      throw BookingErrors.ALREADY_EXISTS(ownerPhone, formatDate(slotDate));
     }
 
     // Check if owner has BPA account
