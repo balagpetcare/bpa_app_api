@@ -17,7 +17,7 @@ import type { SmsJobPayload } from "../../shared/services/sms/sms.types";
 
 import {
   areRedisQueuesEnabled,
-  probeRedisConnection,
+  waitForRedisReady,
 } from "../../infrastructure/redis/redis.client";
 import { getRedisConnectionOptions, isRedisEnabled } from "../../infrastructure/redis/redisConnection";
 import { recordSmsCostOnLog } from "../../api/v1/modules/campaign/smsCostMonitoring.service";
@@ -250,8 +250,8 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  const connected = await probeRedisConnection();
-  if (!connected || !areRedisQueuesEnabled()) {
+  const ready = await waitForRedisReady();
+  if (!ready || !areRedisQueuesEnabled()) {
     console.log("[NotificationWorker] Redis unavailable; worker will not start.");
     process.exit(1);
   }

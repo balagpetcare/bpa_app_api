@@ -34,6 +34,52 @@ let retryCount = 0;
 let lastError: string | null = null;
 let initStarted = false;
 let loggedUnavailable = false;
+let readyWaitInFlight: Promise<boolean> | null = null;
+
+function waitForClientReady(client: Redis, timeoutMs: number): Promise<void> {
+  if (client.status === "ready") {
+    return Promise.resolve();
+  }
+
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Redis ready timeout after ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    const onReady = () => {
+      cleanup();
+      resolve();
+    };
+
+    const onError = (err: Error) => {
+      cleanup();
+      reject(err);
+    };
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      client.off("ready", onReady);
+      client.off("error", onError);
+    };
+
+    if (client.status === "ready") {
+      cleanup();
+      resolve();
+      return;
+    }
+
+    client.once("ready", onReady);
+    client.once("error", onError);
+
+    if (client.status === "wait") {
+      void client.connect().catch((err: Error) => {
+        cleanup();
+        reject(err);
+      });
+    }
+  });
+}
 
 function logRedis(level: "info" | "warn" | "error", msg: string, extra?: Record<string, unknown>): void {
   const endpoint = parseRedisEndpoint();
@@ -162,8 +208,8 @@ export function initRedisSubsystem(): void {
   try {
     sharedClient = new Redis(buildIoRedisOptions());
     attachClientListeners(sharedClient);
-    void probeRedisConnection().catch(() => {
-      /* logged in probe */
+    void waitForRedisReady().catch(() => {
+      /* logged in waitForRedisReady */
     });
   } catch (err) {
     runtimeState = "unavailable";
@@ -173,23 +219,60 @@ export function initRedisSubsystem(): void {
   }
 }
 
-export async function probeRedisConnection(): Promise<boolean> {
+/**
+ * Wait until ioredis emits `ready` before issuing commands.
+ * Required with lazyConnect + enableOfflineQueue:false — ping before ready throws
+ * "Stream isn't writeable and enableOfflineQueue options is false".
+ */
+export async function waitForRedisReady(timeoutMs?: number): Promise<boolean> {
   if (!isRedisEnabled() || !sharedClient) return false;
-  try {
-    if (sharedClient.status === "wait") {
-      await sharedClient.connect();
+
+  const client = sharedClient;
+  const timeout = timeoutMs ?? getRedisConnectTimeoutMs();
+
+  if (client.status === "ready") {
+    try {
+      const pong = await client.ping();
+      if (pong === "PONG") {
+        runtimeState = "ready";
+        return true;
+      }
+    } catch (err) {
+      lastError = (err as Error)?.message || "ping failed";
     }
-    const pong = await sharedClient.ping();
+  }
+
+  if (!readyWaitInFlight) {
+    readyWaitInFlight = waitForRedisReadyOnce(timeout).finally(() => {
+      readyWaitInFlight = null;
+    });
+  }
+  return readyWaitInFlight;
+}
+
+async function waitForRedisReadyOnce(timeoutMs: number): Promise<boolean> {
+  const client = sharedClient;
+  if (!client || !isRedisEnabled()) return false;
+
+  try {
+    await waitForClientReady(client, timeoutMs);
+    const pong = await client.ping();
     if (pong === "PONG") {
       runtimeState = "ready";
       return true;
     }
   } catch (err) {
-    lastError = (err as Error)?.message || "ping failed";
-    runtimeState = "unavailable";
+    lastError = (err as Error)?.message || "ready wait failed";
+    if (runtimeState !== "ready") {
+      runtimeState = "unavailable";
+    }
     logRedis("warn", "Redis probe failed", { reason: lastError });
   }
   return false;
+}
+
+export async function probeRedisConnection(): Promise<boolean> {
+  return waitForRedisReady();
 }
 
 export function isRedisAvailable(): boolean {
@@ -279,7 +362,7 @@ export async function checkRedisHealth(): Promise<{
 
   const start = Date.now();
   try {
-    if (sharedClient.status === "wait") await sharedClient.connect();
+    await waitForClientReady(sharedClient, getRedisConnectTimeoutMs());
     const pong = await sharedClient.ping();
     const latencyMs = Date.now() - start;
     const ok = pong === "PONG";

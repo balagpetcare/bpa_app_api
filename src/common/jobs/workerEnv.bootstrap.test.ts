@@ -15,7 +15,7 @@ describe("workerEnv.bootstrap", () => {
   it("notification worker imports bootstrap first and probes Redis", () => {
     const src = fs.readFileSync(path.join(__dirname, "notificationWorker.ts"), "utf8");
     expect(src.indexOf('./workerEnv.bootstrap')).toBeLessThan(src.indexOf("from \"bullmq\""));
-    expect(src).toContain("probeRedisConnection");
+    expect(src).toContain("waitForRedisReady");
     expect(src).toContain("Redis connected");
     expect(src).toContain("Notification worker started");
     expect(src).toContain("Listening for jobs");
