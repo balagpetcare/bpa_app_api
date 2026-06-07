@@ -3,6 +3,7 @@
  */
 
 import type { Prisma } from "@prisma/client";
+import { isValidBdPhone, normalizePhone } from "./campaign.utils";
 
 export type BookingListFilters = {
   campaignId: number;
@@ -76,7 +77,14 @@ export function parseBookingListFilters(
     dateTo: query.dateTo ? String(query.dateTo) : undefined,
     date: query.date ? String(query.date) : undefined,
     ownerName: query.ownerName ? String(query.ownerName).trim() : undefined,
-    phone: query.phone ? String(query.phone).replace(/\s+/g, "") : undefined,
+    phone: query.phone
+      ? (() => {
+          const raw = String(query.phone).replace(/\s+/g, "");
+          if (!raw) return undefined;
+          if (isValidBdPhone(raw)) return normalizePhone(raw);
+          return raw.replace(/\D/g, "").slice(-11) || undefined;
+        })()
+      : undefined,
     reference: query.reference ? String(query.reference).trim() : undefined,
     paymentStatus: query.paymentStatus ? String(query.paymentStatus) : undefined,
     petCountMin: Number.isFinite(petCountMin) ? petCountMin : undefined,
@@ -122,7 +130,12 @@ export function buildBookingListWhere(filters: BookingListFilters): Prisma.Campa
   }
 
   if (filters.phone) {
-    and.push({ ownerPhone: { contains: filters.phone.replace(/\D/g, "").slice(-11) } });
+    const phoneNeedle = isValidBdPhone(filters.phone)
+      ? normalizePhone(filters.phone)
+      : filters.phone.replace(/\D/g, "").slice(-11);
+    if (phoneNeedle) {
+      and.push({ ownerPhone: { contains: phoneNeedle } });
+    }
   }
 
   if (filters.reference) {

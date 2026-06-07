@@ -8,6 +8,7 @@ import { normalizePhone, isValidBdPhone } from "./campaign.utils";
 import { generateVerificationCode } from "./qr.service";
 import { mapBookingRecordToDetails } from "./booking.service";
 import type { BookingDetails } from "./campaign.types";
+import { deriveSmsDeliveryStatus } from "./smsDeliveryStatus.util";
 
 const CLAIM_RATE_WINDOW_MS = 15 * 60 * 1000;
 const CLAIM_RATE_MAX = 5;
@@ -39,6 +40,10 @@ export type ClaimBookingInput = {
 
 export type ClaimBookingResult = BookingDetails & {
   verificationCode: string;
+  campaign?: { id: number; name: string; slug: string };
+  paidAmount?: number;
+  paymentMethod?: string;
+  smsDeliveryStatus?: "sent" | "pending" | "failed";
 };
 
 export async function claimBooking(input: ClaimBookingInput): Promise<ClaimBookingResult> {
@@ -56,6 +61,8 @@ export async function claimBooking(input: ClaimBookingInput): Promise<ClaimBooki
       slot: true,
       location: true,
       pets: true,
+      campaign: { select: { id: true, name: true, slug: true } },
+      checkoutSession: { select: { paymentMethod: true, amount: true } },
     },
   });
 
@@ -86,8 +93,31 @@ export async function claimBooking(input: ClaimBookingInput): Promise<ClaimBooki
   const details = mapBookingRecordToDetails(booking);
   const verificationCode = generateVerificationCode(booking.qrToken);
 
+  const paidAmount =
+    booking.paidAmount != null
+      ? Number(booking.paidAmount)
+      : booking.checkoutSession?.amount != null
+        ? Number(booking.checkoutSession.amount)
+        : undefined;
+
+  const smsDeliveryStatus = deriveSmsDeliveryStatus({
+    smsSentAt: booking.smsSentAt,
+    smsReference: booking.smsReference,
+    paymentStatus: booking.paymentStatus,
+  });
+
   return {
     ...details,
     verificationCode,
+    campaign: booking.campaign
+      ? {
+          id: booking.campaign.id,
+          name: booking.campaign.name,
+          slug: booking.campaign.slug,
+        }
+      : undefined,
+    paidAmount,
+    paymentMethod: booking.checkoutSession?.paymentMethod ?? undefined,
+    smsDeliveryStatus,
   };
 }

@@ -26,6 +26,7 @@ import { validateCampaignCoupon } from "./campaignCoupon.service";
 import { parseCheckoutSessionIdFromOrderNotes } from "./campaign.paymentGuards";
 import { createCheckoutPaymentIntent } from "./payment.service";
 import { dispatchPaymentSuccessSms } from "../../../../services/notification/payment-success-sms.service";
+import { deriveSmsDeliveryStatus } from "./smsDeliveryStatus.util";
 import { generateVerificationCode } from "./qr.service";
 import { resolveCityCorporationName } from "./bookingLocationDisplay.util";
 import { assertMinimumPetCount } from "./petCount.util";
@@ -533,6 +534,14 @@ export async function getCheckoutStatus(checkoutId: string) {
     verificationCode = generateVerificationCode(bookingRecord.qrToken);
   }
 
+  const smsDeliveryStatus = bookingRecord
+    ? deriveSmsDeliveryStatus({
+        smsSentAt: bookingRecord.smsSentAt,
+        smsReference: bookingRecord.smsReference,
+        paymentStatus: bookingRecord.paymentStatus,
+      })
+    : undefined;
+
   return {
     checkoutId: session.id,
     status: session.status,
@@ -542,6 +551,7 @@ export async function getCheckoutStatus(checkoutId: string) {
     verificationCode,
     booking,
     paymentMethod: session.paymentMethod ?? undefined,
+    smsDeliveryStatus,
     campaign: session.campaign
       ? {
           id: session.campaign.id,
