@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from "express";
 import { getPaymentWebhookSecret } from "../../../providers/paymentProvider.config";
+import { resolvePaymentLandingRedirectPath } from "./eps.redirectResolver";
 import {
   getEpsCallbackUrls,
   handleEpsCallback,
@@ -108,13 +109,33 @@ export async function epsWebhookHandler(req: Request, res: Response, next: NextF
 
 export function epsCallbackHandler(kind: "success" | "fail" | "cancel") {
   return async (req: Request, res: Response, next: NextFunction) => {
+    const query = normalizeQuery(req.query);
+    const wantsJson = req.headers.accept?.includes("application/json");
+
     try {
-      const result = await handleEpsCallback(kind, normalizeQuery(req.query));
-      if (req.headers.accept?.includes("application/json")) {
+      const result = await handleEpsCallback(kind, query);
+      if (!result.success) {
+        console.warn("[EPS callback] handler completed with business failure", {
+          kind,
+          merchantTransactionId: query.MerchantTransactionId || query.merchantTransactionId,
+          error: result.error,
+          redirectPath: result.redirectPath,
+        });
+      }
+      if (wantsJson) {
         return res.json({ success: result.success, data: result });
       }
       return landingRedirect(res, result.redirectPath);
     } catch (error) {
+      console.error("[EPS callback] unhandled error — resolving redirect when possible", {
+        kind,
+        merchantTransactionId: query.MerchantTransactionId || query.merchantTransactionId,
+        error: (error as Error)?.message,
+      });
+      if (!wantsJson) {
+        const fallbackPath = await resolvePaymentLandingRedirectPath(kind, query);
+        return landingRedirect(res, fallbackPath);
+      }
       next(error);
     }
   };

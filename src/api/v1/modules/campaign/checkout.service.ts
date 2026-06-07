@@ -939,13 +939,27 @@ async function finalizeFulfilledBooking(details: BookingDetails): Promise<Bookin
   });
   const mapped = refreshed ? mapBookingRecordToDetails(refreshed) : details;
 
+  console.info("[checkout] finalize_booking", {
+    bookingId: mapped.id,
+    bookingRef: mapped.bookingRef,
+    bookingMode: mapped.bookingMode,
+  });
+
   if (mapped.bookingMode === "ZONE_INTEREST" && mapped.pendingAssignment) {
+    console.info("[checkout] sms_dispatch", {
+      bookingId: mapped.id,
+      template: "ZONE_INTEREST",
+    });
     sendZoneInterestConfirmation(mapped.id).catch((err) =>
-      console.error("[checkout] zone-interest SMS failed", err)
+      console.error("[checkout] sms_dispatch_failed", { bookingId: mapped.id, err: err?.message })
     );
   } else {
+    console.info("[checkout] sms_dispatch", {
+      bookingId: mapped.id,
+      template: "PAYMENT_SUCCESS",
+    });
     sendBookingConfirmation(mapped.id).catch((err) =>
-      console.warn("[Campaign] express booking SMS failed:", err?.message)
+      console.warn("[checkout] sms_dispatch_failed", { bookingId: mapped.id, err: err?.message })
     );
   }
   return mapped;

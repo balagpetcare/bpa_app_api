@@ -35,7 +35,7 @@ export function parseCampaignBookingIdFromOrderNotes(notes?: string | null): num
 
 export function parseCheckoutSessionIdFromOrderNotes(notes?: string | null): string | null {
   if (!notes) return null;
-  const match = notes.match(/campaign_checkout:([a-z0-9]+)/i);
+  const match = notes.match(/campaign_checkout:([a-zA-Z0-9_-]+)/i);
   return match ? match[1] : null;
 }
 

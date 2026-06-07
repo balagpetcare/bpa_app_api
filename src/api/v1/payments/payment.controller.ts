@@ -15,6 +15,7 @@ import {
   verifyUnifiedPayment,
 } from "./paymentOrchestrator.service";
 import { createPaymentSchema, verifyPaymentSchema } from "./payment.validation";
+import { resolvePaymentLandingRedirectPath } from "../modules/payment/eps/eps.redirectResolver";
 
 export async function createPaymentHandler(req: Request, res: Response, next: NextFunction) {
   try {
@@ -100,11 +101,10 @@ export async function webhookGetHandler(req: Request, res: Response, next: NextF
     }
 
     const okBase = process.env.CAMPAIGN_LANDING_URL || process.env.APP_URL || "";
-    const invoice = req.query.merchantInvoiceNumber || req.query.merchantInvoice;
-    const bookingRef = invoice ? String(invoice).replace(/^CAMP-/i, "") : String(req.query.ref || "");
-    const successPath = bookingRef
-      ? `/book/payment/success?ref=${encodeURIComponent(bookingRef)}`
-      : "/book/success";
+    const successPath = await resolvePaymentLandingRedirectPath(
+      "success",
+      normalizeQuery(req.query)
+    );
 
     if (req.headers.accept?.includes("text/html") || !req.headers.accept?.includes("application/json")) {
       const url = okBase ? `${okBase.replace(/\/+$/, "")}${successPath}` : successPath;
@@ -135,12 +135,7 @@ export function sslRedirectHandler(kind: "success" | "fail" | "cancel") {
       });
 
       const base = process.env.CAMPAIGN_LANDING_URL || process.env.APP_URL || "";
-      const path =
-        kind === "success"
-          ? "/book/success"
-          : kind === "fail"
-            ? "/book/payment/failed"
-            : "/book/payment/failed";
+      const path = await resolvePaymentLandingRedirectPath(kind, body);
       const url = base ? `${base.replace(/\/+$/, "")}${path}` : path;
       res.redirect(302, url);
     } catch (error) {

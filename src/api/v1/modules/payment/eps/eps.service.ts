@@ -19,9 +19,52 @@ import {
   verifyEpsTransaction,
 } from "./eps.gateway";
 import type { EpsInitiateInput, EpsInitiateResult } from "./eps.types";
+import type { EpsVerifiedEvent } from "./eps.types";
+import {
+  logEpsRedirect,
+  resolveEpsRedirectContext,
+} from "./eps.redirectResolver";
+import { buildEpsLandingRedirectPath } from "./eps.redirectPaths";
 import { normalizeCallbackRecord } from "./eps.utils";
+import prisma from "../../../../../infrastructure/db/prismaClient";
 
 const GATEWAY = "eps";
+
+function logEpsCallback(
+  phase: string,
+  details: Record<string, unknown>
+): void {
+  console.info(`[EPS callback] ${phase}`, details);
+}
+
+async function enrichCallbackEventFromOrder(event: EpsVerifiedEvent): Promise<EpsVerifiedEvent> {
+  if (event.amount > 0) return event;
+
+  const order = await prisma.order.findFirst({
+    where: {
+      OR: [
+        { orderNumber: event.transactionId },
+        { notes: { contains: event.transactionId } },
+      ],
+    },
+    orderBy: { id: "desc" },
+  });
+
+  if (!order) return event;
+
+  const amount = Number(order.totalAmount);
+  if (!Number.isFinite(amount) || amount <= 0) return event;
+
+  return {
+    ...event,
+    amount,
+    rawResponse: {
+      ...(event.rawResponse ?? {}),
+      orderAmountEnriched: true,
+      orderId: order.id,
+    },
+  };
+}
 
 function toVerifiedPaymentEvent(event: {
   provider: "eps";
@@ -226,6 +269,7 @@ export async function handleEpsWebhook(input: {
   duplicate?: boolean;
   bookingId?: number;
   error?: string;
+  verifySource?: "api" | "callback_fallback";
 }> {
   const record = normalizeCallbackRecord(input.query, input.body);
   const merchantTransactionId =
@@ -235,8 +279,15 @@ export async function handleEpsWebhook(input: {
   const customerOrderId = record.CustomerOrderId || record.customerOrderId || "";
 
   if (!merchantTransactionId && !epsTransactionId) {
+    logEpsCallback("reject", { reason: "missing_transaction_ids", record });
     return { success: false, error: "Missing transaction identifiers" };
   }
+
+  logEpsCallback("verify_start", {
+    merchantTransactionId,
+    epsTransactionId,
+    status: record.Status || record.status,
+  });
 
   const verified = await verifyEpsTransaction({
     merchantTransactionId: merchantTransactionId || undefined,
@@ -244,20 +295,49 @@ export async function handleEpsWebhook(input: {
     customerOrderId: customerOrderId || undefined,
   });
 
-  const event = verified || parseEpsCallbackQuery(record);
+  let verifySource: "api" | "callback_fallback" = verified ? "api" : "callback_fallback";
+  let event = verified || parseEpsCallbackQuery(record);
+
   if (!event) {
+    logEpsCallback("reject", {
+      reason: "verification_failed",
+      merchantTransactionId,
+      epsTransactionId,
+    });
     return { success: false, error: "Webhook verification failed" };
   }
+
+  if (!verified) {
+    logEpsCallback("verify_fallback", {
+      merchantTransactionId,
+      epsTransactionId,
+      transactionId: event.transactionId,
+      status: event.status,
+    });
+  }
+
+  event = await enrichCallbackEventFromOrder(event);
 
   await upsertPaymentTransaction({
     transactionId: event.transactionId,
     gateway: GATEWAY,
     amount: event.amount,
     status: mapWebhookStatusToTransactionStatus(event.status),
-    rawResponse: event.rawResponse ?? record,
+    rawResponse: { ...(event.rawResponse ?? record), verifySource },
   });
 
-  return dispatchPaymentWebhook(toVerifiedPaymentEvent(event));
+  const result = await dispatchPaymentWebhook(toVerifiedPaymentEvent(event));
+
+  logEpsCallback("webhook_done", {
+    merchantTransactionId,
+    transactionId: event.transactionId,
+    success: result.success,
+    duplicate: result.duplicate,
+    bookingId: result.bookingId,
+    verifySource,
+  });
+
+  return { ...result, verifySource };
 }
 
 export async function handleEpsCallback(
@@ -268,35 +348,90 @@ export async function handleEpsCallback(
   redirectPath: string;
   bookingRef?: string;
   checkoutId?: string;
+  error?: string;
+  verifySource?: "api" | "callback_fallback";
 }> {
   const record = normalizeCallbackRecord(query);
-  const result = await handleEpsWebhook({ query: record });
-
   const merchantTxn =
     record.merchantTransactionId || record.MerchantTransactionId || "";
-  const checkoutId = record.ValueB || record.checkoutId || "";
-  const bookingRef = record.CustomerOrderId || record.ref || "";
 
-  const basePath =
-    kind === "success"
-      ? bookingRef
-        ? `/book/payment/success?ref=${encodeURIComponent(bookingRef)}`
-        : checkoutId
-          ? `/book/success?checkoutId=${encodeURIComponent(checkoutId)}`
-          : "/book/success"
-      : kind === "cancel"
-        ? checkoutId
-          ? `/book/payment/failed?checkoutId=${encodeURIComponent(checkoutId)}&reason=cancelled`
-          : "/book/payment/failed?reason=cancelled"
-        : checkoutId
-          ? `/book/payment/failed?checkoutId=${encodeURIComponent(checkoutId)}`
-          : "/book/payment/failed";
+  logEpsCallback("browser_callback", {
+    kind,
+    merchantTransactionId: merchantTxn,
+    epsTransactionId: record.EPSTransactionId || record.epsTransactionId,
+    status: record.Status || record.status,
+  });
+
+  const redirectCtx = merchantTxn ? await resolveEpsRedirectContext(merchantTxn) : {};
+
+  const result = await handleEpsWebhook({ query: record });
+
+  let checkoutId =
+    record.ValueB || record.checkoutId || redirectCtx.checkoutId || "";
+  let bookingRef = record.ref || redirectCtx.bookingRef || "";
+
+  const customerOrderId = String(
+    record.CustomerOrderId || record.customerOrderId || ""
+  ).trim();
+  if (!bookingRef && customerOrderId && /^CAMP-/i.test(customerOrderId)) {
+    bookingRef = customerOrderId.replace(/^CAMP-/i, "");
+  }
+
+  if (kind === "success" && result.bookingId) {
+    const booking = await prisma.campaignBooking.findUnique({
+      where: { id: result.bookingId },
+      select: { checkoutSessionId: true, bookingRef: true },
+    });
+    if (!checkoutId && booking?.checkoutSessionId) {
+      checkoutId = booking.checkoutSessionId;
+      logEpsCallback("redirect_from_fulfilled_booking", {
+        bookingId: result.bookingId,
+        checkoutId,
+      });
+    }
+    if (!bookingRef && booking?.bookingRef) {
+      bookingRef = booking.bookingRef;
+    }
+  }
+
+  if (kind === "success" && !checkoutId && merchantTxn) {
+    const postCtx = await resolveEpsRedirectContext(merchantTxn);
+    checkoutId = postCtx.checkoutId || checkoutId;
+    bookingRef = bookingRef || postCtx.bookingRef || "";
+  }
+
+  if (kind === "success" && !checkoutId && !bookingRef) {
+    logEpsCallback("redirect_refs_missing", {
+      merchantTransactionId: merchantTxn,
+      webhookSuccess: result.success,
+      orderId: redirectCtx.orderId,
+      bookingId: result.bookingId,
+    });
+  }
+
+  const redirectPath = buildEpsLandingRedirectPath(kind, record, {
+    ...redirectCtx,
+    checkoutId,
+    bookingRef,
+  });
+
+  logEpsRedirect("callback_redirect", {
+    kind,
+    merchantTransactionId: merchantTxn,
+    checkoutId: checkoutId || undefined,
+    bookingRef: bookingRef || undefined,
+    redirectPath,
+    webhookSuccess: result.success,
+    bookingId: result.bookingId,
+  });
 
   return {
     success: result.success,
-    redirectPath: basePath,
+    redirectPath,
     bookingRef: bookingRef || undefined,
     checkoutId: checkoutId || undefined,
+    error: result.error,
+    verifySource: result.verifySource,
   };
 }
 

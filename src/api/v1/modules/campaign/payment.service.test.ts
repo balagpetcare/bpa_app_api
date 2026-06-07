@@ -45,12 +45,17 @@ jest.mock("./sms.service", () => ({
   sendBookingConfirmation: jest.fn().mockResolvedValue(undefined),
 }));
 
+jest.mock("./checkout.service", () => ({
+  fulfillCheckoutFromOrder: jest.fn().mockResolvedValue(42),
+}));
+
 const {
   processPaymentWebhook,
   getPaymentStatus,
   resolveCampaignBookingPaymentAmount,
 } = require("./payment.service");
 const { sendBookingConfirmation } = require("./sms.service");
+const { fulfillCheckoutFromOrder } = require("./checkout.service");
 
 describe("campaign payment.service integration", () => {
   beforeEach(() => {
@@ -133,6 +138,35 @@ describe("campaign payment.service integration", () => {
 
       expect(result.success).toBe(false);
       expect(prismaMock.$transaction).not.toHaveBeenCalled();
+    });
+
+    it("accepts EPS callback fallback with amount 0 and enriches from order total", async () => {
+      const checkoutOrder = {
+        id: 20,
+        orderNumber: "CKO-EZTUBGCU",
+        notes: "campaign_checkout:sess123|idempotency:abc",
+        paymentStatus: "PENDING",
+        paymentMethod: "ONLINE",
+        totalAmount: 350,
+        status: "PENDING",
+      };
+
+      prismaMock.order.findFirst.mockResolvedValue(checkoutOrder);
+      prismaMock.order.findUnique.mockResolvedValue(checkoutOrder);
+      prismaMock.orderPayment.findFirst.mockResolvedValue(null);
+      prismaMock.order.update.mockResolvedValue({});
+      prismaMock.orderPayment.create.mockResolvedValue({ id: 2 });
+
+      const result = await processPaymentWebhook({
+        provider: "eps",
+        transactionId: "CKO-EZTUBGCU",
+        status: "SUCCESS",
+        amount: 0,
+      });
+
+      expect(result.success).toBe(true);
+      expect(fulfillCheckoutFromOrder).toHaveBeenCalledWith(20);
+      expect(sendBookingConfirmation).not.toHaveBeenCalled();
     });
 
     it("does not duplicate orderPayment when webhook retries", async () => {

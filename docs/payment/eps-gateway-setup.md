@@ -161,8 +161,12 @@ With `API_PUBLIC_BASE_URL=https://api.example.com`:
 | Webhook | `https://api.example.com/api/v1/payments/eps/webhook` |
 
 After success/fail/cancel, the API redirects the browser to `CAMPAIGN_LANDING_URL` paths:
-- Success → `/book/payment/success?ref=...` or `/book/success?checkoutId=...`
+- Success → `/book/success?checkoutId=...` (express checkout; resolved from `CKO-*` order if EPS omits query params) or `/book/payment/success?ref=...` (legacy)
 - Fail/Cancel → `/book/payment/failed?...`
+
+If EPS `CheckMerchantTransactionStatus` returns HTTP 404, the API falls back to browser callback params and still fulfills the order (see `docs/audits/payment-success-callback-root-cause.md`).
+
+After success, users are redirected to `{CAMPAIGN_LANDING_URL}/book/success?checkoutId={sessionId}` resolved from `MerchantTransactionId` (`CKO-*`). Deploy checklist: `docs/audits/payment-success-production-deploy.md`.
 
 ---
 

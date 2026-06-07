@@ -438,6 +438,7 @@ export async function createCheckoutPaymentIntent(
     customerPhone: input.customerPhone,
     customerName: input.customerName,
     description: `${input.campaignName} - ${input.petCount} cat(s)`,
+    checkoutSessionId: input.checkoutSessionId,
   });
 
   await logCampaignAudit({
@@ -472,6 +473,7 @@ interface ProviderPaymentInput {
   customerPhone: string;
   customerName: string;
   description: string;
+  checkoutSessionId?: string;
 }
 
 async function initiateProviderPayment(
@@ -490,6 +492,9 @@ async function initiateProviderPayment(
         phone: input.customerPhone,
         name: input.customerName,
         description: input.description,
+        ...(input.checkoutSessionId
+          ? { checkoutSessionId: input.checkoutSessionId }
+          : {}),
       },
     });
 
@@ -579,6 +584,7 @@ export async function processPaymentWebhook(
   if (
     payload.status === "SUCCESS" &&
     payload.amount != null &&
+    payload.amount > 0 &&
     !amountsMatch(payload.amount, Number(order.totalAmount))
   ) {
     console.error(
@@ -591,6 +597,7 @@ export async function processPaymentWebhook(
   }
 
   let confirmedBookingId: number | undefined;
+  let fulfilledViaCheckout = false;
 
   await prisma.$transaction(async (tx) => {
     const lockedOrder = await tx.order.findUnique({ where: { id: order.id } });
@@ -682,17 +689,39 @@ export async function processPaymentWebhook(
     !confirmedBookingId &&
     !bookingId
   ) {
+    console.info("[CampaignPayment] fulfill_checkout_start", {
+      orderId: order.id,
+      checkoutSessionId,
+      transactionId: payload.transactionId,
+    });
     const { fulfillCheckoutFromOrder } = await import("./checkout.service");
     const fulfilledId = await fulfillCheckoutFromOrder(order.id);
     if (fulfilledId) {
       confirmedBookingId = fulfilledId;
+      fulfilledViaCheckout = true;
+      console.info("[CampaignPayment] fulfill_checkout_done", {
+        orderId: order.id,
+        bookingId: fulfilledId,
+        checkoutSessionId,
+      });
     }
   }
 
   if (confirmedBookingId && payload.status === "SUCCESS") {
-    sendBookingConfirmation(confirmedBookingId).catch((err) =>
-      console.warn("[Campaign] post-payment confirmation SMS failed:", err?.message)
-    );
+    if (!fulfilledViaCheckout) {
+      console.info("[CampaignPayment] sms_dispatch", {
+        bookingId: confirmedBookingId,
+        source: "payment_webhook",
+      });
+      sendBookingConfirmation(confirmedBookingId).catch((err) =>
+        console.warn("[CampaignPayment] sms_dispatch_failed:", err?.message)
+      );
+    } else {
+      console.info("[CampaignPayment] sms_skip_duplicate", {
+        bookingId: confirmedBookingId,
+        source: "checkout_finalize",
+      });
+    }
 
     const booking = await prisma.campaignBooking.findUnique({ where: { id: confirmedBookingId } });
     if (booking) {

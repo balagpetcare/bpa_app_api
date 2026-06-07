@@ -108,7 +108,7 @@ export async function initializeEpsPayment(
     ShipmentPostcode: "",
     ShipmentCountry: "",
     ValueA: req.metadata?.orderId || "",
-    ValueB: req.referenceId,
+    ValueB: req.metadata?.checkoutSessionId || req.referenceId,
     ValueC: "",
     ValueD: "",
     ShippingMethod: "NO",
@@ -147,35 +147,65 @@ export async function initializeEpsPayment(
   };
 }
 
-export async function verifyEpsTransaction(input: {
-  merchantTransactionId?: string;
-  epsTransactionId?: string;
-  customerOrderId?: string;
-}): Promise<EpsVerifiedEvent | null> {
+async function requestEpsTransactionStatus(
+  cfg: ReturnType<typeof assertEpsConfigured>,
+  endpoints: ReturnType<typeof resolveEndpoints>,
+  input: {
+    merchantTransactionId?: string;
+    epsTransactionId?: string;
+    customerOrderId?: string;
+  }
+): Promise<EpsVerifiedEvent | null> {
   const merchantTransactionId = input.merchantTransactionId?.trim();
   const epsTransactionId = input.epsTransactionId?.trim();
   const customerOrderId = input.customerOrderId?.trim();
   if (!merchantTransactionId && !epsTransactionId) return null;
 
-  const cfg = assertEpsConfigured();
-  const endpoints = resolveEndpoints(cfg.baseUrl);
   const hashValue = merchantTransactionId || epsTransactionId!;
   const hash = generateEpsHash(hashValue, cfg.hashKey);
-
   const token = await getEpsAuthToken();
   const params = new URLSearchParams();
   if (merchantTransactionId) params.append("merchantTransactionId", merchantTransactionId);
   if (epsTransactionId) params.append("EPSTransactionId", epsTransactionId);
 
-  const res = await axios.get<EpsVerifyResponse>(`${endpoints.verify}?${params.toString()}`, {
-    headers: {
-      "x-hash": hash,
-      Authorization: `Bearer ${token}`,
-    },
-    timeout: cfg.timeoutMs,
-  });
+  let data: EpsVerifyResponse;
+  try {
+    const res = await axios.get<EpsVerifyResponse>(`${endpoints.verify}?${params.toString()}`, {
+      headers: {
+        "x-hash": hash,
+        Authorization: `Bearer ${token}`,
+      },
+      timeout: cfg.timeoutMs,
+      validateStatus: (status) => status < 500,
+    });
+    if (res.status === 404) {
+      console.warn("[EPS verify] transaction not found (HTTP 404)", {
+        merchantTransactionId,
+        epsTransactionId,
+      });
+      return null;
+    }
+    if (res.status >= 400) {
+      console.warn("[EPS verify] HTTP error", {
+        status: res.status,
+        merchantTransactionId,
+        epsTransactionId,
+      });
+      return null;
+    }
+    data = res.data;
+  } catch (error) {
+    const err = error as { message?: string; code?: string; response?: { status?: number } };
+    console.warn("[EPS verify] request failed — using callback fallback if available", {
+      message: err.message,
+      code: err.code,
+      status: err.response?.status,
+      merchantTransactionId,
+      epsTransactionId,
+    });
+    return null;
+  }
 
-  const data = res.data;
   if (data.ErrorMessage || data.ErrorCode) return null;
 
   const txnId = String(
@@ -186,7 +216,10 @@ export async function verifyEpsTransaction(input: {
   const providerTxId = String(data.EPSTransactionId || data.EpsTransactionId || txnId);
   const amount = parseFloat(String(data.TotalAmount || "0")) || 0;
   const mapped = mapEpsStatus(data.Status);
-  const orderReference = customerOrderId || undefined;
+  const orderReference =
+    customerOrderId ||
+    String(data.CustomerOrderId || "").trim() ||
+    undefined;
 
   return {
     provider: "eps",
@@ -200,6 +233,38 @@ export async function verifyEpsTransaction(input: {
       ...(orderReference ? { CustomerOrderId: orderReference } : {}),
     },
   };
+}
+
+export async function verifyEpsTransaction(input: {
+  merchantTransactionId?: string;
+  epsTransactionId?: string;
+  customerOrderId?: string;
+}): Promise<EpsVerifiedEvent | null> {
+  const merchantTransactionId = input.merchantTransactionId?.trim();
+  const epsTransactionId = input.epsTransactionId?.trim();
+  const customerOrderId = input.customerOrderId?.trim();
+  if (!merchantTransactionId && !epsTransactionId) return null;
+
+  const cfg = assertEpsConfigured();
+  const endpoints = resolveEndpoints(cfg.baseUrl);
+
+  const attempts: Array<{ merchantTransactionId?: string; epsTransactionId?: string }> = [
+    { merchantTransactionId, epsTransactionId },
+  ];
+  if (merchantTransactionId && epsTransactionId) {
+    attempts.push({ merchantTransactionId });
+    attempts.push({ epsTransactionId });
+  }
+
+  for (const attempt of attempts) {
+    const verified = await requestEpsTransactionStatus(cfg, endpoints, {
+      ...attempt,
+      customerOrderId,
+    });
+    if (verified) return verified;
+  }
+
+  return null;
 }
 
 export function parseEpsCallbackQuery(query: Record<string, string>): EpsVerifiedEvent | null {
