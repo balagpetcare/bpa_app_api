@@ -504,6 +504,9 @@ export async function confirmFreeCheckout(checkoutId: string): Promise<CheckoutI
 export async function getCheckoutStatus(checkoutId: string) {
   const session = await prisma.campaignCheckoutSession.findUnique({
     where: { id: checkoutId },
+    include: {
+      campaign: { select: { id: true, name: true, slug: true } },
+    },
   });
 
   if (!session) throw CheckoutErrors.NOT_FOUND();
@@ -538,6 +541,14 @@ export async function getCheckoutStatus(checkoutId: string) {
     bookingRef: bookingRecord?.bookingRef,
     verificationCode,
     booking,
+    paymentMethod: session.paymentMethod ?? undefined,
+    campaign: session.campaign
+      ? {
+          id: session.campaign.id,
+          name: session.campaign.name,
+          slug: session.campaign.slug,
+        }
+      : undefined,
   };
 }
 
