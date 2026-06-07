@@ -9,6 +9,7 @@ import { ClaimErrors } from "./campaign.errors";
 import { formatCampaignTimeLabel } from "./slot.schedule";
 import { generateVerificationCode } from "./qr.service";
 import { normalizePhone } from "./campaign.utils";
+import { BPA_PDF_ORG } from "./bookingPdf.constants";
 
 const PDF_RATE_WINDOW_MS = 15 * 60 * 1000;
 const PDF_RATE_MAX = 10;
@@ -29,6 +30,7 @@ export type BookingPdfPayload = {
   campaignName: string;
   customerName: string;
   customerPhone: string;
+  petCount: number;
   pets: Array<{
     name: string;
     species: string;
@@ -42,6 +44,7 @@ export type BookingPdfPayload = {
   paymentMethod: string | null;
   paymentAmount: string | null;
   verifyUrl: string;
+  qrPayload: string;
   generatedAt: string;
 };
 
@@ -90,13 +93,31 @@ function formatPaymentMethod(method: string | null | undefined): string | null {
   return method;
 }
 
-function buildVerifyUrl(bookingRef: string): string {
+function buildVerifyUrl(bookingRef: string, verificationCode: string): string {
   const base =
     process.env.CAMPAIGN_LANDING_URL ||
     process.env.CAMPAIGN_BASE_URL ||
     "https://vaccination.bangladeshpetassociation.com";
   const origin = base.replace(/\/+$/, "");
-  return `${origin}/verify/certificate?ref=${encodeURIComponent(bookingRef)}`;
+  const qs = new URLSearchParams({
+    ref: bookingRef,
+    code: verificationCode,
+  });
+  return `${origin}/verify/certificate?${qs.toString()}`;
+}
+
+/** QR encodes booking ID, verification code, and verification URL (multi-line for generic scanners). */
+export function buildBookingPdfQrPayload(
+  bookingRef: string,
+  verificationCode: string,
+  verifyUrl: string
+): string {
+  return [
+    "BPA Vaccination Booking",
+    `Booking ID: ${bookingRef}`,
+    `Verification Code: ${verificationCode}`,
+    verifyUrl,
+  ].join("\n");
 }
 
 function buildScheduleLabel(booking: {
@@ -191,12 +212,15 @@ export async function loadBookingPdfPayload(
     booking.location?.name ||
     "—";
 
+  const verifyUrl = buildVerifyUrl(booking.bookingRef, verificationCode);
+
   return {
     bookingRef: booking.bookingRef,
     verificationCode,
     campaignName: booking.campaign.name,
     customerName,
     customerPhone: normalizePhone(booking.ownerPhone),
+    petCount: booking.pets.length,
     pets: booking.pets.map((p) => ({
       name: p.name,
       species: p.animalType?.name ?? "Cat",
@@ -210,7 +234,8 @@ export async function loadBookingPdfPayload(
     paymentMethod: formatPaymentMethod(booking.checkoutSession?.paymentMethod),
     paymentAmount:
       paidAmount != null && paidAmount > 0 ? `৳${paidAmount.toLocaleString("en-BD")}` : null,
-    verifyUrl: buildVerifyUrl(booking.bookingRef),
+    verifyUrl,
+    qrPayload: buildBookingPdfQrPayload(booking.bookingRef, verificationCode, verifyUrl),
     generatedAt: new Date().toISOString(),
   };
 }
@@ -240,10 +265,11 @@ function drawBpaLogo(doc: InstanceType<typeof PDFDocument>, x: number, y: number
 export async function generateBookingConfirmationPdfBuffer(
   payload: BookingPdfPayload
 ): Promise<Buffer> {
-  const qrPng = await QRCode.toBuffer(payload.verifyUrl, {
+  const qrPng = await QRCode.toBuffer(payload.qrPayload, {
     type: "png",
     margin: 1,
-    width: 140,
+    width: 160,
+    errorCorrectionLevel: "M",
   });
 
   return new Promise((resolve, reject) => {
@@ -253,9 +279,11 @@ export async function generateBookingConfirmationPdfBuffer(
     doc.on("end", () => resolve(Buffer.concat(chunks)));
     doc.on("error", reject);
 
+    const contentWidth = 500;
+
     drawBpaLogo(doc, 48, 48);
     doc.fontSize(18).fillColor("#00695C").font("Helvetica-Bold");
-    doc.text("Bangladesh Pet Association (BPA)", 110, 52);
+    doc.text(BPA_PDF_ORG.name, 110, 52, { width: contentWidth - 62 });
     doc.fontSize(12).fillColor("#546e7a").font("Helvetica");
     doc.text("Vaccination Booking Confirmation", 110, 78);
 
@@ -270,45 +298,65 @@ export async function generateBookingConfirmationPdfBuffer(
     drawRow(doc, "Name", payload.customerName);
     drawRow(doc, "Mobile", payload.customerPhone);
 
-    drawSectionTitle(doc, "Pet(s)");
-    if (payload.pets.length === 0) {
-      doc.text("No pets recorded");
-    } else {
+    drawSectionTitle(doc, "Vaccination details");
+    drawRow(doc, "Location", payload.locationLabel);
+    if (payload.venueName) {
+      drawRow(doc, "Venue", payload.venueName);
+    }
+    drawRow(doc, "Schedule", payload.scheduleLabel);
+    drawRow(
+      doc,
+      "Number of pets",
+      payload.petCount > 0 ? String(payload.petCount) : "0"
+    );
+
+    if (payload.pets.length > 0) {
+      doc.moveDown(0.2);
       payload.pets.forEach((p, i) => {
-        doc.moveDown(0.15);
         doc.font("Helvetica-Bold").text(`Pet ${i + 1}: ${p.name}`);
         doc.font("Helvetica");
         doc.text(`Species: ${p.species} · Breed: ${p.breed} · Gender: ${p.gender}`);
+        doc.moveDown(0.1);
       });
     }
-
-    drawSectionTitle(doc, "Vaccination");
-    drawRow(doc, "Campaign", payload.campaignName);
-    drawRow(doc, "Location", payload.locationLabel);
-    if (payload.venueName && payload.venueName !== payload.locationLabel) {
-      drawRow(doc, "Venue", payload.venueName);
-    }
-    drawRow(doc, "Date / Time", payload.scheduleLabel);
 
     drawSectionTitle(doc, "Payment");
     drawRow(doc, "Status", payload.paymentStatus);
     if (payload.paymentMethod) drawRow(doc, "Method", payload.paymentMethod);
     if (payload.paymentAmount) drawRow(doc, "Amount", payload.paymentAmount);
 
-    const qrY = doc.y + 12;
-    doc.image(qrPng, 48, qrY, { width: 100 });
+    const qrY = doc.y + 10;
+    doc.image(qrPng, 48, qrY, { width: 110 });
     doc.fontSize(8).fillColor("#546e7a");
-    doc.text("Scan to verify", 48, qrY + 108, { width: 100, align: "center" });
-
-    const footerY = 720;
-    doc.fontSize(8).fillColor("#78909c");
-    doc.text("Generated by BPA Vaccination System", 48, footerY, { align: "center", width: 500 });
-    doc.text(payload.verifyUrl, 48, footerY + 12, { align: "center", width: 500, link: payload.verifyUrl });
-    doc.text(`Generated: ${new Date(payload.generatedAt).toLocaleString("en-GB")}`, 48, footerY + 28, {
-      align: "center",
-      width: 500,
+    doc.text("Scan QR to verify booking", 170, qrY + 8, { width: 320 });
+    doc.fontSize(7).fillColor("#78909c");
+    doc.text(`ID: ${payload.bookingRef}`, 170, qrY + 24, { width: 320 });
+    doc.text(`Code: ${payload.verificationCode}`, 170, qrY + 36, { width: 320 });
+    doc.fillColor("#00695C").text(payload.verifyUrl, 170, qrY + 50, {
+      width: 320,
+      link: payload.verifyUrl,
     });
-    doc.text("Official BPA Vaccination Campaign 2026", 48, footerY + 42, { align: "center", width: 500 });
+
+    drawSectionTitle(doc, "Contact BPA");
+    drawRow(doc, "Website", BPA_PDF_ORG.website);
+    drawRow(doc, "Email", BPA_PDF_ORG.email);
+    drawRow(doc, "Phone", BPA_PDF_ORG.phone);
+    drawRow(doc, "Address", BPA_PDF_ORG.address);
+
+    const footerY = 740;
+    doc.fontSize(8).fillColor("#78909c");
+    doc.text("Generated by BPA Vaccination System", 48, footerY, {
+      align: "center",
+      width: contentWidth,
+    });
+    doc.text(`Generated: ${new Date(payload.generatedAt).toLocaleString("en-GB")}`, 48, footerY + 12, {
+      align: "center",
+      width: contentWidth,
+    });
+    doc.text("Official BPA Vaccination Campaign 2026", 48, footerY + 24, {
+      align: "center",
+      width: contentWidth,
+    });
 
     doc.end();
   });
@@ -316,7 +364,7 @@ export async function generateBookingConfirmationPdfBuffer(
 
 export function bookingPdfFilename(bookingRef: string): string {
   const safe = bookingRef.replace(/[^A-Za-z0-9-]/g, "");
-  return `BPA-Vaccination-Booking-${safe || "booking"}.pdf`;
+  return `BPA-Booking-${safe || "booking"}.pdf`;
 }
 
 export async function getBookingConfirmationPdf(
