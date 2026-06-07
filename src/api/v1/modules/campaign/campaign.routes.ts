@@ -118,6 +118,7 @@ import {
 } from "../../providers/paymentProvider.config";
 import { validateBookingQr } from "./qr.service";
 import { getBookingByRef } from "./booking.service";
+import { bookingPdfHandler } from "./bookingPdf.controller";
 import { smsDeliveryCallbackHandler } from "./sms.controller";
 import { getCampaignSmsCostSummary } from "./smsCostMonitoring.service";
 import {
@@ -637,6 +638,19 @@ publicRouter.post("/payments/webhook", async (req, res, next) => {
     next(error);
   }
 });
+
+const authenticateToken = require("../../../../middleware/auth.middleware");
+
+function optionalAuthenticateToken(req: any, res: any, next: any) {
+  const hasToken =
+    (req.cookies && (req.cookies.access_token || req.cookies.token || req.cookies.jwt)) ||
+    (typeof req.headers.authorization === "string" &&
+      req.headers.authorization.startsWith("Bearer "));
+  if (!hasToken) return next();
+  return authenticateToken(req, res, next);
+}
+
+router.get("/bookings/:reference/pdf", optionalAuthenticateToken, bookingPdfHandler);
 
 router.use("/public", publicRouter);
 
