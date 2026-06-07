@@ -19,7 +19,8 @@ import {
   parseCouponCodeFromOrderNotes,
   parseIdempotencyKeyFromOrderNotes,
 } from "./campaign.paymentGuards";
-import { sendBookingConfirmation, sendPaymentFailureSms } from "./sms.service";
+import { sendPaymentFailureSms } from "./sms.service";
+import { dispatchPaymentSuccessSms } from "../../../../services/notification/payment-success-sms.service";
 import { computeCampaignPriceBreakdown, amountsMatch } from "./campaignPricing.service";
 import { validateCampaignCoupon } from "./campaignCoupon.service";
 import {
@@ -709,15 +710,15 @@ export async function processPaymentWebhook(
 
   if (confirmedBookingId && payload.status === "SUCCESS") {
     if (!fulfilledViaCheckout) {
-      console.info("[CampaignPayment] sms_dispatch", {
+      console.info("[CampaignPayment] payment_success_sms_dispatch", {
         bookingId: confirmedBookingId,
         source: "payment_webhook",
       });
-      sendBookingConfirmation(confirmedBookingId).catch((err) =>
-        console.warn("[CampaignPayment] sms_dispatch_failed:", err?.message)
+      dispatchPaymentSuccessSms(confirmedBookingId).catch((err) =>
+        console.warn("[CampaignPayment] payment_success_sms_failed:", err?.message)
       );
     } else {
-      console.info("[CampaignPayment] sms_skip_duplicate", {
+      console.info("[CampaignPayment] payment_success_sms_skip_webhook", {
         bookingId: confirmedBookingId,
         source: "checkout_finalize",
       });

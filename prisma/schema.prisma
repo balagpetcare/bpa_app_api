@@ -14240,6 +14240,10 @@ model CampaignBooking {
   // Metadata
   metadataJson Json?
 
+  // Post-payment confirmation SMS (idempotent dispatch)
+  smsSentAt    DateTime?
+  smsReference String?   @db.VarChar(64)
+
   // Timestamps
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

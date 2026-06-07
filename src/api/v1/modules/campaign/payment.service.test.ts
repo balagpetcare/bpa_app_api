@@ -42,7 +42,11 @@ jest.mock("./campaign.service", () => ({
 }));
 
 jest.mock("./sms.service", () => ({
-  sendBookingConfirmation: jest.fn().mockResolvedValue(undefined),
+  sendPaymentFailureSms: jest.fn().mockResolvedValue(undefined),
+}));
+
+jest.mock("../../../../services/notification/payment-success-sms.service", () => ({
+  dispatchPaymentSuccessSms: jest.fn().mockResolvedValue({ status: "sent" }),
 }));
 
 jest.mock("./checkout.service", () => ({
@@ -54,7 +58,7 @@ const {
   getPaymentStatus,
   resolveCampaignBookingPaymentAmount,
 } = require("./payment.service");
-const { sendBookingConfirmation } = require("./sms.service");
+const { dispatchPaymentSuccessSms } = require("../../../../services/notification/payment-success-sms.service");
 const { fulfillCheckoutFromOrder } = require("./checkout.service");
 
 describe("campaign payment.service integration", () => {
@@ -95,7 +99,7 @@ describe("campaign payment.service integration", () => {
       expect(result.success).toBe(true);
       expect(result.duplicate).toBe(true);
       expect(prismaMock.$transaction).not.toHaveBeenCalled();
-      expect(sendBookingConfirmation).not.toHaveBeenCalled();
+      expect(dispatchPaymentSuccessSms).not.toHaveBeenCalled();
     });
 
     it("creates one order payment and confirms booking on SUCCESS", async () => {
@@ -123,7 +127,7 @@ describe("campaign payment.service integration", () => {
           data: expect.objectContaining({ status: "CONFIRMED", paymentStatus: "COMPLETED" }),
         })
       );
-      expect(sendBookingConfirmation).toHaveBeenCalledWith(5);
+      expect(dispatchPaymentSuccessSms).toHaveBeenCalledWith(5);
     });
 
     it("rejects SUCCESS webhook when amount does not match order total", async () => {
@@ -166,7 +170,7 @@ describe("campaign payment.service integration", () => {
 
       expect(result.success).toBe(true);
       expect(fulfillCheckoutFromOrder).toHaveBeenCalledWith(20);
-      expect(sendBookingConfirmation).not.toHaveBeenCalled();
+      expect(dispatchPaymentSuccessSms).not.toHaveBeenCalled();
     });
 
     it("does not duplicate orderPayment when webhook retries", async () => {

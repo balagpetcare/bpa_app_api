@@ -25,7 +25,7 @@ import { computeCampaignPriceBreakdown } from "./campaignPricing.service";
 import { validateCampaignCoupon } from "./campaignCoupon.service";
 import { parseCheckoutSessionIdFromOrderNotes } from "./campaign.paymentGuards";
 import { createCheckoutPaymentIntent } from "./payment.service";
-import { sendBookingConfirmation } from "./sms.service";
+import { dispatchPaymentSuccessSms } from "../../../../services/notification/payment-success-sms.service";
 import { generateVerificationCode } from "./qr.service";
 import { resolveCityCorporationName } from "./bookingLocationDisplay.util";
 import { assertMinimumPetCount } from "./petCount.util";
@@ -956,23 +956,12 @@ async function finalizeFulfilledBooking(details: BookingDetails): Promise<Bookin
     bookingMode: mapped.bookingMode,
   });
 
-  if (mapped.bookingMode === "ZONE_INTEREST" && mapped.pendingAssignment) {
-    console.info("[checkout] sms_dispatch", {
+  dispatchPaymentSuccessSms(mapped.id).catch((err) =>
+    console.warn("[checkout] payment_success_sms_failed", {
       bookingId: mapped.id,
-      template: "ZONE_INTEREST",
-    });
-    sendZoneInterestConfirmation(mapped.id).catch((err) =>
-      console.error("[checkout] sms_dispatch_failed", { bookingId: mapped.id, err: err?.message })
-    );
-  } else {
-    console.info("[checkout] sms_dispatch", {
-      bookingId: mapped.id,
-      template: "PAYMENT_SUCCESS",
-    });
-    sendBookingConfirmation(mapped.id).catch((err) =>
-      console.warn("[checkout] sms_dispatch_failed", { bookingId: mapped.id, err: err?.message })
-    );
-  }
+      err: err instanceof Error ? err.message : String(err),
+    })
+  );
   return mapped;
 }
 
