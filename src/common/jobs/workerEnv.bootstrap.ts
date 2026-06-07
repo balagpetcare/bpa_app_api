@@ -2,9 +2,21 @@
  * Standalone worker env bootstrap — mirrors src/index.ts (dotenv + Redis subsystem).
  * Import this module first in worker entrypoints (before other local imports).
  */
+import path from "path";
 import { config as loadDotenv } from "dotenv";
 
-loadDotenv();
+const projectRootEnv = path.resolve(__dirname, "../../../.env");
+const cwdEnv = path.resolve(process.cwd(), ".env");
+
+// Prefer repo-root .env (stable when systemd/pm2 cwd differs from project root).
+const loaded =
+  loadDotenv({ path: projectRootEnv }).parsed ||
+  loadDotenv({ path: cwdEnv }).parsed ||
+  loadDotenv().parsed;
+
+if (!loaded && process.env.NODE_ENV !== "test") {
+  console.warn("[WorkerEnv] No .env file loaded (checked project root and cwd)");
+}
 
 try {
   require("../../config/env");

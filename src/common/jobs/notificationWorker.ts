@@ -241,7 +241,7 @@ function startWorkers() {
     console.warn("[NotificationWorker] SMS job", job?.id, "failed", err?.message, `(attempt ${job?.attemptsMade})`)
   );
 
-  console.log("[NotificationWorker] Worker started (notif_email, notif_sms legacy, smsQueue)");
+  console.log("[NotificationWorker] Notification worker started (notif_email, notif_sms legacy, smsQueue)");
 }
 
 async function main(): Promise<void> {
@@ -258,7 +258,7 @@ async function main(): Promise<void> {
 
   console.log("[NotificationWorker] Redis connected");
   startWorkers();
-  console.log("[NotificationWorker] Waiting for jobs");
+  console.log("[NotificationWorker] Listening for jobs");
 }
 
 main().catch((err) => {
