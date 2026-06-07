@@ -215,7 +215,16 @@ export async function validateEpsPayment(input: {
   };
 }
 
-async function dispatchPaymentWebhook(event: VerifiedPaymentEvent) {
+type WebhookDispatchResult = {
+  success: boolean;
+  duplicate?: boolean;
+  replay?: boolean;
+  bookingId?: number;
+};
+
+async function dispatchPaymentWebhook(
+  event: VerifiedPaymentEvent
+): Promise<WebhookDispatchResult> {
   const eventKey = buildPaymentEventKey(event.provider, event.eventId);
   if (await isPaymentEventReplay(eventKey)) {
     return { success: true, duplicate: true, replay: true };

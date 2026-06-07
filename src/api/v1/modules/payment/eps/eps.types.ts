@@ -16,6 +16,7 @@ export type EpsVerifyResponse = {
   MerchantTransactionId?: string;
   EPSTransactionId?: string;
   EpsTransactionId?: string;
+  CustomerOrderId?: string;
   Status?: string;
   TotalAmount?: string;
   ErrorMessage?: string;
