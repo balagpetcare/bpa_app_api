@@ -3,7 +3,7 @@
  * Run: npm run worker:notifications
  * Requires REDIS_ENABLED and Redis to be running.
  */
-import "dotenv/config";
+import "./workerEnv.bootstrap";
 import { Worker, Job } from "bullmq";
 import prisma from "../../infrastructure/db/prismaClient";
 import { renderNotificationEmail, renderNotificationSms } from "../../utils/notificationTemplates";
@@ -15,14 +15,12 @@ import {
 } from "../../shared/services/sms/sms.service";
 import type { SmsJobPayload } from "../../shared/services/sms/sms.types";
 
-import { areRedisQueuesEnabled } from "../../infrastructure/redis/redis.client";
+import {
+  areRedisQueuesEnabled,
+  probeRedisConnection,
+} from "../../infrastructure/redis/redis.client";
 import { getRedisConnectionOptions, isRedisEnabled } from "../../infrastructure/redis/redisConnection";
 import { recordSmsCostOnLog } from "../../api/v1/modules/campaign/smsCostMonitoring.service";
-
-if (!isRedisEnabled() || !areRedisQueuesEnabled()) {
-  console.log("[NotificationWorker] Redis disabled or unavailable; worker will not start.");
-  process.exit(0);
-}
 
 const redisConfig = getRedisConnectionOptions();
 
@@ -204,7 +202,7 @@ async function handleSmsJob(job: Job<Payload>) {
   }
 }
 
-function run() {
+function startWorkers() {
   const emailWorker = new Worker<Payload>(
     "notif_email",
     async (job) => {
@@ -243,7 +241,27 @@ function run() {
     console.warn("[NotificationWorker] SMS job", job?.id, "failed", err?.message, `(attempt ${job?.attemptsMade})`)
   );
 
-  console.log("[NotificationWorker] Started notif_email, notif_sms (legacy), and smsQueue workers");
+  console.log("[NotificationWorker] Worker started (notif_email, notif_sms legacy, smsQueue)");
 }
 
-run();
+async function main(): Promise<void> {
+  if (!isRedisEnabled()) {
+    console.log("[NotificationWorker] Redis disabled by configuration; worker will not start.");
+    process.exit(0);
+  }
+
+  const connected = await probeRedisConnection();
+  if (!connected || !areRedisQueuesEnabled()) {
+    console.log("[NotificationWorker] Redis unavailable; worker will not start.");
+    process.exit(1);
+  }
+
+  console.log("[NotificationWorker] Redis connected");
+  startWorkers();
+  console.log("[NotificationWorker] Waiting for jobs");
+}
+
+main().catch((err) => {
+  console.error("[NotificationWorker] Fatal startup error:", err);
+  process.exit(1);
+});

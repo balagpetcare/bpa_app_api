@@ -3,7 +3,7 @@
  * Run: node -r ts-node/register src/common/jobs/productImportWorker.ts
  * Requires REDIS_ENABLED and Redis.
  */
-import "dotenv/config";
+import "./workerEnv.bootstrap";
 import { Worker, Job } from "bullmq";
 import prisma from "../../infrastructure/db/prismaClient";
 import { runBatchSyncSafe } from "../../api/v1/services/product-import/BatchRunner";
