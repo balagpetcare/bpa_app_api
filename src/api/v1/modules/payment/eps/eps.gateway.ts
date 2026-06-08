@@ -22,10 +22,11 @@ function trimBase(url: string): string {
 
 function resolveEndpoints(baseUrl: string) {
   const base = trimBase(baseUrl);
+  const apiRoot = /\/v1$/i.test(base) ? base : `${base}/v1`;
   return {
-    getToken: `${base}/v1/Auth/GetToken`,
-    initialize: `${base}/v1/EPSEngine/InitializeEPS`,
-    verify: `${base}/v1/EPSEngine/CheckMerchantTransactionStatus`,
+    getToken: `${apiRoot}/Auth/GetToken`,
+    initialize: `${apiRoot}/EPSEngine/InitializeEPS`,
+    verify: `${apiRoot}/EPSEngine/CheckMerchantTransactionStatus`,
   };
 }
 
@@ -37,15 +38,29 @@ export async function getEpsAuthToken(): Promise<string> {
 
   const endpoints = resolveEndpoints(cfg.baseUrl);
   const hash = generateEpsHash(cfg.username, cfg.hashKey);
-
+  console.info("[CHECKOUT_INIT_DEBUG] eps_token_request", {
+    providerSelected: "eps",
+    url: endpoints.getToken,
+    timeoutMs: cfg.timeoutMs,
+  });
   const res = await axios.post<EpsTokenResponse>(
     endpoints.getToken,
     { userName: cfg.username, password: cfg.password },
     {
       headers: { "Content-Type": "application/json", "x-hash": hash },
       timeout: cfg.timeoutMs,
+      validateStatus: () => true,
     }
   );
+  console.info("[CHECKOUT_INIT_DEBUG] eps_token_response", {
+    providerSelected: "eps",
+    url: endpoints.getToken,
+    status: res.status,
+    body: res.data,
+  });
+  if (res.status >= 400) {
+    throw new Error(`EPS GetToken failed (${res.status}) at ${endpoints.getToken}`);
+  }
 
   const data = res.data;
   if (data.errorMessage || data.errorCode || !data.token) {
@@ -118,7 +133,11 @@ export async function initializeEpsPayment(
     ProductCategory: "Healthcare",
     ProductList: [],
   };
-
+  console.info("[CHECKOUT_INIT_DEBUG] eps_init_request", {
+    providerSelected: "eps",
+    url: endpoints.initialize,
+    payload: body,
+  });
   const res = await axios.post<EpsInitializeResponse>(endpoints.initialize, body, {
     headers: {
       "Content-Type": "application/json",
@@ -126,7 +145,20 @@ export async function initializeEpsPayment(
       Authorization: `Bearer ${token}`,
     },
     timeout: cfg.timeoutMs,
+    validateStatus: () => true,
   });
+  console.info("[CHECKOUT_INIT_DEBUG] eps_init_response", {
+    providerSelected: "eps",
+    url: endpoints.initialize,
+    status: res.status,
+    body: res.data,
+  });
+  if (res.status >= 400) {
+    return {
+      success: false,
+      message: `EPS Initialize failed (${res.status}) at ${endpoints.initialize}`,
+    };
+  }
 
   const data = res.data;
   if (data.ErrorMessage || data.ErrorCode || !data.RedirectURL) {

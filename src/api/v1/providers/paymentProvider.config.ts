@@ -98,6 +98,13 @@ function trimSlash(url: string): string {
   return url.replace(/\/+$/, "");
 }
 
+function normalizeEpsBaseUrl(url: string): string {
+  const trimmed = trimSlash(url.trim());
+  // Some deployments mistakenly set EPS_BASE_URL with /v1 suffix.
+  // Endpoints already append /v1/... in gateway code, so strip it once.
+  return trimmed.replace(/\/v1$/i, "");
+}
+
 export function getApiPublicBaseUrl(): string {
   const base =
     process.env.API_PUBLIC_BASE_URL ||
@@ -262,7 +269,7 @@ export function getEpsBaseUrlResolution(): {
   const sandbox = process.env.EPS_SANDBOX !== "false";
   const envUrl = process.env.EPS_BASE_URL?.trim();
   if (envUrl && !isPlaceholderEnvValue(envUrl)) {
-    return { baseUrl: envUrl, source: "EPS_BASE_URL", sandbox };
+    return { baseUrl: normalizeEpsBaseUrl(envUrl), source: "EPS_BASE_URL", sandbox };
   }
   if (sandbox) {
     return { baseUrl: EPS_SANDBOX_DEFAULT_BASE, source: "EPS_SANDBOX_DEFAULT", sandbox };

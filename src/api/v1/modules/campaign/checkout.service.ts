@@ -300,9 +300,19 @@ export async function retryCheckoutPayment(
   const cancelBase = options?.cancelUrl ?? (landingBase ? `${landingBase}/book/payment/failed` : "/book/payment/failed");
   const cancelUrl = `${cancelBase}${cancelBase.includes("?") ? "&" : "?"}checkoutId=${encodeURIComponent(session.id)}`;
 
+  const resolvedPaymentMethod =
+    options?.paymentMethod ??
+    (session.paymentMethod as CheckoutInitInput["paymentMethod"]) ??
+    defaultCheckoutPaymentMethod();
+  paymentRetryDebug("retry_payment_provider_request", {
+    checkoutId,
+    providerSelected: getActivePaymentProvider(),
+    paymentMethodReceived: options?.paymentMethod ?? session.paymentMethod ?? null,
+    paymentMethodResolved: resolvedPaymentMethod,
+  });
   const payment = await createCheckoutPaymentIntent({
     checkoutSessionId: session.id,
-    method: options?.paymentMethod ?? (session.paymentMethod as CheckoutInitInput["paymentMethod"]) ?? defaultCheckoutPaymentMethod(),
+    method: resolvedPaymentMethod,
     amount,
     returnUrl,
     cancelUrl,
@@ -341,6 +351,11 @@ export async function initCheckout(input: CheckoutInitInput): Promise<CheckoutIn
     hasLocation: Boolean(input.locationId ?? input.campaignLocationId),
     cityCorporationCode: input.cityCorporationCode,
     bdAreaId: input.bdAreaId,
+  });
+  checkoutInitDebug("init_payment_method", {
+    providerSelected: getActivePaymentProvider(),
+    paymentMethodReceived: input.paymentMethod ?? null,
+    paymentMethodResolved: input.paymentMethod ?? defaultCheckoutPaymentMethod(),
   });
 
   if (!isValidBdPhone(input.phone)) {
@@ -573,9 +588,16 @@ export async function initCheckout(input: CheckoutInitInput): Promise<CheckoutIn
   const cancelBase = input.cancelUrl ?? (landingBase ? `${landingBase}/book/payment/failed` : "/book/payment/failed");
   const cancelUrl = `${cancelBase}${cancelBase.includes("?") ? "&" : "?"}checkoutId=${encodeURIComponent(session.id)}`;
 
+  const resolvedPaymentMethod = input.paymentMethod ?? defaultCheckoutPaymentMethod();
+  checkoutInitDebug("init_payment_provider_request", {
+    providerSelected: getActivePaymentProvider(),
+    checkoutId: session.id,
+    paymentMethodReceived: input.paymentMethod ?? null,
+    paymentMethodResolved: resolvedPaymentMethod,
+  });
   const payment = await createCheckoutPaymentIntent({
     checkoutSessionId: session.id,
-    method: input.paymentMethod ?? defaultCheckoutPaymentMethod(),
+    method: resolvedPaymentMethod,
     amount: pricing.total,
     returnUrl,
     cancelUrl,

@@ -30,6 +30,7 @@ import {
 } from "../../providers/paymentProvider.config";
 import { createUnifiedPayment } from "../../payments/paymentOrchestrator.service";
 import { getPaymentStrategy } from "../../payments/paymentProvider.registry";
+import { checkoutInitDebug } from "./checkoutDebug.util";
 
 // ============================================================================
 // Types
@@ -337,7 +338,7 @@ export async function createPaymentIntent(
 
 export interface CreateCheckoutPaymentInput {
   checkoutSessionId: string;
-  method: "BKASH" | "NAGAD" | "CARD" | "SSLCOMMERZ";
+  method?: "BKASH" | "NAGAD" | "CARD" | "SSLCOMMERZ";
   amount: number;
   returnUrl: string;
   cancelUrl?: string;
@@ -369,6 +370,13 @@ export async function createCheckoutPaymentIntent(
   }
 
   const campaign = session.campaign;
+  const paymentMethodResolved = resolveCheckoutPaymentMethod(input.method);
+  checkoutInitDebug("payment_method_resolved", {
+    checkoutId: input.checkoutSessionId,
+    providerSelected: getActivePaymentProvider(),
+    paymentMethodReceived: input.method ?? null,
+    paymentMethodResolved,
+  });
   const amount = input.amount;
   if (amount <= 0) {
     return { success: false, error: "Invalid payment amount" };
@@ -413,7 +421,7 @@ export async function createCheckoutPaymentIntent(
         status: "PENDING",
         totalAmount: amount,
         paymentStatus: "PENDING",
-        paymentMethod: mapPaymentMethod(input.method),
+        paymentMethod: mapPaymentMethod(paymentMethodResolved),
         notes: buildCheckoutOrderNotes(session.id, idempotencyKey, {
           couponCode: input.couponCode,
           discount: input.discount,
@@ -433,7 +441,7 @@ export async function createCheckoutPaymentIntent(
     orderNumber: order.orderNumber,
     amount,
     currency: campaign.currency || "BDT",
-    method: input.method,
+    method: paymentMethodResolved,
     returnUrl: input.returnUrl,
     cancelUrl: input.cancelUrl,
     customerPhone: input.customerPhone,
@@ -477,9 +485,43 @@ interface ProviderPaymentInput {
   checkoutSessionId?: string;
 }
 
+type CheckoutPaymentMethod = "BKASH" | "NAGAD" | "CARD" | "SSLCOMMERZ";
+
+function getDefaultCheckoutPaymentMethodFromProvider(): CheckoutPaymentMethod {
+  const provider = getActivePaymentProvider();
+  if (provider === "bkash") return "BKASH";
+  if (provider === "nagad") return "NAGAD";
+  if (provider === "sslcommerz") return "CARD";
+  return "SSLCOMMERZ";
+}
+
+function resolveCheckoutPaymentMethod(method?: string): CheckoutPaymentMethod {
+  const normalized = String(method || "").trim().toUpperCase();
+  if (
+    normalized === "BKASH" ||
+    normalized === "NAGAD" ||
+    normalized === "CARD" ||
+    normalized === "SSLCOMMERZ"
+  ) {
+    return normalized;
+  }
+  return getDefaultCheckoutPaymentMethodFromProvider();
+}
+
 async function initiateProviderPayment(
   input: ProviderPaymentInput
 ): Promise<{ success: boolean; redirectUrl?: string; error?: string }> {
+  const providerSelected = getActivePaymentProvider();
+  const paymentMethodResolved = resolveCheckoutPaymentMethod(input.method);
+  checkoutInitDebug("payment_provider_selected", {
+    providerSelected,
+    paymentMethodReceived: input.method ?? null,
+    paymentMethodResolved,
+    checkoutSessionId: input.checkoutSessionId ?? null,
+    orderId: input.orderId,
+    orderNumber: input.orderNumber,
+  });
+
   try {
     const result = await createUnifiedPayment({
       amount: input.amount,
@@ -505,10 +547,30 @@ async function initiateProviderPayment(
       error: result.message,
     };
   } catch (error) {
-    console.error("Payment initiation error:", error);
+    const err = error as {
+      message?: string;
+      code?: string;
+      response?: { status?: number; data?: unknown };
+      config?: { url?: string; method?: string };
+    };
+    checkoutInitDebug("payment_provider_error", {
+      providerSelected,
+      paymentMethodResolved,
+      message: err.message || "Payment initiation failed",
+      code: err.code,
+      url: err.config?.url,
+      method: err.config?.method,
+      status: err.response?.status,
+      responseBody: err.response?.data,
+      checkoutSessionId: input.checkoutSessionId ?? null,
+      orderNumber: input.orderNumber,
+    });
     return {
       success: false,
-      error: (error as Error).message || "Payment initiation failed",
+      error:
+        err.response?.status && err.config?.url
+          ? `Payment provider request failed (${err.response.status}) at ${err.config.url}`
+          : err.message || "Payment initiation failed",
     };
   }
 }
