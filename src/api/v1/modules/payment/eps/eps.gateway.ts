@@ -84,15 +84,14 @@ export async function initializeEpsPayment(
   const cfg = assertEpsConfigured();
   const endpoints = resolveEndpoints(cfg.baseUrl);
 
-  const merchantTransactionId =
+  const preferredMerchantTransactionId =
     req.metadata?.merchantTransactionId?.trim() ||
     (req.referenceId.length >= 10 ? req.referenceId : generateEpsMerchantTransactionId());
 
   const token = await getEpsAuthToken();
-  const hash = generateEpsHash(merchantTransactionId, cfg.hashKey);
   const phone = normalizeEpsPhone(req.metadata?.phone || "01700000000");
 
-  const body = {
+  const buildBody = (merchantTransactionId: string) => ({
     merchantId: cfg.merchantId,
     storeId: cfg.storeId,
     CustomerOrderId: req.referenceId,
@@ -132,36 +131,116 @@ export async function initializeEpsPayment(
     ProductProfile: "general",
     ProductCategory: "Healthcare",
     ProductList: [],
-  };
-  console.info("[CHECKOUT_INIT_DEBUG] eps_init_request", {
-    providerSelected: "eps",
-    url: endpoints.initialize,
-    payload: body,
   });
-  const res = await axios.post<EpsInitializeResponse>(endpoints.initialize, body, {
-    headers: {
+
+  const callInitialize = async (merchantTransactionId: string, attempt: number) => {
+    const hash = generateEpsHash(merchantTransactionId, cfg.hashKey);
+    const body = buildBody(merchantTransactionId);
+    const requestHeaders = {
       "Content-Type": "application/json",
       "x-hash": hash,
-      Authorization: `Bearer ${token}`,
-    },
-    timeout: cfg.timeoutMs,
-    validateStatus: () => true,
-  });
-  console.info("[CHECKOUT_INIT_DEBUG] eps_init_response", {
-    providerSelected: "eps",
-    url: endpoints.initialize,
-    status: res.status,
-    body: res.data,
-  });
-  if (res.status >= 400) {
+      Authorization: "Bearer ***",
+    };
+
+    console.info("[CHECKOUT_INIT_DEBUG] eps_init_request", {
+      attempt,
+      method: "POST",
+      url: endpoints.initialize,
+      headers: requestHeaders,
+      payload: body,
+    });
+
+    try {
+      const res = await axios.post<EpsInitializeResponse>(endpoints.initialize, body, {
+        headers: {
+          "Content-Type": "application/json",
+          "x-hash": hash,
+          Authorization: `Bearer ${token}`,
+        },
+        timeout: cfg.timeoutMs,
+        validateStatus: () => true,
+      });
+
+      console.info("[CHECKOUT_INIT_DEBUG] eps_init_response", {
+        attempt,
+        method: "POST",
+        url: endpoints.initialize,
+        status: res.status,
+        headers: res.headers,
+        body: res.data,
+      });
+
+      if (res.status >= 400) {
+        console.info("[CHECKOUT_INIT_DEBUG] eps_init_error", {
+          attempt,
+          method: "POST",
+          url: endpoints.initialize,
+          status: res.status,
+          requestHeaders,
+          responseHeaders: res.headers,
+          responseBody: res.data,
+          merchantTransactionId,
+          customerOrderId: req.referenceId,
+        });
+      }
+
+      return { res, merchantTransactionId };
+    } catch (error) {
+      const err = error as {
+        message?: string;
+        code?: string;
+        response?: { status?: number; data?: unknown; headers?: unknown };
+      };
+      console.info("[CHECKOUT_INIT_DEBUG] eps_init_error", {
+        attempt,
+        method: "POST",
+        url: endpoints.initialize,
+        errorMessage: err.message || "EPS init request failed",
+        errorCode: err.code,
+        status: err.response?.status,
+        requestHeaders,
+        responseHeaders: err.response?.headers,
+        responseBody: err.response?.data,
+        merchantTransactionId,
+        customerOrderId: req.referenceId,
+      });
+      throw error;
+    }
+  };
+
+  let attempt = await callInitialize(preferredMerchantTransactionId, 1);
+
+  if (
+    attempt.res.status === 404 &&
+    !req.metadata?.merchantTransactionId?.trim()
+  ) {
+    const fallbackMerchantTransactionId = generateEpsMerchantTransactionId();
+    console.info("[CHECKOUT_INIT_DEBUG] eps_init_retry_with_fresh_merchant_txn", {
+      fromMerchantTransactionId: preferredMerchantTransactionId,
+      toMerchantTransactionId: fallbackMerchantTransactionId,
+      reason: "initialize_404",
+    });
+    attempt = await callInitialize(fallbackMerchantTransactionId, 2);
+  }
+
+  if (attempt.res.status >= 400) {
     return {
       success: false,
-      message: `EPS Initialize failed (${res.status}) at ${endpoints.initialize}`,
+      message: `EPS Initialize failed (${attempt.res.status}) at ${endpoints.initialize}`,
     };
   }
 
-  const data = res.data;
+  const data = attempt.res.data;
   if (data.ErrorMessage || data.ErrorCode || !data.RedirectURL) {
+    console.info("[CHECKOUT_INIT_DEBUG] eps_init_error", {
+      method: "POST",
+      url: endpoints.initialize,
+      status: attempt.res.status,
+      responseHeaders: attempt.res.headers,
+      responseBody: data,
+      merchantTransactionId: attempt.merchantTransactionId,
+      customerOrderId: req.referenceId,
+    });
     return {
       success: false,
       message: data.ErrorMessage || "EPS payment initialization failed",
@@ -171,9 +250,9 @@ export async function initializeEpsPayment(
   return {
     success: true,
     redirectUrl: data.RedirectURL,
-    providerPaymentId: data.TransactionId || merchantTransactionId,
+    providerPaymentId: data.TransactionId || attempt.merchantTransactionId,
     metadata: {
-      merchantTransactionId,
+      merchantTransactionId: attempt.merchantTransactionId,
       customerOrderId: req.referenceId,
     },
   };

@@ -239,6 +239,24 @@ export async function createPaymentIntent(
       description: `${campaign.name} - ${booking.petCount} pet(s)`,
     });
 
+    if (
+      paymentResult.success &&
+      paymentResult.provider === "eps" &&
+      paymentResult.metadata?.merchantTransactionId
+    ) {
+      const nextNotes = appendEpsMerchantTxnToNotes(
+        existingOrder.notes,
+        paymentResult.metadata.merchantTransactionId
+      );
+      if (nextNotes !== existingOrder.notes) {
+        await prisma.order.update({
+          where: { id: existingOrder.id },
+          data: { notes: nextNotes },
+        });
+        existingOrder.notes = nextNotes;
+      }
+    }
+
     return {
       success: paymentResult.success,
       paymentUrl: paymentResult.redirectUrl,
@@ -313,6 +331,21 @@ export async function createPaymentIntent(
     customerName: booking.ownerName,
     description: `${campaign.name} - ${booking.petCount} pet(s)`,
   });
+
+  if (
+    paymentResult.success &&
+    paymentResult.provider === "eps" &&
+    paymentResult.metadata?.merchantTransactionId
+  ) {
+    const nextNotes = appendEpsMerchantTxnToNotes(order.notes, paymentResult.metadata.merchantTransactionId);
+    if (nextNotes !== order.notes) {
+      await prisma.order.update({
+        where: { id: order.id },
+        data: { notes: nextNotes },
+      });
+      order.notes = nextNotes;
+    }
+  }
 
   await logCampaignAudit({
     campaignId: booking.campaignId,
@@ -450,6 +483,21 @@ export async function createCheckoutPaymentIntent(
     checkoutSessionId: input.checkoutSessionId,
   });
 
+  if (
+    paymentResult.success &&
+    paymentResult.provider === "eps" &&
+    paymentResult.metadata?.merchantTransactionId
+  ) {
+    const nextNotes = appendEpsMerchantTxnToNotes(order.notes, paymentResult.metadata.merchantTransactionId);
+    if (nextNotes !== order.notes) {
+      await prisma.order.update({
+        where: { id: order.id },
+        data: { notes: nextNotes },
+      });
+      order.notes = nextNotes;
+    }
+  }
+
   await logCampaignAudit({
     campaignId: campaign.id,
     action: "CHECKOUT_PAYMENT_INITIATED",
@@ -508,9 +556,27 @@ function resolveCheckoutPaymentMethod(method?: string): CheckoutPaymentMethod {
   return getDefaultCheckoutPaymentMethodFromProvider();
 }
 
+function appendEpsMerchantTxnToNotes(
+  notes: string | null | undefined,
+  merchantTxnId: string | undefined
+): string {
+  const base = String(notes || "").trim();
+  const txn = String(merchantTxnId || "").trim();
+  if (!txn) return base;
+  const marker = `eps_merchant_txn:${txn}`;
+  if (base.includes(marker)) return base;
+  return base ? `${base}|${marker}` : marker;
+}
+
 async function initiateProviderPayment(
   input: ProviderPaymentInput
-): Promise<{ success: boolean; redirectUrl?: string; error?: string }> {
+): Promise<{
+  success: boolean;
+  redirectUrl?: string;
+  error?: string;
+  provider?: string;
+  metadata?: Record<string, string>;
+}> {
   const providerSelected = getActivePaymentProvider();
   const paymentMethodResolved = resolveCheckoutPaymentMethod(input.method);
   checkoutInitDebug("payment_provider_selected", {
@@ -540,11 +606,24 @@ async function initiateProviderPayment(
           : {}),
       },
     });
+    checkoutInitDebug("payment_provider_response", {
+      providerSelected,
+      paymentMethodResolved,
+      providerResponseProvider: result.provider,
+      success: result.success,
+      message: result.message,
+      redirectUrl: result.redirectUrl,
+      metadata: result.metadata,
+      checkoutSessionId: input.checkoutSessionId ?? null,
+      orderNumber: input.orderNumber,
+    });
 
     return {
       success: result.success,
       redirectUrl: result.redirectUrl,
       error: result.message,
+      provider: result.provider,
+      metadata: result.metadata,
     };
   } catch (error) {
     const err = error as {
