@@ -5,6 +5,7 @@
 import prisma from "../../../../infrastructure/db/prismaClient";
 import { CampaignRolloutPhaseCode, CampaignRolloutPhaseStatus } from "@prisma/client";
 import { normalizePhone, isValidBdPhone } from "./campaign.utils";
+import { CampaignErrors } from "./campaign.errors";
 
 const PHASE_2_DIVISION_NAMES = [
   "Chattogram",
@@ -25,14 +26,14 @@ export async function resolveCampaignId(input: {
   if (input.campaignId) return input.campaignId;
   if (input.campaignSlug) {
     const c = await prisma.campaign.findUnique({ where: { slug: input.campaignSlug } });
-    if (!c) throw new Error("Campaign not found");
+    if (!c) throw CampaignErrors.SLUG_NOT_FOUND(input.campaignSlug);
     return c.id;
   }
   const active = await prisma.campaign.findFirst({
     where: { status: "ACTIVE" },
     orderBy: { id: "desc" },
   });
-  if (!active) throw new Error("No active campaign");
+  if (!active) throw CampaignErrors.NO_ACTIVE();
   return active.id;
 }
 

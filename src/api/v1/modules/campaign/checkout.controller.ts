@@ -12,7 +12,15 @@ import {
   initCheckout,
   confirmFreeCheckout,
   getCheckoutStatus,
+  retryCheckoutPayment,
 } from "./checkout.service";
+import {
+  checkoutInitDebug,
+  paymentRetryDebug,
+  bookingValidationDebug,
+  publicErrorHandlerDebug,
+} from "./checkoutDebug.util";
+import { ZodError } from "zod";
 import { claimBooking } from "./claim.service";
 import { listBookableAreas, getRolloutRegionStats, resolveCampaignId } from "./rollout.service";
 import { listPublicCampaignLocations } from "./location.service";
@@ -50,10 +58,38 @@ export async function getBookingAreasHandler(req: Request, res: Response, next: 
 
 export async function checkoutInitHandler(req: Request, res: Response, next: NextFunction) {
   try {
+    checkoutInitDebug("handler_request", { body: req.body });
     const data = checkoutInitSchema.parse(req.body);
+    bookingValidationDebug("handler_validated", { campaignSlug: data.campaignSlug, catCount: data.catCount });
     const result = await initCheckout(data);
     res.status(201).json({ success: true, data: result });
   } catch (error) {
+    if (error instanceof ZodError) {
+      bookingValidationDebug("handler_zod_error", { issues: error.issues });
+    } else {
+      publicErrorHandlerDebug("handler_error", {
+        name: error instanceof Error ? error.name : "unknown",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+    next(error);
+  }
+}
+
+export async function checkoutRetryPaymentHandler(req: Request, res: Response, next: NextFunction) {
+  try {
+    const checkoutId = routeParam(req.params.checkoutId);
+    paymentRetryDebug("handler_request", { checkoutId, body: req.body });
+    const result = await retryCheckoutPayment(checkoutId, {
+      returnUrl: typeof req.body?.returnUrl === "string" ? req.body.returnUrl : undefined,
+      cancelUrl: typeof req.body?.cancelUrl === "string" ? req.body.cancelUrl : undefined,
+      paymentMethod: req.body?.paymentMethod,
+    });
+    res.json({ success: true, data: result });
+  } catch (error) {
+    publicErrorHandlerDebug("retry_handler_error", {
+      message: error instanceof Error ? error.message : String(error),
+    });
     next(error);
   }
 }

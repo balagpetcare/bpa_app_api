@@ -42,12 +42,13 @@ import { resolveDhakaCorporationCoverage } from "./dhakaBooking.service";
 import { sendZoneInterestConfirmation } from "./sms.service";
 import { issueTicketsForBooking } from "./ticket.service";
 import { getActivePaymentProvider } from "../../providers/paymentProvider.config";
+import {
+  checkoutInitDebug,
+  paymentRetryDebug,
+  bookingValidationDebug,
+} from "./checkoutDebug.util";
 
 const CHECKOUT_TTL_MINUTES = 30;
-const CHECKOUT_RATE_WINDOW_MS = 60 * 60 * 1000;
-const CHECKOUT_RATE_MAX = 3;
-
-const checkoutAttempts = new Map<string, { count: number; resetAt: number }>();
 
 /** Checkout session stores a legacy method label; gateway uses PAYMENT_PROVIDER via unified API. */
 function defaultCheckoutPaymentMethod(): CheckoutInitInput["paymentMethod"] {
@@ -84,6 +85,8 @@ export type CheckoutInitInput = {
   paymentMethod?: "BKASH" | "NAGAD" | "CARD" | "SSLCOMMERZ";
   returnUrl?: string;
   cancelUrl?: string;
+  /** Resume an unpaid checkout instead of creating a duplicate session. */
+  resumeCheckoutId?: string;
 };
 
 export type CheckoutInitResult = {
@@ -97,20 +100,6 @@ export type CheckoutInitResult = {
   verificationCode?: string;
   booking?: BookingDetails;
 };
-
-function assertCheckoutRateLimit(phone: string) {
-  const key = normalizePhone(phone);
-  const now = Date.now();
-  const entry = checkoutAttempts.get(key);
-  if (!entry || now > entry.resetAt) {
-    checkoutAttempts.set(key, { count: 1, resetAt: now + CHECKOUT_RATE_WINDOW_MS });
-    return;
-  }
-  entry.count += 1;
-  if (entry.count > CHECKOUT_RATE_MAX) {
-    throw CheckoutErrors.RATE_LIMIT();
-  }
-}
 
 /** Reserve a booking row before EPS redirect — paymentStatus=PENDING until gateway confirms. */
 async function createPendingBookingForCheckout(
@@ -235,16 +224,154 @@ function buildAddressJson(
   };
 }
 
+async function hasCompletedCheckoutPayment(sessionId: string): Promise<boolean> {
+  const marker = `campaign_checkout:${sessionId}`;
+  const order = await prisma.order.findFirst({
+    where: {
+      notes: { contains: marker },
+      paymentStatus: "COMPLETED",
+    },
+    select: { id: true },
+  });
+  return Boolean(order);
+}
+
+/**
+ * Retry payment on an existing unpaid checkout — avoids duplicate sessions/bookings.
+ */
+export async function retryCheckoutPayment(
+  checkoutId: string,
+  options?: { returnUrl?: string; cancelUrl?: string; paymentMethod?: CheckoutInitInput["paymentMethod"] }
+): Promise<CheckoutInitResult> {
+  paymentRetryDebug("retry_start", { checkoutId });
+
+  const session = await prisma.campaignCheckoutSession.findUnique({
+    where: { id: checkoutId },
+    include: { campaign: true },
+  });
+  if (!session) {
+    paymentRetryDebug("retry_not_found", { checkoutId });
+    throw CheckoutErrors.NOT_FOUND();
+  }
+  if (session.status === "FULFILLED") {
+    paymentRetryDebug("retry_already_fulfilled", { checkoutId });
+    throw CheckoutErrors.ALREADY_FULFILLED();
+  }
+  if (await hasCompletedCheckoutPayment(session.id)) {
+    paymentRetryDebug("retry_payment_already_completed", { checkoutId });
+    throw CheckoutErrors.ALREADY_FULFILLED();
+  }
+
+  const now = new Date();
+  if (session.expiresAt < now) {
+    if (session.status === "PENDING" || session.status === "FAILED") {
+      await prisma.campaignCheckoutSession.update({
+        where: { id: checkoutId },
+        data: { status: "EXPIRED" },
+      });
+    }
+    paymentRetryDebug("retry_expired", { checkoutId });
+    throw CheckoutErrors.EXPIRED();
+  }
+
+  if (session.status === "FAILED") {
+    await prisma.campaignCheckoutSession.update({
+      where: { id: checkoutId },
+      data: { status: "PENDING" },
+    });
+    paymentRetryDebug("retry_reset_failed_to_pending", { checkoutId });
+  }
+
+  const amount = Number(session.amount);
+  if (amount <= 0 || session.campaign.pricingType === "FREE") {
+    paymentRetryDebug("retry_free_checkout", { checkoutId });
+    return {
+      checkoutId: session.id,
+      amount: 0,
+      currency: session.campaign.currency || "BDT",
+      requiresPayment: false,
+      expiresAt: session.expiresAt,
+    };
+  }
+
+  const landingBase = (process.env.CAMPAIGN_LANDING_URL || "").replace(/\/+$/, "");
+  const returnBase = options?.returnUrl ?? (landingBase ? `${landingBase}/book/success` : "/book/success");
+  const returnUrl = `${returnBase}${returnBase.includes("?") ? "&" : "?"}checkoutId=${encodeURIComponent(session.id)}`;
+  const cancelBase = options?.cancelUrl ?? (landingBase ? `${landingBase}/book/payment/failed` : "/book/payment/failed");
+  const cancelUrl = `${cancelBase}${cancelBase.includes("?") ? "&" : "?"}checkoutId=${encodeURIComponent(session.id)}`;
+
+  const payment = await createCheckoutPaymentIntent({
+    checkoutSessionId: session.id,
+    method: options?.paymentMethod ?? (session.paymentMethod as CheckoutInitInput["paymentMethod"]) ?? defaultCheckoutPaymentMethod(),
+    amount,
+    returnUrl,
+    cancelUrl,
+    customerPhone: session.ownerPhone,
+    customerName: "Guest",
+    campaignName: session.campaign.name,
+    petCount: session.catCount,
+    couponCode: session.couponCode ?? undefined,
+  });
+
+  if (!payment.success) {
+    paymentRetryDebug("retry_payment_init_failed", {
+      checkoutId,
+      error: payment.error,
+    });
+    throw ValidationErrors.INVALID_INPUT(payment.error || "Payment could not be started");
+  }
+
+  paymentRetryDebug("retry_success", { checkoutId, orderId: payment.orderId });
+  return {
+    checkoutId: session.id,
+    amount,
+    currency: session.campaign.currency || "BDT",
+    requiresPayment: true,
+    paymentUrl: payment.paymentUrl,
+    expiresAt: session.expiresAt,
+  };
+}
+
 export async function initCheckout(input: CheckoutInitInput): Promise<CheckoutInitResult> {
+  checkoutInitDebug("init_start", {
+    campaignSlug: input.campaignSlug,
+    campaignId: input.campaignId,
+    catCount: input.catCount,
+    resumeCheckoutId: input.resumeCheckoutId,
+    hasLocation: Boolean(input.locationId ?? input.campaignLocationId),
+    cityCorporationCode: input.cityCorporationCode,
+    bdAreaId: input.bdAreaId,
+  });
+
   if (!isValidBdPhone(input.phone)) {
+    bookingValidationDebug("invalid_phone", { phone: input.phone });
     throw ValidationErrors.INVALID_PHONE();
   }
   if (input.alternatePhone && !isValidBdPhone(input.alternatePhone)) {
+    bookingValidationDebug("invalid_alternate_phone");
     throw ValidationErrors.INVALID_INPUT("Invalid alternate phone number");
   }
 
   const ownerPhone = normalizePhone(input.phone);
-  assertCheckoutRateLimit(ownerPhone);
+
+  if (input.resumeCheckoutId?.trim()) {
+    const resumeId = input.resumeCheckoutId.trim();
+    const existing = await prisma.campaignCheckoutSession.findUnique({
+      where: { id: resumeId },
+      select: { ownerPhone: true, status: true },
+    });
+    if (existing && normalizePhone(existing.ownerPhone) === ownerPhone) {
+      if (existing.status !== "FULFILLED" && !(await hasCompletedCheckoutPayment(resumeId))) {
+        checkoutInitDebug("init_resume_existing", { checkoutId: resumeId });
+        return retryCheckoutPayment(resumeId, {
+          returnUrl: input.returnUrl,
+          cancelUrl: input.cancelUrl,
+          paymentMethod: input.paymentMethod,
+        });
+      }
+    }
+    checkoutInitDebug("init_resume_skipped", { checkoutId: resumeId });
+  }
 
   const campaignId = await resolveCampaignId({
     campaignId: input.campaignId,
@@ -461,12 +588,18 @@ export async function initCheckout(input: CheckoutInitInput): Promise<CheckoutIn
   });
 
   if (!payment.success) {
-    await prisma.campaignCheckoutSession.update({
-      where: { id: session.id },
-      data: { status: "FAILED" },
+    checkoutInitDebug("payment_init_failed", {
+      checkoutId: session.id,
+      error: payment.error,
     });
     throw ValidationErrors.INVALID_INPUT(payment.error || "Payment could not be started");
   }
+
+  checkoutInitDebug("init_success_paid", {
+    checkoutId: session.id,
+    amount: pricing.total,
+    orderId: payment.orderId,
+  });
 
   return {
     checkoutId: session.id,

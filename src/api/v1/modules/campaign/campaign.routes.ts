@@ -49,6 +49,7 @@ import {
   getBookingAreasHandler,
   getPublicCampaignLocationsHandler,
   checkoutInitHandler,
+  checkoutRetryPaymentHandler,
   checkoutConfirmFreeHandler,
   checkoutStatusHandler,
   claimBookingHandler,
@@ -453,6 +454,7 @@ publicRouter.get("/coverage-zones/:zoneId/bd-areas", async (req, res, next) => {
 });
 
 publicRouter.post("/checkout/init", checkoutInitHandler);
+publicRouter.post("/checkout/:checkoutId/retry-payment", checkoutRetryPaymentHandler);
 publicRouter.post("/checkout/confirm-free", checkoutConfirmFreeHandler);
 publicRouter.get("/checkout/:checkoutId/status", checkoutStatusHandler);
 

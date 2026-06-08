@@ -326,6 +326,7 @@ export const checkoutInitSchema = z
     paymentMethod: z.enum(["BKASH", "NAGAD", "CARD", "SSLCOMMERZ"]).optional(),
     returnUrl: z.string().min(1).optional(),
     cancelUrl: z.string().min(1).optional(),
+    resumeCheckoutId: z.string().min(10).max(40).optional(),
   })
   .superRefine((data, ctx) => {
     const locId = data.locationId ?? data.campaignLocationId;

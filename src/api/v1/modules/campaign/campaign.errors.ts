@@ -24,6 +24,12 @@ export class CampaignError extends Error {
 export const CampaignErrors = {
   NOT_FOUND: (id: number) =>
     new CampaignError("CAMPAIGN_NOT_FOUND", `Campaign with ID ${id} not found`, 404),
+
+  SLUG_NOT_FOUND: (slug: string) =>
+    new CampaignError("CAMPAIGN_NOT_FOUND", `Campaign "${slug}" not found`, 404),
+
+  NO_ACTIVE: () =>
+    new CampaignError("CAMPAIGN_NOT_FOUND", "No active campaign is available", 404),
   
   SLUG_EXISTS: (slug: string) =>
     new CampaignError("CAMPAIGN_SLUG_EXISTS", `Campaign with slug '${slug}' already exists`, 409),
