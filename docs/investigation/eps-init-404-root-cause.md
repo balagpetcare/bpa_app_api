@@ -211,6 +211,7 @@ File: `src/api/v1/modules/campaign/payment.service.ts`
 
 - `src/api/v1/modules/payment/eps/eps.gateway.ts`
 - `src/api/v1/modules/campaign/payment.service.ts`
+- `scripts/diagnose-eps-init.js`
 - `docs/investigation/eps-init-404-root-cause.md`
 
 ---
@@ -244,4 +245,107 @@ Expected confirmation pattern after fix:
 
 - attempt 1: `404`
 - attempt 2 (fresh merchant txn id): `200` + redirect URL
+
+---
+
+## 10) Empirical endpoint verification (2026-06-08) — EPS demo credentials
+
+A standalone diagnostic (`scripts/diagnose-eps-init.js`) was run against live EPS hosts
+using the official EPS **demo (sandbox)** merchant credentials:
+
+- Merchant ID: `29e86e70-0ac6-45eb-ba04-9fcb0aaed12a`
+- Store ID: `d44e705f-9e3a-41de-98b1-1674631637da`
+- Username: `Epsdemo@gmail.com`
+
+It performs `Auth/GetToken` then `EPSEngine/InitializeEPS` and prints URL, status, body.
+
+### Results
+
+| Base host | GetToken | InitializeEPS `/v1/EPSEngine/InitializeEPS` |
+|-----------|----------|---------------------------------------------|
+| `https://sandboxpgapi.eps.com.bd` | **200** (valid `token`) | **200** + `RedirectURL=https://sandboxpg.eps.com.bd/PG?data=...` |
+| `https://sandbox-pgapi.eps.com.bd` (hyphen, used by 3rd‑party SDK) | **DNS ENOTFOUND** | n/a |
+| `https://pgapi.eps.com.bd` (production) | **200** but `token=null`, `errorMessage="An error occurred while processing the request."` | not reachable (no token: sandbox creds are not valid on production) |
+
+### What this proves
+
+1. **Endpoint path is correct.** Sandbox accepted `POST /v1/EPSEngine/InitializeEPS`
+   and returned `200` + `RedirectURL`. No route/version/controller/schema change in EPS.
+2. **Host naming:** `sandboxpgapi.eps.com.bd` (no hyphen) is correct; the hyphenated host
+   `sandbox-pgapi.eps.com.bd` does **not** resolve. Our config already uses the no‑hyphen host.
+3. **HTTP 200 on GetToken does NOT mean authentication succeeded.** Production returned
+   `200` with `token=null` for sandbox credentials. Real auth success requires a non‑null `token`.
+
+### Implication for the production 404
+
+- The integration code, endpoint, API version (`/v1`), controller (`EPSEngine/InitializeEPS`),
+  and request schema are **verified correct** against EPS.
+- A production‑only `404` on `InitializeEPS` while `GetToken` returns a **real token** indicates
+  the authenticated production merchant/store is **not provisioned/enabled for payment
+  initialization**, or production is configured with **identifiers that do not match the
+  authenticated merchant** (e.g. sandbox `EPS_MERCHANT_ID`/`EPS_STORE_ID` against the production
+  host, or a not‑yet‑activated production store).
+- This is an **EPS production merchant‑account / environment‑configuration** matter, not a code bug.
+
+---
+
+## 11) Required EPS support / configuration actions
+
+Send the following to EPS support (info@eps.com.bd):
+
+1. Confirm the **production** merchant account is **activated for payment initialization**
+   (`POST https://pgapi.eps.com.bd/v1/EPSEngine/InitializeEPS`), not only token issuance.
+2. Confirm the production `EPS_MERCHANT_ID` and `EPS_STORE_ID` are the **production** identifiers
+   bound to the production `EPS_USERNAME` (sandbox IDs must not be used against `pgapi`).
+3. Confirm whether the production store requires **whitelisting of callback URLs**
+   (`successUrl` / `failUrl` / `cancelUrl`) before InitializeEPS is permitted.
+4. Provide the expected production `RedirectURL` host (sandbox uses `sandboxpg.eps.com.bd`;
+   production is expected to be `pg.eps.com.bd`).
+
+### Operator verification (env)
+
+On the production server, confirm these `.env` values match the **production** merchant panel:
+
+```env
+PAYMENT_PROVIDER=eps
+EPS_SANDBOX=false
+EPS_BASE_URL=https://pgapi.eps.com.bd
+EPS_USERNAME=<production username>
+EPS_PASSWORD=<production password>
+EPS_HASH_KEY=<production base64 hash key>
+EPS_MERCHANT_ID=<production merchant id>
+EPS_STORE_ID=<production store id>
+```
+
+Then run on the server (no code change required to diagnose):
+
+```bash
+# Uses .env credentials; prints URL/status/body for GetToken + InitializeEPS
+node scripts/diagnose-eps-init.js --base=https://pgapi.eps.com.bd --amount=10
+```
+
+- If GetToken returns `200` with a **null token** → production credentials/hash are wrong
+  for the environment (fix env; not a code issue).
+- If GetToken returns a **real token** but InitializeEPS returns `404` → EPS must enable
+  payment initialization for that production merchant/store (support action #1/#2 above).
+
+---
+
+## 12) Diagnostic script
+
+`scripts/diagnose-eps-init.js`:
+
+- Performs `Auth/GetToken` then `EPSEngine/InitializeEPS`.
+- Prints exact URL, HTTP method, status, and response body for each call.
+- Probes `sandboxpgapi`, `sandbox-pgapi` (control), and `pgapi` hosts (or a single `--base=`).
+- Credential precedence: `EPS_*` env / `.env` → built‑in EPS demo (sandbox) credentials.
+
+---
+
+## 13) Code hardening in this pass
+
+`src/api/v1/modules/payment/eps/eps.gateway.ts` — `getEpsAuthToken` now emits a structured
+`[CHECKOUT_INIT_DEBUG] eps_token_invalid` log and throws an environment‑aware error when EPS
+returns `HTTP 200` with a null token / error message, so the "200 but unauthenticated"
+production trap is no longer silent and is clearly distinguished from a genuine InitializeEPS 404.
 

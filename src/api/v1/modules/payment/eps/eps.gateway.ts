@@ -63,8 +63,24 @@ export async function getEpsAuthToken(): Promise<string> {
   }
 
   const data = res.data;
+  // EPS returns HTTP 200 with token=null + a generic errorMessage when the
+  // credentials/merchant do not belong to this environment (e.g. sandbox creds
+  // against the production host). A 200 status alone does NOT mean auth succeeded.
   if (data.errorMessage || data.errorCode || !data.token) {
-    throw new Error(data.errorMessage || "EPS GetToken failed");
+    console.info("[CHECKOUT_INIT_DEBUG] eps_token_invalid", {
+      providerSelected: "eps",
+      url: endpoints.getToken,
+      httpStatus: res.status,
+      errorMessage: data.errorMessage ?? null,
+      errorCode: data.errorCode ?? null,
+      hasToken: Boolean(data.token),
+      hint: "HTTP 200 with null token usually means credentials/merchant do not match this EPS environment (sandbox vs production).",
+    });
+    throw new Error(
+      data.errorMessage
+        ? `EPS GetToken rejected: ${data.errorMessage} (check EPS_USERNAME/EPS_PASSWORD/EPS_HASH_KEY match the ${cfg.sandbox ? "sandbox" : "production"} environment at ${endpoints.getToken})`
+        : "EPS GetToken failed (no token returned)"
+    );
   }
 
   const expiresAt = data.expireDate
