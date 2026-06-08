@@ -349,3 +349,77 @@ node scripts/diagnose-eps-init.js --base=https://pgapi.eps.com.bd --amount=10
 returns `HTTP 200` with a null token / error message, so the "200 but unauthenticated"
 production trap is no longer silent and is clearly distinguished from a genuine InitializeEPS 404.
 
+---
+
+## 14) CONFIRMED ROOT CAUSE — reused merchantTransactionId (2026-06-08)
+
+A live A/B comparison via `scripts/diagnose-eps-init.js` (sandbox, demo merchant, same token)
+tested three `merchantTransactionId` cases:
+
+| Case | merchantTransactionId | EPS result |
+|------|-----------------------|------------|
+| Numeric, fresh | `20260608184333788` (17 digits) | **200** + `RedirectURL` |
+| `CKO-*` format, fresh | `CKO-CIV62DVP` (alphanumeric + hyphen) | **200** + `RedirectURL` |
+| Numeric, **reused** (same as case 1) | `20260608184333788` | body error: `ErrorMessage="TransactionId already used." ErrorCode=400` |
+
+### Conclusions
+
+1. **EPS does NOT reject the `CKO-*` character format.** Format/length/allowed characters are not the cause.
+2. **EPS rejects a REUSED `merchantTransactionId`.** This is the actual defect.
+3. EPS wraps reuse as a body error (`ErrorCode=400`, "TransactionId already used"); depending on
+   environment/edge this surfaces to the client as a failed initialize (sandbox: 200+body error;
+   production observed: HTTP 404).
+
+### Why the booking flow failed but the diagnostic passed
+
+- Booking flow `merchantTransactionId` was derived from `req.referenceId`, which is the **fixed**
+  BPA order number `CKO-*` (length ≥ 10):
+
+  ```ts
+  // BEFORE (buggy)
+  const preferredMerchantTransactionId =
+    req.metadata?.merchantTransactionId?.trim() ||
+    (req.referenceId.length >= 10 ? req.referenceId : generateEpsMerchantTransactionId());
+  ```
+
+- Therefore every (re)initialization of the **same checkout/order** sent the **same**
+  `merchantTransactionId` (`CKO-EC77N0HI`, etc.). The **first** init for a brand‑new checkout
+  succeeded; any **retry / re‑init** of that checkout reused the id → EPS rejected it.
+- The diagnostic always used a **freshly generated** id, so it always succeeded.
+
+This precisely explains the production pattern: "some succeed (first attempt), many fail (retries)."
+
+### EPS transaction id requirements (verified)
+
+- **Must be unique per initialization** (reuse → "TransactionId already used").
+- Minimum 10 characters; numeric timestamp‑style ids are the EPS‑recommended form.
+- `CustomerOrderId` is independent and may carry the merchant's own order reference (`CKO-*`).
+
+### Fix implemented
+
+`src/api/v1/modules/payment/eps/eps.gateway.ts`:
+
+```ts
+// AFTER (fixed) — never derive from the fixed order number; always fresh & unique
+const callerForcedMerchantTransactionId = req.metadata?.merchantTransactionId?.trim();
+const preferredMerchantTransactionId =
+  callerForcedMerchantTransactionId || generateEpsMerchantTransactionId();
+```
+
+- `CustomerOrderId` still carries the BPA order number (`req.referenceId` = `CKO-*`) so reconciliation,
+  webhook lookup, and redirect resolution are preserved (order notes also store `eps_merchant_txn:{id}`).
+- Retry safety net now also triggers on a body‑level "already used" reuse error, not only HTTP 404.
+
+`src/api/v1/modules/payment/eps/eps.utils.ts` and `src/api/v1/providers/eps.utils.ts`:
+
+- `generateEpsMerchantTransactionId()` now appends a 4‑digit random suffix (still all numeric)
+  to avoid same‑millisecond collisions across concurrent checkouts.
+
+### Identifier separation (final)
+
+| Field | Value | Purpose |
+|-------|-------|---------|
+| `merchantTransactionId` | fresh numeric per init (e.g. `202606081843337884217`) | EPS uniqueness; verify/status key |
+| `CustomerOrderId` | BPA order number (`CKO-*`) | BPA reconciliation / webhook / redirect |
+| `orders.notes` `eps_merchant_txn:{id}` | the EPS merchant txn used | webhook/order linkage when EPS echoes only `MerchantTransactionId` |
+

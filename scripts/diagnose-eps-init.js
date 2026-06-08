@@ -190,20 +190,31 @@ async function probeBase(base, cfg, amount, initPaths) {
     return;
   }
 
-  // 2) InitializeEPS across candidate paths
+  // 2) InitializeEPS across candidate paths + merchantTransactionId formats.
+  //    A/B compares EPS-safe numeric ids vs BPA order-number style (CKO-*).
+  const numericId = freshMerchantTxnId();
+  const ckoId = `CKO-${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
+  const mtidCases = [
+    { label: "numeric (17 digits)", mtid: numericId },
+    { label: "CKO-* order number", mtid: ckoId },
+    { label: "numeric reused (same as first)", mtid: numericId },
+  ];
+
   for (const path of initPaths) {
-    const merchantTxnId = freshMerchantTxnId();
-    const initUrl = `${apiRoot}${path}`;
-    const initHash = generateEpsHash(merchantTxnId, cfg.hashKey);
-    const body = buildInitBody(cfg, merchantTxnId, amount);
-    console.log(`\n[InitializeEPS] POST ${initUrl}`);
-    console.log(`  merchantTransactionId: ${merchantTxnId}  totalAmount: ${amount}`);
-    const res = await request("POST", initUrl, body, {
-      "x-hash": initHash,
-      Authorization: `Bearer ${token}`,
-    });
-    console.log(`  status: ${res.status ?? "ERR"}${res.error ? ` (${res.error})` : ""}`);
-    console.log(`  body:   ${JSON.stringify(res.data)}`);
+    for (const c of mtidCases) {
+      const initUrl = `${apiRoot}${path}`;
+      const initHash = generateEpsHash(c.mtid, cfg.hashKey);
+      const body = buildInitBody(cfg, c.mtid, amount);
+      console.log(`\n[InitializeEPS] POST ${initUrl}`);
+      console.log(`  case: ${c.label}`);
+      console.log(`  merchantTransactionId: ${c.mtid} (len=${c.mtid.length})  totalAmount: ${amount}`);
+      const res = await request("POST", initUrl, body, {
+        "x-hash": initHash,
+        Authorization: `Bearer ${token}`,
+      });
+      console.log(`  status: ${res.status ?? "ERR"}${res.error ? ` (${res.error})` : ""}`);
+      console.log(`  body:   ${JSON.stringify(res.data)}`);
+    }
   }
 }
 

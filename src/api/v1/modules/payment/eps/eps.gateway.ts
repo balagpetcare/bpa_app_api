@@ -100,9 +100,14 @@ export async function initializeEpsPayment(
   const cfg = assertEpsConfigured();
   const endpoints = resolveEndpoints(cfg.baseUrl);
 
+  // EPS requires a UNIQUE merchantTransactionId per initialization and rejects
+  // reuse with "TransactionId already used". The BPA order number (CKO-*) is fixed
+  // per checkout, so deriving the merchantTransactionId from referenceId caused
+  // every retry/re-init of the same checkout to reuse the id and fail at EPS.
+  // Always generate a fresh EPS-safe id; preserve the order number as CustomerOrderId.
+  const callerForcedMerchantTransactionId = req.metadata?.merchantTransactionId?.trim();
   const preferredMerchantTransactionId =
-    req.metadata?.merchantTransactionId?.trim() ||
-    (req.referenceId.length >= 10 ? req.referenceId : generateEpsMerchantTransactionId());
+    callerForcedMerchantTransactionId || generateEpsMerchantTransactionId();
 
   const token = await getEpsAuthToken();
   const phone = normalizeEpsPhone(req.metadata?.phone || "01700000000");
@@ -226,15 +231,23 @@ export async function initializeEpsPayment(
 
   let attempt = await callInitialize(preferredMerchantTransactionId, 1);
 
-  if (
-    attempt.res.status === 404 &&
-    !req.metadata?.merchantTransactionId?.trim()
-  ) {
+  // Safety net: if EPS still rejects the id (404, or a body-level "already used"
+  // reuse error), retry once with a fresh generated id — unless the caller forced
+  // a specific merchantTransactionId.
+  const looksLikeReuse = (data: EpsInitializeResponse | undefined): boolean => {
+    const msg = String(data?.ErrorMessage || "").toLowerCase();
+    return msg.includes("already used") || msg.includes("already exist");
+  };
+  const shouldRetry =
+    !callerForcedMerchantTransactionId &&
+    (attempt.res.status === 404 || (attempt.res.status < 400 && looksLikeReuse(attempt.res.data)));
+
+  if (shouldRetry) {
     const fallbackMerchantTransactionId = generateEpsMerchantTransactionId();
     console.info("[CHECKOUT_INIT_DEBUG] eps_init_retry_with_fresh_merchant_txn", {
       fromMerchantTransactionId: preferredMerchantTransactionId,
       toMerchantTransactionId: fallbackMerchantTransactionId,
-      reason: "initialize_404",
+      reason: attempt.res.status === 404 ? "initialize_404" : "merchant_txn_reuse",
     });
     attempt = await callInitialize(fallbackMerchantTransactionId, 2);
   }

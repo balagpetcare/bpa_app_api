@@ -7,7 +7,12 @@ export function generateEpsHash(value: string, hashKey: string): string {
   return hmac.digest("base64");
 }
 
-/** Unique merchant transaction id (min 10 digits) — timestamp-based. */
+/**
+ * Unique merchant transaction id — timestamp + random suffix, all numeric.
+ * EPS rejects reused merchantTransactionId values ("TransactionId already used"),
+ * so each initialize attempt must use a fresh value. The 4-digit random suffix
+ * avoids collisions when multiple checkouts initialize in the same millisecond.
+ */
 export function generateEpsMerchantTransactionId(): string {
   const now = new Date();
   const y = now.getFullYear();
@@ -17,7 +22,8 @@ export function generateEpsMerchantTransactionId(): string {
   const min = String(now.getMinutes()).padStart(2, "0");
   const s = String(now.getSeconds()).padStart(2, "0");
   const ms = String(now.getMilliseconds()).padStart(3, "0");
-  return `${y}${m}${d}${h}${min}${s}${ms}`;
+  const rand = String(Math.floor(Math.random() * 10000)).padStart(4, "0");
+  return `${y}${m}${d}${h}${min}${s}${ms}${rand}`;
 }
 
 export function normalizeEpsPhone(phone: string): string {
