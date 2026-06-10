@@ -445,9 +445,16 @@ export interface PaginatedResponse<T> {
 // Campaign Config Types
 // ============================================================================
 
+export type CampaignPaymentChannelMode =
+  | "SMS_ONLY"
+  | "EPS_ONLY"
+  | "SMS_AND_EPS"
+  | "EPS_WITH_SMS_FALLBACK";
+
 export interface CampaignConfigInput {
   bookingEnabled?: boolean;
   onlinePaymentEnabled?: boolean;
+  paymentChannelMode?: CampaignPaymentChannelMode;
   payAtVenueEnabled?: boolean;
   walkInAllowed?: boolean;
   approvalRequired?: boolean;

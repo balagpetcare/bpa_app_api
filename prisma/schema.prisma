@@ -13945,6 +13945,13 @@ enum CampaignRolloutPhaseCode {
   PHASE_4
 }
 
+enum CampaignPaymentChannelMode {
+  SMS_ONLY
+  EPS_ONLY
+  SMS_AND_EPS
+  EPS_WITH_SMS_FALLBACK
+}
+
 enum CampaignPreRegistrationStatus {
   WAITING
   NOTIFIED
@@ -14037,6 +14044,7 @@ model CampaignConfig {
   // Payment
   onlinePaymentEnabled Boolean @default(false)
   payAtVenueEnabled    Boolean @default(false)
+  paymentChannelMode   CampaignPaymentChannelMode @default(SMS_ONLY) @map("payment_channel_mode")
 
   // Advanced (JSON)
   metadataJson Json?

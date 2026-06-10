@@ -5,9 +5,13 @@
  */
 
 import prisma from "../../../../infrastructure/db/prismaClient";
-import { Prisma } from "@prisma/client";
+import { Prisma, type CampaignPaymentChannelMode } from "@prisma/client";
 import { CampaignErrors } from "./campaign.errors";
 import { logCampaignAudit } from "./campaign.service";
+import {
+  fetchVaccinationPaymentConfigBySlug,
+  syncVaccinationPaymentConfigBySlug,
+} from "../../../../shared/integrations/vaccination-api/vaccination-campaign-sync.service";
 
 // ============================================================================
 // Types
@@ -17,6 +21,7 @@ export interface CampaignConfigData {
   bookingEnabled: boolean;
   onlinePaymentEnabled: boolean;
   payAtVenueEnabled: boolean;
+  paymentChannelMode: CampaignPaymentChannelMode;
   walkInAllowed: boolean;
   approvalRequired: boolean;
   slotRequired: boolean;
@@ -33,6 +38,7 @@ const CONFIG_DEFAULTS: CampaignConfigData = {
   bookingEnabled: true,
   onlinePaymentEnabled: false,
   payAtVenueEnabled: false,
+  paymentChannelMode: "SMS_ONLY",
   walkInAllowed: true,
   approvalRequired: false,
   slotRequired: true,
@@ -48,17 +54,23 @@ const CONFIG_DEFAULTS: CampaignConfigData = {
 // ============================================================================
 
 export async function getCampaignConfig(campaignId: number): Promise<CampaignConfigData & { version: number; campaignId: number }> {
+  const campaign = await prisma.campaign.findUnique({ where: { id: campaignId } });
+  if (!campaign) throw CampaignErrors.NOT_FOUND(campaignId);
+
   const existing = await prisma.campaignConfig.findUnique({
     where: { campaignId },
   });
 
+  let config: CampaignConfigData & { version: number; campaignId: number };
+
   if (existing) {
-    return {
+    config = {
       campaignId: existing.campaignId,
       version: existing.version,
       bookingEnabled: existing.bookingEnabled,
       onlinePaymentEnabled: existing.onlinePaymentEnabled,
       payAtVenueEnabled: existing.payAtVenueEnabled,
+      paymentChannelMode: existing.paymentChannelMode,
       walkInAllowed: existing.walkInAllowed,
       approvalRequired: existing.approvalRequired,
       slotRequired: existing.slotRequired,
@@ -68,19 +80,24 @@ export async function getCampaignConfig(campaignId: number): Promise<CampaignCon
       showRemainingSlots: existing.showRemainingSlots,
       lateBookingAllowed: existing.lateBookingAllowed,
     };
+  } else {
+    config = {
+      campaignId,
+      version: 0,
+      ...CONFIG_DEFAULTS,
+      maxCatsPerBooking: campaign.maxPetsPerBooking,
+      walkInAllowed: campaign.allowWalkIns,
+      onlinePaymentEnabled: campaign.pricingType !== "FREE",
+    };
   }
 
-  const campaign = await prisma.campaign.findUnique({ where: { id: campaignId } });
-  if (!campaign) throw CampaignErrors.NOT_FOUND(campaignId);
+  const remote = await fetchVaccinationPaymentConfigBySlug(campaign.slug);
+  if (remote) {
+    config.paymentChannelMode = remote.paymentChannelMode;
+    config.onlinePaymentEnabled = remote.onlinePaymentEnabled;
+  }
 
-  return {
-    campaignId,
-    version: 0,
-    ...CONFIG_DEFAULTS,
-    maxCatsPerBooking: campaign.maxPetsPerBooking,
-    walkInAllowed: campaign.allowWalkIns,
-    onlinePaymentEnabled: campaign.pricingType !== "FREE",
-  };
+  return config;
 }
 
 /**
@@ -113,6 +130,7 @@ export async function upsertCampaignConfig(
           bookingEnabled: existing.bookingEnabled,
           onlinePaymentEnabled: existing.onlinePaymentEnabled,
           payAtVenueEnabled: existing.payAtVenueEnabled,
+          paymentChannelMode: existing.paymentChannelMode,
           walkInAllowed: existing.walkInAllowed,
           approvalRequired: existing.approvalRequired,
           slotRequired: existing.slotRequired,
@@ -158,6 +176,15 @@ export async function upsertCampaignConfig(
     beforeJson: existing as unknown as Record<string, unknown> | undefined,
     afterJson: merged as unknown as Record<string, unknown>,
   });
+
+  const paymentFieldsChanged =
+    data.onlinePaymentEnabled !== undefined || data.paymentChannelMode !== undefined;
+  if (paymentFieldsChanged) {
+    await syncVaccinationPaymentConfigBySlug(campaign.slug, {
+      onlinePaymentEnabled: merged.onlinePaymentEnabled,
+      paymentChannelMode: merged.paymentChannelMode,
+    });
+  }
 
   return config;
 }

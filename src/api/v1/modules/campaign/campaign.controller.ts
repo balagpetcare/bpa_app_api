@@ -27,7 +27,7 @@ import {
 import { CampaignError } from "./campaign.errors";
 import type { CreateCampaignInput } from "./campaign.types";
 import { routeParam } from "./campaign.utils";
-import { getCampaignConfigOrNull } from "./config.service";
+import { getCampaignConfig, getCampaignConfigOrNull } from "./config.service";
 import { serializePublicCampaignPricing } from "./campaignPricingPresentation.service";
 
 // ============================================================================
@@ -166,9 +166,17 @@ export async function getCampaignHandler(
   next: NextFunction
 ) {
   try {
-    const campaign = await getCampaignById(parseInt(routeParam(req.params.id), 10));
+    const campaignId = parseInt(routeParam(req.params.id), 10);
+    const campaign = await getCampaignById(campaignId);
+    const config = await getCampaignConfig(campaignId);
 
-    res.json({ success: true, data: serializePublicCampaignPricing(campaign) });
+    res.json({
+      success: true,
+      data: {
+        ...serializePublicCampaignPricing(campaign),
+        config,
+      },
+    });
   } catch (error) {
     next(error);
   }

@@ -7,6 +7,9 @@ import { z } from "zod";
 export const campaignConfigSchema = z.object({
   bookingEnabled: z.boolean().optional(),
   onlinePaymentEnabled: z.boolean().optional(),
+  paymentChannelMode: z
+    .enum(["SMS_ONLY", "EPS_ONLY", "SMS_AND_EPS", "EPS_WITH_SMS_FALLBACK"])
+    .optional(),
   payAtVenueEnabled: z.boolean().optional(),
   walkInAllowed: z.boolean().optional(),
   approvalRequired: z.boolean().optional(),
